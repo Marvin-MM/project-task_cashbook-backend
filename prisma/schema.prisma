@@ -1,0 +1,405 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── User ──────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(uuid()) @db.Uuid
+  email         String   @unique
+  passwordHash  String   @map("password_hash")
+  firstName     String   @map("first_name")
+  lastName      String   @map("last_name")
+  isActive      Boolean  @default(true) @map("is_active")
+  isSuperAdmin  Boolean  @default(false) @map("is_super_admin")
+  emailVerified Boolean  @default(false) @map("email_verified")
+  lastLoginAt   DateTime? @map("last_login_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  refreshTokens      RefreshToken[]
+  loginHistory       LoginHistory[]
+  ownedWorkspaces    Workspace[]       @relation("WorkspaceOwner")
+  workspaceMemberships WorkspaceMember[]
+  cashbookMemberships  CashbookMember[]
+  entries             Entry[]
+  entryAudits         EntryAudit[]
+  deleteRequests      DeleteRequest[]    @relation("DeleteRequester")
+  deleteReviews       DeleteRequest[]    @relation("DeleteReviewer")
+  auditLogs           AuditLog[]
+  financialAuditLogs  FinancialAuditLog[]
+
+  @@map("users")
+}
+
+// ─── Auth ──────────────────────────────────────────────
+
+model RefreshToken {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  tokenHash   String   @map("token_hash")
+  deviceInfo  String?  @map("device_info")
+  ipAddress   String?  @map("ip_address")
+  expiresAt   DateTime @map("expires_at")
+  isRevoked   Boolean  @default(false) @map("is_revoked")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model LoginHistory {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  status    String   // SUCCESS, FAILED, SUSPICIOUS
+  reason    String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("login_history")
+}
+
+// ─── Workspace ─────────────────────────────────────────
+
+model Workspace {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  type      WorkspaceType
+  ownerId   String   @map("owner_id") @db.Uuid
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  owner    User              @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  members  WorkspaceMember[]
+  cashbooks Cashbook[]
+  categories Category[]
+  contacts  Contact[]
+  paymentModes PaymentMode[]
+  auditLogs    AuditLog[]
+  financialAuditLogs FinancialAuditLog[]
+
+  @@index([ownerId])
+  @@index([type])
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String        @map("workspace_id") @db.Uuid
+  userId      String        @map("user_id") @db.Uuid
+  role        WorkspaceRole @default(MEMBER)
+  joinedAt    DateTime      @default(now()) @map("joined_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+// ─── Cashbook ──────────────────────────────────────────
+
+model Cashbook {
+  id              String   @id @default(uuid()) @db.Uuid
+  workspaceId     String   @map("workspace_id") @db.Uuid
+  name            String
+  description     String?
+  currency        String   @default("USD")
+  balance         Decimal  @default(0) @db.Decimal(20, 4)
+  totalIncome     Decimal  @default(0) @map("total_income") @db.Decimal(20, 4)
+  totalExpense    Decimal  @default(0) @map("total_expense") @db.Decimal(20, 4)
+  allowBackdate   Boolean  @default(false) @map("allow_backdate")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members     CashbookMember[]
+  entries     Entry[]
+  attachments Attachment[]
+
+  @@index([workspaceId])
+  @@map("cashbooks")
+}
+
+model CashbookMember {
+  id         String       @id @default(uuid()) @db.Uuid
+  cashbookId String       @map("cashbook_id") @db.Uuid
+  userId     String       @map("user_id") @db.Uuid
+  role       CashbookRole @default(VIEWER)
+  joinedAt   DateTime     @default(now()) @map("joined_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  cashbook Cashbook @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([cashbookId, userId])
+  @@index([cashbookId])
+  @@index([userId])
+  @@map("cashbook_members")
+}
+
+// ─── Entry (Ledger) ────────────────────────────────────
+
+model Entry {
+  id            String    @id @default(uuid()) @db.Uuid
+  cashbookId    String    @map("cashbook_id") @db.Uuid
+  type          EntryType
+  amount        Decimal   @db.Decimal(20, 4)
+  description   String
+  categoryId    String?   @map("category_id") @db.Uuid
+  contactId     String?   @map("contact_id") @db.Uuid
+  paymentModeId String?   @map("payment_mode_id") @db.Uuid
+  entryDate     DateTime  @map("entry_date")
+  createdById   String    @map("created_by_id") @db.Uuid
+  isDeleted     Boolean   @default(false) @map("is_deleted")
+  deletedAt     DateTime? @map("deleted_at")
+  deletedReason String?   @map("deleted_reason")
+  version       Int       @default(1)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  cashbook    Cashbook      @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
+  category    Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  contact     Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  paymentMode PaymentMode?  @relation(fields: [paymentModeId], references: [id], onDelete: SetNull)
+  createdBy   User          @relation(fields: [createdById], references: [id])
+  audits      EntryAudit[]
+  deleteRequests DeleteRequest[]
+  attachments Attachment[]
+
+  @@index([cashbookId])
+  @@index([entryDate])
+  @@index([categoryId])
+  @@index([contactId])
+  @@index([createdById])
+  @@index([isDeleted])
+  @@map("entries")
+}
+
+model EntryAudit {
+  id         String   @id @default(uuid()) @db.Uuid
+  entryId    String   @map("entry_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  action     String   // CREATED, UPDATED, DELETED
+  changes    Json?    // JSON diff of what changed
+  oldValues  Json?    @map("old_values")
+  newValues  Json?    @map("new_values")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  entry Entry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@index([entryId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("entry_audits")
+}
+
+// ─── Delete Request ────────────────────────────────────
+
+model DeleteRequest {
+  id           String              @id @default(uuid()) @db.Uuid
+  entryId      String              @map("entry_id") @db.Uuid
+  requesterId  String              @map("requester_id") @db.Uuid
+  reason       String
+  status       DeleteRequestStatus @default(PENDING)
+  reviewerId   String?             @map("reviewer_id") @db.Uuid
+  reviewNote   String?             @map("review_note")
+  reviewedAt   DateTime?           @map("reviewed_at")
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+
+  entry     Entry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  requester User  @relation("DeleteRequester", fields: [requesterId], references: [id])
+  reviewer  User? @relation("DeleteReviewer", fields: [reviewerId], references: [id])
+
+  @@index([entryId])
+  @@index([requesterId])
+  @@index([status])
+  @@map("delete_requests")
+}
+
+// ─── Category ──────────────────────────────────────────
+
+model Category {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  name        String
+  description String?
+  color       String?
+  icon        String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entries   Entry[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@map("categories")
+}
+
+// ─── Contact ───────────────────────────────────────────
+
+model Contact {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  name        String
+  email       String?
+  phone       String?
+  company     String?
+  notes       String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entries   Entry[]
+
+  @@index([workspaceId])
+  @@map("contacts")
+}
+
+// ─── Payment Mode ──────────────────────────────────────
+
+model PaymentMode {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  name        String
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entries   Entry[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@map("payment_modes")
+}
+
+// ─── Attachment ────────────────────────────────────────
+
+model Attachment {
+  id          String   @id @default(uuid()) @db.Uuid
+  cashbookId  String   @map("cashbook_id") @db.Uuid
+  entryId     String?  @map("entry_id") @db.Uuid
+  fileName    String   @map("file_name")
+  fileSize    Int      @map("file_size")
+  mimeType    String   @map("mime_type")
+  s3Key       String   @map("s3_key")
+  uploadedById String  @map("uploaded_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  cashbook Cashbook @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
+  entry    Entry?   @relation(fields: [entryId], references: [id], onDelete: SetNull)
+
+  @@index([cashbookId])
+  @@index([entryId])
+  @@map("attachments")
+}
+
+// ─── Audit Log (System-wide) ───────────────────────────
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String?  @map("user_id") @db.Uuid
+  workspaceId String?  @map("workspace_id") @db.Uuid
+  action      String
+  resource    String
+  resourceId  String?  @map("resource_id")
+  details     Json?
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─── Financial Audit Log ───────────────────────────────
+
+model FinancialAuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  cashbookId  String   @map("cashbook_id") @db.Uuid
+  entryId     String?  @map("entry_id") @db.Uuid
+  action      String
+  amount      Decimal? @db.Decimal(20, 4)
+  balanceBefore Decimal? @map("balance_before") @db.Decimal(20, 4)
+  balanceAfter  Decimal? @map("balance_after") @db.Decimal(20, 4)
+  details     Json?
+  reason      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user      User      @relation(fields: [userId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([cashbookId])
+  @@index([entryId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("financial_audit_logs")
+}
+
+// ─── Enums ─────────────────────────────────────────────
+
+enum WorkspaceType {
+  PERSONAL
+  BUSINESS
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum CashbookRole {
+  PRIMARY_ADMIN
+  ADMIN
+  BOOK_ADMIN
+  DATA_OPERATOR
+  VIEWER
+}
+
+enum EntryType {
+  INCOME
+  EXPENSE
+}
+
+enum DeleteRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}

@@ -1,0 +1,30 @@
+import { Router } from 'express';
+import { ReportsController } from './reports.service';
+import { authenticate } from '../../middlewares/authenticate';
+import { validate } from '../../middlewares/validate';
+import { requireCashbookMember } from '../../middlewares/authorize';
+import { CashbookPermission } from '../../core/types/permissions';
+import { reportQuerySchema } from './reports.dto';
+
+const router = Router({ mergeParams: true });
+const reportsController = new ReportsController();
+
+router.use(authenticate as any);
+
+// Get report data as JSON
+router.get(
+    '/:cashbookId',
+    requireCashbookMember(CashbookPermission.GENERATE_REPORT) as any,
+    validate(reportQuerySchema, 'query'),
+    reportsController.generate.bind(reportsController) as any
+);
+
+// Download report as file (PDF/Excel)
+router.get(
+    '/:cashbookId/download',
+    requireCashbookMember(CashbookPermission.GENERATE_REPORT) as any,
+    validate(reportQuerySchema, 'query'),
+    reportsController.download.bind(reportsController) as any
+);
+
+export default router;

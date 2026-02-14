@@ -1,0 +1,74 @@
+import { getPrismaClient } from '../../config/database';
+
+const prisma = getPrismaClient();
+
+export class UsersRepository {
+    async findById(id: string) {
+        return prisma.user.findUnique({
+            where: { id },
+            select: {
+                id: true,
+                email: true,
+                firstName: true,
+                lastName: true,
+                isActive: true,
+                isSuperAdmin: true,
+                emailVerified: true,
+                lastLoginAt: true,
+                createdAt: true,
+                updatedAt: true,
+            },
+        });
+    }
+
+    async updateProfile(id: string, data: { firstName?: string; lastName?: string }) {
+        return prisma.user.update({
+            where: { id },
+            data,
+            select: {
+                id: true,
+                email: true,
+                firstName: true,
+                lastName: true,
+                isActive: true,
+                emailVerified: true,
+                lastLoginAt: true,
+                createdAt: true,
+                updatedAt: true,
+            },
+        });
+    }
+
+    async findAll(params: { page: number; limit: number; search?: string }) {
+        const where: any = {};
+        if (params.search) {
+            where.OR = [
+                { email: { contains: params.search, mode: 'insensitive' } },
+                { firstName: { contains: params.search, mode: 'insensitive' } },
+                { lastName: { contains: params.search, mode: 'insensitive' } },
+            ];
+        }
+
+        const [users, total] = await Promise.all([
+            prisma.user.findMany({
+                where,
+                select: {
+                    id: true,
+                    email: true,
+                    firstName: true,
+                    lastName: true,
+                    isActive: true,
+                    isSuperAdmin: true,
+                    lastLoginAt: true,
+                    createdAt: true,
+                },
+                skip: (params.page - 1) * params.limit,
+                take: params.limit,
+                orderBy: { createdAt: 'desc' },
+            }),
+            prisma.user.count({ where }),
+        ]);
+
+        return { users, total };
+    }
+}
