@@ -13,6 +13,7 @@ import filesRoutes from '../modules/files/files.routes';
 import reportsRoutes from '../modules/reports/reports.routes';
 import auditRoutes from '../modules/audit/audit.routes';
 import adminRoutes from '../modules/admin/admin.routes';
+import invitesRoutes from '../modules/invites/invites.routes';
 
 const router = Router();
 
@@ -33,5 +34,6 @@ router.use('/files', filesRoutes);
 router.use('/reports', reportsRoutes);
 router.use('/audit', auditRoutes);
 router.use('/admin', adminRoutes);
+router.use('/invites', invitesRoutes);
 
 export default router;

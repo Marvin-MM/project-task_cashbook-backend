@@ -5,7 +5,7 @@ dotenv.config();
 
 const envSchema = z.object({
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-    PORT: z.coerce.number().default(3000),
+    PORT: z.coerce.number().default(5000),
     API_PREFIX: z.string().default('/api/v1'),
     APP_NAME: z.string().default('CashBook SaaS'),
 

@@ -34,20 +34,31 @@ export class EntriesRepository {
             sortOrder: string;
         }
     ) {
+        const {
+            page: rawPage,
+            limit: rawLimit,
+            sortBy = 'entryDate',
+            sortOrder = 'desc',
+            ...filters
+        } = params;
+
+        const page = Number(rawPage) || 1;
+        const limit = Number(rawLimit) || 20;
+
         const where: Prisma.EntryWhereInput = {
             cashbookId,
             isDeleted: false,
         };
 
-        if (params.type) where.type = params.type as any;
-        if (params.categoryId) where.categoryId = params.categoryId;
-        if (params.contactId) where.contactId = params.contactId;
-        if (params.paymentModeId) where.paymentModeId = params.paymentModeId;
+        if (filters.type) where.type = filters.type as any;
+        if (filters.categoryId) where.categoryId = filters.categoryId;
+        if (filters.contactId) where.contactId = filters.contactId;
+        if (filters.paymentModeId) where.paymentModeId = filters.paymentModeId;
 
-        if (params.startDate || params.endDate) {
+        if (filters.startDate || filters.endDate) {
             where.entryDate = {};
-            if (params.startDate) where.entryDate.gte = new Date(params.startDate);
-            if (params.endDate) where.entryDate.lte = new Date(params.endDate);
+            if (filters.startDate) where.entryDate.gte = new Date(filters.startDate);
+            if (filters.endDate) where.entryDate.lte = new Date(filters.endDate);
         }
 
         const [entries, total] = await Promise.all([
@@ -62,9 +73,9 @@ export class EntriesRepository {
                     },
                     _count: { select: { attachments: true } },
                 },
-                skip: (params.page - 1) * params.limit,
-                take: params.limit,
-                orderBy: { [params.sortBy]: params.sortOrder },
+                skip: (page - 1) * limit,
+                take: limit,
+                orderBy: { [sortBy]: sortOrder },
             }),
             this.prisma.entry.count({ where }),
         ]);

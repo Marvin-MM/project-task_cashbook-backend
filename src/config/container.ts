@@ -78,6 +78,7 @@ import { UsersController } from '../modules/users/users.controller';
 import { WorkspacesController } from '../modules/workspaces/workspaces.controller';
 import { AdminController } from '../modules/admin/admin.controller';
 import { AuditController } from '../modules/audit/audit.controller';
+import { InvitesController } from '../modules/invites/invites.controller';
 
 container.registerSingleton(AuthController);
 container.registerSingleton(CashbooksController);
@@ -92,5 +93,6 @@ container.registerSingleton(UsersController);
 container.registerSingleton(WorkspacesController);
 container.registerSingleton(AdminController);
 container.registerSingleton(AuditController);
+container.registerSingleton(InvitesController);
 
 export { container };

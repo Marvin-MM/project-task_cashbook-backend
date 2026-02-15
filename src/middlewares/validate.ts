@@ -8,7 +8,21 @@ export function validate(schema: z.ZodType<any>, target: ValidateTarget = 'body'
     return (req: Request, _res: Response, next: NextFunction): void => {
         try {
             const result = schema.parse(req[target]);
-            (req as any)[target] = result;
+
+            // Express 5+ makes req.query and req.params getter-only, so we can't reassign the whole object.
+            // Instead, we clear existing properties and assign the new validated values.
+            if (target === 'query' || target === 'params') {
+                const reqTarget = (req as any)[target];
+                // Clear existing keys
+                for (const key in reqTarget) {
+                    delete reqTarget[key];
+                }
+                // Assign new keys from result
+                Object.assign(reqTarget, result);
+            } else {
+                (req as any)[target] = result;
+            }
+
             next();
         } catch (error) {
             if (error instanceof z.ZodError) {
@@ -37,7 +51,14 @@ export function validateMultiple(schemas: { body?: z.ZodType<any>; query?: z.Zod
                 if (schema) {
                     try {
                         const result = schema.parse((req as any)[target]);
-                        (req as any)[target] = result;
+
+                        if (target === 'query' || target === 'params') {
+                            const reqTarget = (req as any)[target];
+                            for (const key in reqTarget) delete reqTarget[key];
+                            Object.assign(reqTarget, result);
+                        } else {
+                            (req as any)[target] = result;
+                        }
                     } catch (error) {
                         if (error instanceof z.ZodError) {
                             for (const issue of error.issues) {
