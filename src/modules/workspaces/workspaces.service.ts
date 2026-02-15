@@ -1,19 +1,23 @@
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 import { WorkspacesRepository } from './workspaces.repository';
 import { NotFoundError, AuthorizationError, AppError } from '../../core/errors/AppError';
 import { WorkspaceType, WorkspaceRole, AuditAction } from '../../core/types';
 import { CreateWorkspaceDto, UpdateWorkspaceDto } from './workspaces.dto';
-import { getPrismaClient } from '../../config/database';
 
-const prisma = getPrismaClient();
-const workspacesRepository = new WorkspacesRepository();
-
+@injectable()
 export class WorkspacesService {
+    constructor(
+        private workspacesRepository: WorkspacesRepository,
+        @inject('PrismaClient') private prisma: PrismaClient,
+    ) { }
+
     async getUserWorkspaces(userId: string) {
-        return workspacesRepository.findUserWorkspaces(userId);
+        return this.workspacesRepository.findUserWorkspaces(userId);
     }
 
     async getWorkspace(workspaceId: string, userId: string) {
-        const workspace = await workspacesRepository.findById(workspaceId);
+        const workspace = await this.workspacesRepository.findById(workspaceId);
         if (!workspace || !workspace.isActive) {
             throw new NotFoundError('Workspace');
         }
@@ -21,7 +25,7 @@ export class WorkspacesService {
     }
 
     async createBusinessWorkspace(userId: string, dto: CreateWorkspaceDto) {
-        const workspace = await prisma.$transaction(async (tx) => {
+        const workspace = await this.prisma.$transaction(async (tx) => {
             const ws = await tx.workspace.create({
                 data: {
                     name: dto.name,
@@ -62,14 +66,14 @@ export class WorkspacesService {
     }
 
     async updateWorkspace(workspaceId: string, userId: string, dto: UpdateWorkspaceDto) {
-        const workspace = await workspacesRepository.findById(workspaceId);
+        const workspace = await this.workspacesRepository.findById(workspaceId);
         if (!workspace || !workspace.isActive) {
             throw new NotFoundError('Workspace');
         }
 
         if (workspace.ownerId !== userId) {
             // Check if user is an admin
-            const membership = await prisma.workspaceMember.findUnique({
+            const membership = await this.prisma.workspaceMember.findUnique({
                 where: { workspaceId_userId: { workspaceId, userId } },
             });
             if (!membership || (membership.role !== 'OWNER' && membership.role !== 'ADMIN')) {
@@ -77,9 +81,9 @@ export class WorkspacesService {
             }
         }
 
-        const updated = await workspacesRepository.update(workspaceId, dto);
+        const updated = await this.workspacesRepository.update(workspaceId, dto);
 
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId,
                 workspaceId,
@@ -94,7 +98,7 @@ export class WorkspacesService {
     }
 
     async deleteWorkspace(workspaceId: string, userId: string) {
-        const workspace = await workspacesRepository.findById(workspaceId);
+        const workspace = await this.workspacesRepository.findById(workspaceId);
         if (!workspace || !workspace.isActive) {
             throw new NotFoundError('Workspace');
         }
@@ -107,9 +111,9 @@ export class WorkspacesService {
             throw new AuthorizationError('Only the workspace owner can delete it');
         }
 
-        await workspacesRepository.softDelete(workspaceId);
+        await this.workspacesRepository.softDelete(workspaceId);
 
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId,
                 workspaceId,

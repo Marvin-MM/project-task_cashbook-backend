@@ -1,18 +1,23 @@
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 import { Response, NextFunction } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { AuthenticatedRequest, AuditAction } from '../../core/types';
 import { NotFoundError } from '../../core/errors/AppError';
-import { getPrismaClient } from '../../config/database';
 import { ReportQueryDto } from './reports.dto';
 import PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
 import { logger } from '../../utils/logger';
+import { dbBreaker } from '../../config/breakers';
 
-const prisma = getPrismaClient();
-
+@injectable()
 export class ReportsService {
+    constructor(
+        @inject('PrismaClient') private prisma: PrismaClient,
+    ) { }
+
     async generateReport(cashbookId: string, userId: string, query: ReportQueryDto) {
-        const cashbook = await prisma.cashbook.findUnique({
+        const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: cashbookId },
         });
 
@@ -32,16 +37,18 @@ export class ReportsService {
         if (query.type) where.type = query.type;
         if (query.categoryId) where.categoryId = query.categoryId;
 
-        const entries = await prisma.entry.findMany({
-            where,
-            include: {
-                category: { select: { name: true } },
-                contact: { select: { name: true } },
-                paymentMode: { select: { name: true } },
-                createdBy: { select: { firstName: true, lastName: true } },
-            },
-            orderBy: { entryDate: 'asc' },
-        });
+        const entries = await dbBreaker.execute(() =>
+            this.prisma.entry.findMany({
+                where,
+                include: {
+                    category: { select: { name: true } },
+                    contact: { select: { name: true } },
+                    paymentMode: { select: { name: true } },
+                    createdBy: { select: { firstName: true, lastName: true } },
+                },
+                orderBy: { entryDate: 'asc' },
+            })
+        );
 
         // Calculate summary
         let totalIncome = 0;
@@ -59,7 +66,7 @@ export class ReportsService {
         const net = totalIncome - totalExpense;
 
         // Log report generation
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId,
                 workspaceId: cashbook.workspaceId,
@@ -216,12 +223,13 @@ export class ReportsService {
 }
 
 // Controller
-const reportsService = new ReportsService();
-
+@injectable()
 export class ReportsController {
+    constructor(private reportsService: ReportsService) { }
+
     async generate(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const data = await reportsService.generateReport(
+            const data = await this.reportsService.generateReport(
                 req.params.cashbookId as string,
                 req.user.userId,
                 req.query as any
@@ -239,7 +247,7 @@ export class ReportsController {
 
     async download(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const data = await reportsService.generateReport(
+            const data = await this.reportsService.generateReport(
                 req.params.cashbookId as string,
                 req.user.userId,
                 req.query as any
@@ -248,12 +256,12 @@ export class ReportsController {
             const format = (req.query.format as string) || 'pdf';
 
             if (format === 'pdf') {
-                const pdfBuffer = await reportsService.generatePDF(data);
+                const pdfBuffer = await this.reportsService.generatePDF(data);
                 res.setHeader('Content-Type', 'application/pdf');
                 res.setHeader('Content-Disposition', `attachment; filename="${data.cashbook.name}-report.pdf"`);
                 res.send(pdfBuffer);
             } else {
-                const excelBuffer = await reportsService.generateExcel(data);
+                const excelBuffer = await this.reportsService.generateExcel(data);
                 res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
                 res.setHeader('Content-Disposition', `attachment; filename="${data.cashbook.name}-report.xlsx"`);
                 res.send(excelBuffer);

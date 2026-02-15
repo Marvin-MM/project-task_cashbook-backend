@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { WorkspacesController } from './workspaces.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
@@ -7,7 +8,7 @@ import { createWorkspaceSchema, updateWorkspaceSchema } from './workspaces.dto';
 import { WorkspaceRole } from '../../core/types';
 
 const router = Router();
-const workspacesController = new WorkspacesController();
+const workspacesController = container.resolve(WorkspacesController);
 
 router.use(authenticate as any);
 

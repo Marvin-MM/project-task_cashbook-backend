@@ -1,14 +1,16 @@
+import { injectable } from 'tsyringe';
 import { Response, NextFunction } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { CashbooksService } from './cashbooks.service';
 import { AuthenticatedRequest, ApiResponse } from '../../core/types';
 
-const cashbooksService = new CashbooksService();
-
+@injectable()
 export class CashbooksController {
+    constructor(private cashbooksService: CashbooksService) { }
+
     async getAll(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const cashbooks = await cashbooksService.getCashbooks(
+            const cashbooks = await this.cashbooksService.getCashbooks(
                 req.params.workspaceId as string,
                 req.user.userId
             );
@@ -24,7 +26,7 @@ export class CashbooksController {
 
     async getOne(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const cashbook = await cashbooksService.getCashbook(req.params.cashbookId as string);
+            const cashbook = await this.cashbooksService.getCashbook(req.params.cashbookId as string);
             res.status(StatusCodes.OK).json({
                 success: true,
                 message: 'Cashbook retrieved successfully',
@@ -37,7 +39,7 @@ export class CashbooksController {
 
     async create(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const cashbook = await cashbooksService.createCashbook(
+            const cashbook = await this.cashbooksService.createCashbook(
                 req.params.workspaceId as string,
                 req.user.userId,
                 req.body
@@ -54,7 +56,7 @@ export class CashbooksController {
 
     async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const cashbook = await cashbooksService.updateCashbook(
+            const cashbook = await this.cashbooksService.updateCashbook(
                 req.params.cashbookId as string,
                 req.user.userId,
                 req.body
@@ -71,7 +73,7 @@ export class CashbooksController {
 
     async delete(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            await cashbooksService.deleteCashbook(req.params.cashbookId as string, req.user.userId);
+            await this.cashbooksService.deleteCashbook(req.params.cashbookId as string, req.user.userId);
             res.status(StatusCodes.OK).json({
                 success: true,
                 message: 'Cashbook deleted successfully',
@@ -84,7 +86,7 @@ export class CashbooksController {
     // ─── Members ───────────────────────────────────────
     async getMembers(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const members = await cashbooksService.getCashbookMembers(req.params.cashbookId as string);
+            const members = await this.cashbooksService.getCashbookMembers(req.params.cashbookId as string);
             res.status(StatusCodes.OK).json({
                 success: true,
                 message: 'Cashbook members retrieved',
@@ -97,7 +99,7 @@ export class CashbooksController {
 
     async addMember(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const member = await cashbooksService.addCashbookMember(
+            const member = await this.cashbooksService.addCashbookMember(
                 req.params.cashbookId as string,
                 req.user.userId,
                 req.body
@@ -114,7 +116,7 @@ export class CashbooksController {
 
     async updateMemberRole(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const member = await cashbooksService.updateCashbookMemberRole(
+            const member = await this.cashbooksService.updateCashbookMemberRole(
                 req.params.cashbookId as string,
                 req.params.userId as string,
                 req.user.userId,
@@ -132,7 +134,7 @@ export class CashbooksController {
 
     async removeMember(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            await cashbooksService.removeCashbookMember(
+            await this.cashbooksService.removeCashbookMember(
                 req.params.cashbookId as string,
                 req.params.userId as string,
                 req.user.userId
@@ -149,11 +151,46 @@ export class CashbooksController {
     // ─── Financial Summary ─────────────────────────────
     async getSummary(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const summary = await cashbooksService.getFinancialSummary(req.params.cashbookId as string);
+            const summary = await this.cashbooksService.getFinancialSummary(req.params.cashbookId as string);
             res.status(StatusCodes.OK).json({
                 success: true,
                 message: 'Financial summary retrieved',
                 data: summary,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    // ─── Balance Recalculation ────────────────────────
+    async recalculateBalance(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const result = await this.cashbooksService.recalculateBalance(
+                req.params.cashbookId as string,
+                req.user.userId
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Balance recalculated successfully',
+                data: result,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    // ─── Reconciliation Toggle ────────────────────────
+    async toggleReconciliation(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const result = await this.cashbooksService.toggleReconciliation(
+                req.params.entryId as string,
+                req.params.cashbookId as string,
+                req.user.userId
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: `Entry ${result.isReconciled ? 'reconciled' : 'unreconciled'}`,
+                data: result,
             });
         } catch (error) {
             next(error);

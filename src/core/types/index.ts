@@ -5,6 +5,7 @@ export interface JwtPayload {
     userId: string;
     email: string;
     isSuperAdmin: boolean;
+    jti?: string;
 }
 
 export interface AuthenticatedRequest extends Request {
@@ -80,6 +81,9 @@ export enum AuditAction {
     TOKEN_REFRESHED = 'TOKEN_REFRESHED',
     ALL_SESSIONS_REVOKED = 'ALL_SESSIONS_REVOKED',
     SUSPICIOUS_LOGIN = 'SUSPICIOUS_LOGIN',
+    EMAIL_VERIFIED = 'EMAIL_VERIFIED',
+    PASSWORD_RESET_REQUESTED = 'PASSWORD_RESET_REQUESTED',
+    PASSWORD_RESET_COMPLETED = 'PASSWORD_RESET_COMPLETED',
 
     // Workspace
     WORKSPACE_CREATED = 'WORKSPACE_CREATED',

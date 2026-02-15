@@ -1,10 +1,12 @@
-import { getPrismaClient } from '../../config/database';
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 
-const prisma = getPrismaClient();
-
+@injectable()
 export class MembersRepository {
+    constructor(@inject('PrismaClient') private prisma: PrismaClient) { }
+
     async findByWorkspaceId(workspaceId: string) {
-        return prisma.workspaceMember.findMany({
+        return this.prisma.workspaceMember.findMany({
             where: { workspaceId },
             include: {
                 user: {
@@ -22,7 +24,7 @@ export class MembersRepository {
     }
 
     async findByWorkspaceAndUser(workspaceId: string, userId: string) {
-        return prisma.workspaceMember.findUnique({
+        return this.prisma.workspaceMember.findUnique({
             where: {
                 workspaceId_userId: { workspaceId, userId },
             },
@@ -40,7 +42,7 @@ export class MembersRepository {
     }
 
     async addMember(workspaceId: string, userId: string, role: string) {
-        return prisma.workspaceMember.create({
+        return this.prisma.workspaceMember.create({
             data: {
                 workspaceId,
                 userId,
@@ -60,7 +62,7 @@ export class MembersRepository {
     }
 
     async updateRole(workspaceId: string, userId: string, role: string) {
-        return prisma.workspaceMember.update({
+        return this.prisma.workspaceMember.update({
             where: {
                 workspaceId_userId: { workspaceId, userId },
             },
@@ -79,7 +81,7 @@ export class MembersRepository {
     }
 
     async removeMember(workspaceId: string, userId: string) {
-        return prisma.workspaceMember.delete({
+        return this.prisma.workspaceMember.delete({
             where: {
                 workspaceId_userId: { workspaceId, userId },
             },

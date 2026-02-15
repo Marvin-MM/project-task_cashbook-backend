@@ -10,29 +10,30 @@ datasource db {
 // ─── User ──────────────────────────────────────────────
 
 model User {
-  id            String   @id @default(uuid()) @db.Uuid
-  email         String   @unique
-  passwordHash  String   @map("password_hash")
-  firstName     String   @map("first_name")
-  lastName      String   @map("last_name")
-  isActive      Boolean  @default(true) @map("is_active")
-  isSuperAdmin  Boolean  @default(false) @map("is_super_admin")
-  emailVerified Boolean  @default(false) @map("email_verified")
+  id            String    @id @default(uuid()) @db.Uuid
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  firstName     String    @map("first_name")
+  lastName      String    @map("last_name")
+  isActive      Boolean   @default(true) @map("is_active")
+  isSuperAdmin  Boolean   @default(false) @map("is_super_admin")
+  emailVerified Boolean   @default(false) @map("email_verified")
   lastLoginAt   DateTime? @map("last_login_at")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  refreshTokens      RefreshToken[]
-  loginHistory       LoginHistory[]
-  ownedWorkspaces    Workspace[]       @relation("WorkspaceOwner")
+  refreshTokens        RefreshToken[]
+  loginHistory         LoginHistory[]
+  ownedWorkspaces      Workspace[]         @relation("WorkspaceOwner")
   workspaceMemberships WorkspaceMember[]
   cashbookMemberships  CashbookMember[]
-  entries             Entry[]
-  entryAudits         EntryAudit[]
-  deleteRequests      DeleteRequest[]    @relation("DeleteRequester")
-  deleteReviews       DeleteRequest[]    @relation("DeleteReviewer")
-  auditLogs           AuditLog[]
-  financialAuditLogs  FinancialAuditLog[]
+  entries              Entry[]
+  entryAudits          EntryAudit[]
+  deleteRequests       DeleteRequest[]     @relation("DeleteRequester")
+  deleteReviews        DeleteRequest[]     @relation("DeleteReviewer")
+  auditLogs            AuditLog[]
+  financialAuditLogs   FinancialAuditLog[]
+  sentInvites          PendingInvite[]     @relation("InviteSender")
 
   @@map("users")
 }
@@ -40,14 +41,14 @@ model User {
 // ─── Auth ──────────────────────────────────────────────
 
 model RefreshToken {
-  id          String   @id @default(uuid()) @db.Uuid
-  userId      String   @map("user_id") @db.Uuid
-  tokenHash   String   @map("token_hash")
-  deviceInfo  String?  @map("device_info")
-  ipAddress   String?  @map("ip_address")
-  expiresAt   DateTime @map("expires_at")
-  isRevoked   Boolean  @default(false) @map("is_revoked")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  tokenHash  String   @map("token_hash")
+  deviceInfo String?  @map("device_info")
+  ipAddress  String?  @map("ip_address")
+  expiresAt  DateTime @map("expires_at")
+  isRevoked  Boolean  @default(false) @map("is_revoked")
+  createdAt  DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -61,7 +62,7 @@ model LoginHistory {
   userId    String   @map("user_id") @db.Uuid
   ipAddress String?  @map("ip_address")
   userAgent String?  @map("user_agent")
-  status    String   // SUCCESS, FAILED, SUSPICIOUS
+  status    String // SUCCESS, FAILED, SUSPICIOUS
   reason    String?
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -75,22 +76,23 @@ model LoginHistory {
 // ─── Workspace ─────────────────────────────────────────
 
 model Workspace {
-  id        String   @id @default(uuid()) @db.Uuid
+  id        String        @id @default(uuid()) @db.Uuid
   name      String
   type      WorkspaceType
-  ownerId   String   @map("owner_id") @db.Uuid
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  ownerId   String        @map("owner_id") @db.Uuid
+  isActive  Boolean       @default(true) @map("is_active")
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
 
-  owner    User              @relation("WorkspaceOwner", fields: [ownerId], references: [id])
-  members  WorkspaceMember[]
-  cashbooks Cashbook[]
-  categories Category[]
-  contacts  Contact[]
-  paymentModes PaymentMode[]
-  auditLogs    AuditLog[]
+  owner              User                @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  members            WorkspaceMember[]
+  cashbooks          Cashbook[]
+  categories         Category[]
+  contacts           Contact[]
+  paymentModes       PaymentMode[]
+  auditLogs          AuditLog[]
   financialAuditLogs FinancialAuditLog[]
+  pendingInvites     PendingInvite[]
 
   @@index([ownerId])
   @@index([type])
@@ -117,18 +119,18 @@ model WorkspaceMember {
 // ─── Cashbook ──────────────────────────────────────────
 
 model Cashbook {
-  id              String   @id @default(uuid()) @db.Uuid
-  workspaceId     String   @map("workspace_id") @db.Uuid
-  name            String
-  description     String?
-  currency        String   @default("USD")
-  balance         Decimal  @default(0) @db.Decimal(20, 4)
-  totalIncome     Decimal  @default(0) @map("total_income") @db.Decimal(20, 4)
-  totalExpense    Decimal  @default(0) @map("total_expense") @db.Decimal(20, 4)
-  allowBackdate   Boolean  @default(false) @map("allow_backdate")
-  isActive        Boolean  @default(true) @map("is_active")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @map("workspace_id") @db.Uuid
+  name          String
+  description   String?
+  currency      String   @default("USD")
+  balance       Decimal  @default(0) @db.Decimal(20, 4)
+  totalIncome   Decimal  @default(0) @map("total_income") @db.Decimal(20, 4)
+  totalExpense  Decimal  @default(0) @map("total_expense") @db.Decimal(20, 4)
+  allowBackdate Boolean  @default(false) @map("allow_backdate")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
   workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   members     CashbookMember[]
@@ -173,17 +175,18 @@ model Entry {
   deletedAt     DateTime? @map("deleted_at")
   deletedReason String?   @map("deleted_reason")
   version       Int       @default(1)
+  isReconciled  Boolean   @default(false) @map("is_reconciled")
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  cashbook    Cashbook      @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
-  category    Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  contact     Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  paymentMode PaymentMode?  @relation(fields: [paymentModeId], references: [id], onDelete: SetNull)
-  createdBy   User          @relation(fields: [createdById], references: [id])
-  audits      EntryAudit[]
+  cashbook       Cashbook        @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
+  category       Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  contact        Contact?        @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  paymentMode    PaymentMode?    @relation(fields: [paymentModeId], references: [id], onDelete: SetNull)
+  createdBy      User            @relation(fields: [createdById], references: [id])
+  audits         EntryAudit[]
   deleteRequests DeleteRequest[]
-  attachments Attachment[]
+  attachments    Attachment[]
 
   @@index([cashbookId])
   @@index([entryDate])
@@ -195,14 +198,14 @@ model Entry {
 }
 
 model EntryAudit {
-  id         String   @id @default(uuid()) @db.Uuid
-  entryId    String   @map("entry_id") @db.Uuid
-  userId     String   @map("user_id") @db.Uuid
-  action     String   // CREATED, UPDATED, DELETED
-  changes    Json?    // JSON diff of what changed
-  oldValues  Json?    @map("old_values")
-  newValues  Json?    @map("new_values")
-  createdAt  DateTime @default(now()) @map("created_at")
+  id        String   @id @default(uuid()) @db.Uuid
+  entryId   String   @map("entry_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  action    String // CREATED, UPDATED, DELETED
+  changes   Json? // JSON diff of what changed
+  oldValues Json?    @map("old_values")
+  newValues Json?    @map("new_values")
+  createdAt DateTime @default(now()) @map("created_at")
 
   entry Entry @relation(fields: [entryId], references: [id], onDelete: Cascade)
   user  User  @relation(fields: [userId], references: [id])
@@ -216,16 +219,16 @@ model EntryAudit {
 // ─── Delete Request ────────────────────────────────────
 
 model DeleteRequest {
-  id           String              @id @default(uuid()) @db.Uuid
-  entryId      String              @map("entry_id") @db.Uuid
-  requesterId  String              @map("requester_id") @db.Uuid
-  reason       String
-  status       DeleteRequestStatus @default(PENDING)
-  reviewerId   String?             @map("reviewer_id") @db.Uuid
-  reviewNote   String?             @map("review_note")
-  reviewedAt   DateTime?           @map("reviewed_at")
-  createdAt    DateTime            @default(now()) @map("created_at")
-  updatedAt    DateTime            @updatedAt @map("updated_at")
+  id          String              @id @default(uuid()) @db.Uuid
+  entryId     String              @map("entry_id") @db.Uuid
+  requesterId String              @map("requester_id") @db.Uuid
+  reason      String
+  status      DeleteRequestStatus @default(PENDING)
+  reviewerId  String?             @map("reviewer_id") @db.Uuid
+  reviewNote  String?             @map("review_note")
+  reviewedAt  DateTime?           @map("reviewed_at")
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
 
   entry     Entry @relation(fields: [entryId], references: [id], onDelete: Cascade)
   requester User  @relation("DeleteRequester", fields: [requesterId], references: [id])
@@ -301,15 +304,15 @@ model PaymentMode {
 // ─── Attachment ────────────────────────────────────────
 
 model Attachment {
-  id          String   @id @default(uuid()) @db.Uuid
-  cashbookId  String   @map("cashbook_id") @db.Uuid
-  entryId     String?  @map("entry_id") @db.Uuid
-  fileName    String   @map("file_name")
-  fileSize    Int      @map("file_size")
-  mimeType    String   @map("mime_type")
-  s3Key       String   @map("s3_key")
-  uploadedById String  @map("uploaded_by_id") @db.Uuid
-  createdAt   DateTime @default(now()) @map("created_at")
+  id           String   @id @default(uuid()) @db.Uuid
+  cashbookId   String   @map("cashbook_id") @db.Uuid
+  entryId      String?  @map("entry_id") @db.Uuid
+  fileName     String   @map("file_name")
+  fileSize     Int      @map("file_size")
+  mimeType     String   @map("mime_type")
+  s3Key        String   @map("s3_key")
+  uploadedById String   @map("uploaded_by_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
 
   cashbook Cashbook @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
   entry    Entry?   @relation(fields: [entryId], references: [id], onDelete: SetNull)
@@ -347,18 +350,18 @@ model AuditLog {
 // ─── Financial Audit Log ───────────────────────────────
 
 model FinancialAuditLog {
-  id          String   @id @default(uuid()) @db.Uuid
-  userId      String   @map("user_id") @db.Uuid
-  workspaceId String   @map("workspace_id") @db.Uuid
-  cashbookId  String   @map("cashbook_id") @db.Uuid
-  entryId     String?  @map("entry_id") @db.Uuid
-  action      String
-  amount      Decimal? @db.Decimal(20, 4)
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  workspaceId   String   @map("workspace_id") @db.Uuid
+  cashbookId    String   @map("cashbook_id") @db.Uuid
+  entryId       String?  @map("entry_id") @db.Uuid
+  action        String
+  amount        Decimal? @db.Decimal(20, 4)
   balanceBefore Decimal? @map("balance_before") @db.Decimal(20, 4)
   balanceAfter  Decimal? @map("balance_after") @db.Decimal(20, 4)
-  details     Json?
-  reason      String?
-  createdAt   DateTime @default(now()) @map("created_at")
+  details       Json?
+  reason        String?
+  createdAt     DateTime @default(now()) @map("created_at")
 
   user      User      @relation(fields: [userId], references: [id])
   workspace Workspace @relation(fields: [workspaceId], references: [id])
@@ -402,4 +405,25 @@ enum DeleteRequestStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+// ─── Pending Invite ────────────────────────────────────
+
+model PendingInvite {
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String        @map("workspace_id") @db.Uuid
+  email       String
+  role        WorkspaceRole @default(MEMBER)
+  invitedById String        @map("invited_by_id") @db.Uuid
+  token       String        @unique
+  expiresAt   DateTime      @map("expires_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User      @relation("InviteSender", fields: [invitedById], references: [id])
+
+  @@unique([workspaceId, email])
+  @@index([email])
+  @@index([token])
+  @@map("pending_invites")
 }

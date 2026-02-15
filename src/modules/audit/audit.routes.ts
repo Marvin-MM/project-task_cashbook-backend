@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { AuditController } from './audit.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { requireWorkspaceMember, requireCashbookMember } from '../../middlewares/authorize';
@@ -6,7 +7,7 @@ import { CashbookPermission } from '../../core/types/permissions';
 import { WorkspaceRole } from '../../core/types';
 
 const router = Router({ mergeParams: true });
-const auditController = new AuditController();
+const auditController = container.resolve(AuditController);
 
 router.use(authenticate as any);
 

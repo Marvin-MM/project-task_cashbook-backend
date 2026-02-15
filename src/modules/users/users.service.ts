@@ -1,12 +1,14 @@
+import { injectable } from 'tsyringe';
 import { UsersRepository } from './users.repository';
 import { NotFoundError } from '../../core/errors/AppError';
 import { UpdateProfileDto } from './users.dto';
 
-const usersRepository = new UsersRepository();
-
+@injectable()
 export class UsersService {
+    constructor(private usersRepository: UsersRepository) { }
+
     async getProfile(userId: string) {
-        const user = await usersRepository.findById(userId);
+        const user = await this.usersRepository.findById(userId);
         if (!user) {
             throw new NotFoundError('User');
         }
@@ -14,11 +16,11 @@ export class UsersService {
     }
 
     async updateProfile(userId: string, dto: UpdateProfileDto) {
-        const user = await usersRepository.findById(userId);
+        const user = await this.usersRepository.findById(userId);
         if (!user) {
             throw new NotFoundError('User');
         }
 
-        return usersRepository.updateProfile(userId, dto);
+        return this.usersRepository.updateProfile(userId, dto);
     }
 }

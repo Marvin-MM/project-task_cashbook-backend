@@ -1,3 +1,5 @@
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
@@ -9,19 +11,28 @@ import {
     AppError,
 } from '../../core/errors/AppError';
 import { JwtPayload, AuditAction, WorkspaceType } from '../../core/types';
-import { RegisterDto, LoginDto, ChangePasswordDto } from './auth.dto';
-import { getPrismaClient } from '../../config/database';
+import {
+    RegisterDto, LoginDto, ChangePasswordDto,
+    VerifyEmailDto, ForgotPasswordDto, ResetPasswordDto,
+} from './auth.dto';
 import { logger } from '../../utils/logger';
-
-const prisma = getPrismaClient();
-const authRepository = new AuthRepository();
+import { getRedisClient } from '../../config/redis';
+import { sendEmail } from '../../config/email';
+import { verificationEmailTemplate, passwordResetEmailTemplate } from '../../utils/emailTemplates';
 
 const SUSPICIOUS_FAILURE_THRESHOLD = 5;
+const OTP_TTL_SECONDS = 15 * 60; // 15 minutes
 
+@injectable()
 export class AuthService {
+    constructor(
+        private authRepository: AuthRepository,
+        @inject('PrismaClient') private prisma: PrismaClient,
+    ) { }
+
     // ─── Register ──────────────────────────────────────
     async register(dto: RegisterDto, ipAddress?: string, userAgent?: string) {
-        const existingUser = await authRepository.findUserByEmail(dto.email);
+        const existingUser = await this.authRepository.findUserByEmail(dto.email);
         if (existingUser) {
             throw new ConflictError('A user with this email already exists');
         }
@@ -29,7 +40,7 @@ export class AuthService {
         const passwordHash = await bcrypt.hash(dto.password, config.BCRYPT_SALT_ROUNDS);
 
         // Create user + personal workspace in a transaction
-        const result = await prisma.$transaction(async (tx) => {
+        const result = await this.prisma.$transaction(async (tx) => {
             const user = await tx.user.create({
                 data: {
                     email: dto.email,
@@ -64,13 +75,25 @@ export class AuthService {
             return user;
         });
 
+        // Generate and store verification OTP
+        const otp = this.generateOTP();
+        const redis = getRedisClient();
+        await redis.set(`verification:${result.id}`, otp, 'EX', OTP_TTL_SECONDS);
+
+        // Send verification email (fire-and-forget, logged on failure)
+        sendEmail({
+            to: dto.email,
+            subject: `Verify your ${config.APP_NAME} account`,
+            html: verificationEmailTemplate(dto.firstName, otp),
+        }).catch((err) => logger.error('Failed to send verification email', { email: dto.email, err }));
+
         const { passwordHash: _, ...userWithoutPassword } = result;
         return userWithoutPassword;
     }
 
     // ─── Login ─────────────────────────────────────────
     async login(dto: LoginDto, ipAddress?: string, userAgent?: string) {
-        const user = await authRepository.findUserByEmail(dto.email);
+        const user = await this.authRepository.findUserByEmail(dto.email);
 
         if (!user) {
             throw new AuthenticationError('Invalid email or password');
@@ -80,10 +103,14 @@ export class AuthService {
             throw new AuthenticationError('Account is deactivated');
         }
 
+        if (!user.emailVerified) {
+            throw new AuthenticationError('Please verify your email before logging in');
+        }
+
         // Check for suspicious activity
-        const recentFailures = await authRepository.getRecentFailedAttempts(user.id);
+        const recentFailures = await this.authRepository.getRecentFailedAttempts(user.id);
         if (recentFailures >= SUSPICIOUS_FAILURE_THRESHOLD) {
-            await authRepository.createLoginHistory({
+            await this.authRepository.createLoginHistory({
                 userId: user.id,
                 ipAddress,
                 userAgent,
@@ -91,7 +118,7 @@ export class AuthService {
                 reason: `${recentFailures} failed attempts in last 30 minutes`,
             });
 
-            await prisma.auditLog.create({
+            await this.prisma.auditLog.create({
                 data: {
                     userId: user.id,
                     action: AuditAction.SUSPICIOUS_LOGIN,
@@ -109,7 +136,7 @@ export class AuthService {
 
         const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
         if (!isPasswordValid) {
-            await authRepository.createLoginHistory({
+            await this.authRepository.createLoginHistory({
                 userId: user.id,
                 ipAddress,
                 userAgent,
@@ -127,7 +154,7 @@ export class AuthService {
         const refreshExpiresAt = this.parseExpiryToDate(config.JWT_REFRESH_EXPIRY);
 
         // Store refresh token
-        await authRepository.createRefreshToken({
+        await this.authRepository.createRefreshToken({
             userId: user.id,
             tokenHash: refreshTokenHash,
             deviceInfo: userAgent,
@@ -136,8 +163,8 @@ export class AuthService {
         });
 
         // Update last login + create history
-        await authRepository.updateUserLastLogin(user.id);
-        await authRepository.createLoginHistory({
+        await this.authRepository.updateUserLastLogin(user.id);
+        await this.authRepository.createLoginHistory({
             userId: user.id,
             ipAddress,
             userAgent,
@@ -145,7 +172,7 @@ export class AuthService {
         });
 
         // Audit log
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId: user.id,
                 action: AuditAction.USER_LOGGED_IN,
@@ -166,7 +193,7 @@ export class AuthService {
     // ─── Refresh Token ────────────────────────────────
     async refreshTokens(oldRefreshToken: string, ipAddress?: string, userAgent?: string) {
         const tokenHash = this.hashToken(oldRefreshToken);
-        const storedToken = await authRepository.findRefreshTokenByHash(tokenHash);
+        const storedToken = await this.authRepository.findRefreshTokenByHash(tokenHash);
 
         if (!storedToken) {
             throw new AuthenticationError('Invalid or expired refresh token');
@@ -177,7 +204,7 @@ export class AuthService {
         }
 
         // Revoke old token (rotation)
-        await authRepository.revokeRefreshToken(storedToken.id);
+        await this.authRepository.revokeRefreshToken(storedToken.id);
 
         // Generate new tokens
         const accessToken = this.generateAccessToken(storedToken.user);
@@ -185,7 +212,7 @@ export class AuthService {
 
         const refreshExpiresAt = this.parseExpiryToDate(config.JWT_REFRESH_EXPIRY);
 
-        await authRepository.createRefreshToken({
+        await this.authRepository.createRefreshToken({
             userId: storedToken.userId,
             tokenHash: newRefreshTokenHash,
             deviceInfo: userAgent,
@@ -193,7 +220,7 @@ export class AuthService {
             expiresAt: refreshExpiresAt,
         });
 
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId: storedToken.userId,
                 action: AuditAction.TOKEN_REFRESHED,
@@ -210,16 +237,21 @@ export class AuthService {
     }
 
     // ─── Logout ────────────────────────────────────────
-    async logout(refreshToken: string, userId: string, ipAddress?: string, userAgent?: string) {
+    async logout(refreshToken: string, userId: string, jti?: string, ipAddress?: string, userAgent?: string) {
         if (refreshToken) {
             const tokenHash = this.hashToken(refreshToken);
-            const storedToken = await authRepository.findRefreshTokenByHash(tokenHash);
+            const storedToken = await this.authRepository.findRefreshTokenByHash(tokenHash);
             if (storedToken) {
-                await authRepository.revokeRefreshToken(storedToken.id);
+                await this.authRepository.revokeRefreshToken(storedToken.id);
             }
         }
 
-        await prisma.auditLog.create({
+        // Denylist the current access token by jti
+        if (jti) {
+            await this.denylistToken(jti);
+        }
+
+        await this.prisma.auditLog.create({
             data: {
                 userId,
                 action: AuditAction.USER_LOGGED_OUT,
@@ -232,9 +264,9 @@ export class AuthService {
 
     // ─── Logout All ────────────────────────────────────
     async logoutAll(userId: string, ipAddress?: string, userAgent?: string) {
-        await authRepository.revokeAllUserTokens(userId);
+        await this.authRepository.revokeAllUserTokens(userId);
 
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId,
                 action: AuditAction.ALL_SESSIONS_REVOKED,
@@ -247,7 +279,7 @@ export class AuthService {
 
     // ─── Change Password ──────────────────────────────
     async changePassword(userId: string, dto: ChangePasswordDto) {
-        const user = await authRepository.findUserById(userId);
+        const user = await this.authRepository.findUserById(userId);
         if (!user) {
             throw new AuthenticationError('User not found');
         }
@@ -258,23 +290,133 @@ export class AuthService {
         }
 
         const newHash = await bcrypt.hash(dto.newPassword, config.BCRYPT_SALT_ROUNDS);
-        await authRepository.updateUserPassword(userId, newHash);
+        await this.authRepository.updateUserPassword(userId, newHash);
 
         // Revoke all refresh tokens for security
-        await authRepository.revokeAllUserTokens(userId);
+        await this.authRepository.revokeAllUserTokens(userId);
     }
 
     // ─── Login History ─────────────────────────────────
     async getLoginHistory(userId: string) {
-        return authRepository.getLoginHistory(userId);
+        return this.authRepository.getLoginHistory(userId);
+    }
+
+    // ─── Email Verification ───────────────────────────
+    async verifyEmail(dto: VerifyEmailDto) {
+        const user = await this.authRepository.findUserByEmail(dto.email);
+        if (!user) {
+            throw new AuthenticationError('Invalid email or verification code');
+        }
+
+        if (user.emailVerified) {
+            return; // Already verified, idempotent
+        }
+
+        const redis = getRedisClient();
+        const storedOtp = await redis.get(`verification:${user.id}`);
+
+        if (!storedOtp || !this.safeCompare(storedOtp, dto.otp)) {
+            throw new AuthenticationError('Invalid or expired verification code');
+        }
+
+        await this.prisma.user.update({
+            where: { id: user.id },
+            data: { emailVerified: true },
+        });
+
+        await redis.del(`verification:${user.id}`);
+
+        await this.prisma.auditLog.create({
+            data: {
+                userId: user.id,
+                action: AuditAction.EMAIL_VERIFIED,
+                resource: 'user',
+                resourceId: user.id,
+            },
+        });
+    }
+
+    async resendVerification(email: string) {
+        const user = await this.authRepository.findUserByEmail(email);
+
+        // Anti-enumeration: always return success
+        if (!user || user.emailVerified) return;
+
+        const otp = this.generateOTP();
+        const redis = getRedisClient();
+        await redis.set(`verification:${user.id}`, otp, 'EX', OTP_TTL_SECONDS);
+
+        sendEmail({
+            to: email,
+            subject: `Verify your ${config.APP_NAME} account`,
+            html: verificationEmailTemplate(user.firstName, otp),
+        }).catch((err) => logger.error('Failed to send verification email', { email, err }));
+    }
+
+    // ─── Forgot / Reset Password ──────────────────────
+    async forgotPassword(email: string) {
+        const user = await this.authRepository.findUserByEmail(email);
+
+        // Anti-enumeration: always return success
+        if (!user || !user.isActive) return;
+
+        const otp = this.generateOTP();
+        const redis = getRedisClient();
+        await redis.set(`reset:${user.id}`, otp, 'EX', OTP_TTL_SECONDS);
+
+        await this.prisma.auditLog.create({
+            data: {
+                userId: user.id,
+                action: AuditAction.PASSWORD_RESET_REQUESTED,
+                resource: 'auth',
+            },
+        });
+
+        sendEmail({
+            to: email,
+            subject: `Reset your ${config.APP_NAME} password`,
+            html: passwordResetEmailTemplate(user.firstName, otp),
+        }).catch((err) => logger.error('Failed to send reset email', { email, err }));
+    }
+
+    async resetPassword(dto: ResetPasswordDto) {
+        const user = await this.authRepository.findUserByEmail(dto.email);
+        if (!user) {
+            throw new AuthenticationError('Invalid email or reset code');
+        }
+
+        const redis = getRedisClient();
+        const storedOtp = await redis.get(`reset:${user.id}`);
+
+        if (!storedOtp || !this.safeCompare(storedOtp, dto.otp)) {
+            throw new AuthenticationError('Invalid or expired reset code');
+        }
+
+        const newHash = await bcrypt.hash(dto.newPassword, config.BCRYPT_SALT_ROUNDS);
+        await this.authRepository.updateUserPassword(user.id, newHash);
+
+        // Revoke all sessions for security
+        await this.authRepository.revokeAllUserTokens(user.id);
+
+        await redis.del(`reset:${user.id}`);
+
+        await this.prisma.auditLog.create({
+            data: {
+                userId: user.id,
+                action: AuditAction.PASSWORD_RESET_COMPLETED,
+                resource: 'auth',
+            },
+        });
     }
 
     // ─── Token Helpers ─────────────────────────────────
     private generateAccessToken(user: { id: string; email: string; isSuperAdmin: boolean }): string {
+        const jti = crypto.randomUUID();
         const payload: JwtPayload = {
             userId: user.id,
             email: user.email,
             isSuperAdmin: user.isSuperAdmin,
+            jti,
         };
 
         return jwt.sign(payload, config.JWT_ACCESS_SECRET, {
@@ -292,22 +434,64 @@ export class AuthService {
         return crypto.createHash('sha256').update(token).digest('hex');
     }
 
+    /**
+     * Add a JWT jti to the Redis denylist so the token is rejected
+     * even before it expires naturally.
+     */
+    private async denylistToken(jti: string): Promise<void> {
+        try {
+            const redis = getRedisClient();
+            // TTL = access-token lifetime so entries auto-expire
+            const ttlSeconds = this.parseExpiryToSeconds(config.JWT_ACCESS_EXPIRY);
+            await redis.set(`deny:${jti}`, '1', 'EX', ttlSeconds);
+        } catch (error) {
+            logger.error('Failed to denylist token', { jti, error });
+        }
+    }
+
+    /** Check if a jti has been denylisted */
+    static async isTokenDenylisted(jti: string): Promise<boolean> {
+        try {
+            const redis = getRedisClient();
+            const result = await redis.get(`deny:${jti}`);
+            return result !== null;
+        } catch (error) {
+            logger.error('Failed to check denylist', { jti, error });
+            return false; // fail-open to avoid locking out users on Redis failure
+        }
+    }
+
     private parseExpiryToDate(expiry: string): Date {
+        const seconds = this.parseExpiryToSeconds(expiry);
+        return new Date(Date.now() + seconds * 1000);
+    }
+
+    private parseExpiryToSeconds(expiry: string): number {
         const match = expiry.match(/^(\d+)([smhd])$/);
         if (!match) {
-            return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // default 7 days
+            return 7 * 24 * 60 * 60; // default 7 days in seconds
         }
 
         const value = parseInt(match[1]);
         const unit = match[2];
 
         const multipliers: Record<string, number> = {
-            s: 1000,
-            m: 60 * 1000,
-            h: 60 * 60 * 1000,
-            d: 24 * 60 * 60 * 1000,
+            s: 1,
+            m: 60,
+            h: 60 * 60,
+            d: 24 * 60 * 60,
         };
 
-        return new Date(Date.now() + value * multipliers[unit]);
+        return value * multipliers[unit];
+    }
+
+    // ─── OTP Helpers ──────────────────────────────────
+    private generateOTP(): string {
+        return crypto.randomInt(100000, 999999).toString();
+    }
+
+    private safeCompare(a: string, b: string): boolean {
+        if (a.length !== b.length) return false;
+        return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
     }
 }

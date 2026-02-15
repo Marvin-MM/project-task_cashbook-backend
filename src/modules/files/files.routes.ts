@@ -1,13 +1,14 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { FilesController } from './files.service';
 import { authenticate } from '../../middlewares/authenticate';
 import { requireCashbookMember } from '../../middlewares/authorize';
 import { CashbookPermission } from '../../core/types/permissions';
-import { upload } from '../../middlewares/upload';
+import { upload, validateFileContent } from '../../middlewares/upload';
 import { uploadRateLimiter } from '../../middlewares/rateLimiter';
 
 const router = Router({ mergeParams: true });
-const filesController = new FilesController();
+const filesController = container.resolve(FilesController);
 
 router.use(authenticate as any);
 
@@ -17,6 +18,7 @@ router.post(
     uploadRateLimiter,
     requireCashbookMember(CashbookPermission.CREATE_ENTRY) as any,
     upload.single('file'),
+    validateFileContent,
     filesController.upload.bind(filesController) as any
 );
 

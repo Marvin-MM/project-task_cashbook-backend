@@ -1,10 +1,11 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { AdminController } from './admin.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { requireSuperAdmin } from '../../middlewares/authorize';
 
 const router = Router();
-const adminController = new AdminController();
+const adminController = container.resolve(AdminController);
 
 router.use(authenticate as any);
 router.use(requireSuperAdmin() as any);

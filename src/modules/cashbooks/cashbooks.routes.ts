@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { CashbooksController } from './cashbooks.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
@@ -13,7 +14,7 @@ import {
 } from './cashbooks.dto';
 
 const router = Router({ mergeParams: true });
-const cashbooksController = new CashbooksController();
+const cashbooksController = container.resolve(CashbooksController);
 
 router.use(authenticate as any);
 
@@ -88,6 +89,20 @@ router.delete(
     '/:cashbookId/members/:userId',
     requireCashbookMember(CashbookPermission.REMOVE_MEMBER) as any,
     cashbooksController.removeMember.bind(cashbooksController) as any
+);
+
+// ─── Balance Recalculation ─────────────────────────────
+router.post(
+    '/:cashbookId/recalculate',
+    requireCashbookMember(CashbookPermission.UPDATE_CASHBOOK) as any,
+    cashbooksController.recalculateBalance.bind(cashbooksController) as any
+);
+
+// ─── Reconciliation Toggle ─────────────────────────────
+router.patch(
+    '/:cashbookId/entries/:entryId/reconcile',
+    requireCashbookMember(CashbookPermission.UPDATE_ENTRY) as any,
+    cashbooksController.toggleReconciliation.bind(cashbooksController) as any
 );
 
 export default router;

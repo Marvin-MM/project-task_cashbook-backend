@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { CategoriesController } from './categories.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
@@ -6,7 +7,7 @@ import { requireWorkspaceMember } from '../../middlewares/authorize';
 import { createCategorySchema, updateCategorySchema } from './categories.dto';
 
 const router = Router({ mergeParams: true });
-const categoriesController = new CategoriesController();
+const categoriesController = container.resolve(CategoriesController);
 
 router.use(authenticate as any);
 

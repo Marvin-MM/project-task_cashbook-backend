@@ -1,34 +1,36 @@
-import { getPrismaClient } from '../../config/database';
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 
-const prisma = getPrismaClient();
-
+@injectable()
 export class CategoriesRepository {
+    constructor(@inject('PrismaClient') private prisma: PrismaClient) { }
+
     async findByWorkspaceId(workspaceId: string) {
-        return prisma.category.findMany({
+        return this.prisma.category.findMany({
             where: { workspaceId, isActive: true },
             orderBy: { name: 'asc' },
         });
     }
 
     async findById(id: string) {
-        return prisma.category.findUnique({ where: { id } });
+        return this.prisma.category.findUnique({ where: { id } });
     }
 
     async findByNameAndWorkspace(workspaceId: string, name: string) {
-        return prisma.category.findUnique({
+        return this.prisma.category.findUnique({
             where: { workspaceId_name: { workspaceId, name } },
         });
     }
 
     async create(data: { workspaceId: string; name: string; description?: string; color?: string; icon?: string }) {
-        return prisma.category.create({ data });
+        return this.prisma.category.create({ data });
     }
 
     async update(id: string, data: { name?: string; description?: string; color?: string; icon?: string }) {
-        return prisma.category.update({ where: { id }, data });
+        return this.prisma.category.update({ where: { id }, data });
     }
 
     async softDelete(id: string) {
-        return prisma.category.update({ where: { id }, data: { isActive: false } });
+        return this.prisma.category.update({ where: { id }, data: { isActive: false } });
     }
 }

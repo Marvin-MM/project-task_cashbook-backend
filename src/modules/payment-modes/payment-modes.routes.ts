@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { PaymentModesController } from './payment-modes.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
@@ -6,7 +7,7 @@ import { requireWorkspaceMember } from '../../middlewares/authorize';
 import { createPaymentModeSchema, updatePaymentModeSchema } from './payment-modes.dto';
 
 const router = Router({ mergeParams: true });
-const controller = new PaymentModesController();
+const controller = container.resolve(PaymentModesController);
 
 router.use(authenticate as any);
 

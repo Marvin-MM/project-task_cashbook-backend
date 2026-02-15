@@ -1,11 +1,15 @@
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 import { Response, NextFunction } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { AuthenticatedRequest } from '../../core/types';
-import { getPrismaClient } from '../../config/database';
 
-const prisma = getPrismaClient();
-
+@injectable()
 export class AuditController {
+    constructor(
+        @inject('PrismaClient') private prisma: PrismaClient,
+    ) { }
+
     async getWorkspaceAuditLogs(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             const workspaceId = req.params.workspaceId as string;
@@ -17,7 +21,7 @@ export class AuditController {
             if (action) where.action = action;
 
             const [logs, total] = await Promise.all([
-                prisma.auditLog.findMany({
+                this.prisma.auditLog.findMany({
                     where,
                     include: {
                         user: {
@@ -28,7 +32,7 @@ export class AuditController {
                     take: limit,
                     orderBy: { createdAt: 'desc' },
                 }),
-                prisma.auditLog.count({ where }),
+                this.prisma.auditLog.count({ where }),
             ]);
 
             res.status(StatusCodes.OK).json({
@@ -54,7 +58,7 @@ export class AuditController {
             const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
 
             const [logs, total] = await Promise.all([
-                prisma.financialAuditLog.findMany({
+                this.prisma.financialAuditLog.findMany({
                     where: { cashbookId },
                     include: {
                         user: {
@@ -65,7 +69,7 @@ export class AuditController {
                     take: limit,
                     orderBy: { createdAt: 'desc' },
                 }),
-                prisma.financialAuditLog.count({ where: { cashbookId } }),
+                this.prisma.financialAuditLog.count({ where: { cashbookId } }),
             ]);
 
             res.status(StatusCodes.OK).json({

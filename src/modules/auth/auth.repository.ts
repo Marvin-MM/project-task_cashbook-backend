@@ -1,36 +1,36 @@
-import { getPrismaClient } from '../../config/database';
-import { Prisma } from '@prisma/client';
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient, Prisma } from '@prisma/client';
 
-const prisma = getPrismaClient();
-
+@injectable()
 export class AuthRepository {
+    constructor(@inject('PrismaClient') private prisma: PrismaClient) { }
     async findUserByEmail(email: string) {
-        return prisma.user.findUnique({
+        return this.prisma.user.findUnique({
             where: { email },
         });
     }
 
     async findUserById(id: string) {
-        return prisma.user.findUnique({
+        return this.prisma.user.findUnique({
             where: { id },
         });
     }
 
     async createUser(data: Prisma.UserCreateInput) {
-        return prisma.user.create({
+        return this.prisma.user.create({
             data,
         });
     }
 
     async updateUserLastLogin(userId: string) {
-        return prisma.user.update({
+        return this.prisma.user.update({
             where: { id: userId },
             data: { lastLoginAt: new Date() },
         });
     }
 
     async updateUserPassword(userId: string, passwordHash: string) {
-        return prisma.user.update({
+        return this.prisma.user.update({
             where: { id: userId },
             data: { passwordHash },
         });
@@ -44,13 +44,13 @@ export class AuthRepository {
         ipAddress?: string;
         expiresAt: Date;
     }) {
-        return prisma.refreshToken.create({
+        return this.prisma.refreshToken.create({
             data,
         });
     }
 
     async findRefreshTokenByHash(tokenHash: string) {
-        return prisma.refreshToken.findFirst({
+        return this.prisma.refreshToken.findFirst({
             where: {
                 tokenHash,
                 isRevoked: false,
@@ -61,21 +61,21 @@ export class AuthRepository {
     }
 
     async revokeRefreshToken(id: string) {
-        return prisma.refreshToken.update({
+        return this.prisma.refreshToken.update({
             where: { id },
             data: { isRevoked: true },
         });
     }
 
     async revokeAllUserTokens(userId: string) {
-        return prisma.refreshToken.updateMany({
+        return this.prisma.refreshToken.updateMany({
             where: { userId, isRevoked: false },
             data: { isRevoked: true },
         });
     }
 
     async deleteExpiredTokens() {
-        return prisma.refreshToken.deleteMany({
+        return this.prisma.refreshToken.deleteMany({
             where: {
                 OR: [
                     { expiresAt: { lt: new Date() } },
@@ -93,13 +93,13 @@ export class AuthRepository {
         status: string;
         reason?: string;
     }) {
-        return prisma.loginHistory.create({
+        return this.prisma.loginHistory.create({
             data,
         });
     }
 
     async getLoginHistory(userId: string, limit = 20) {
-        return prisma.loginHistory.findMany({
+        return this.prisma.loginHistory.findMany({
             where: { userId },
             orderBy: { createdAt: 'desc' },
             take: limit,
@@ -108,7 +108,7 @@ export class AuthRepository {
 
     async getRecentFailedAttempts(userId: string, windowMinutes = 30) {
         const since = new Date(Date.now() - windowMinutes * 60 * 1000);
-        return prisma.loginHistory.count({
+        return this.prisma.loginHistory.count({
             where: {
                 userId,
                 status: 'FAILED',

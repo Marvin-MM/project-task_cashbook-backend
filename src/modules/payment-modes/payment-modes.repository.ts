@@ -1,31 +1,33 @@
-import { getPrismaClient } from '../../config/database';
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 
-const prisma = getPrismaClient();
-
+@injectable()
 export class PaymentModesRepository {
+    constructor(@inject('PrismaClient') private prisma: PrismaClient) { }
+
     async findByWorkspaceId(workspaceId: string) {
-        return prisma.paymentMode.findMany({ where: { workspaceId, isActive: true }, orderBy: { name: 'asc' } });
+        return this.prisma.paymentMode.findMany({ where: { workspaceId, isActive: true }, orderBy: { name: 'asc' } });
     }
 
     async findById(id: string) {
-        return prisma.paymentMode.findUnique({ where: { id } });
+        return this.prisma.paymentMode.findUnique({ where: { id } });
     }
 
     async findByNameAndWorkspace(workspaceId: string, name: string) {
-        return prisma.paymentMode.findUnique({
+        return this.prisma.paymentMode.findUnique({
             where: { workspaceId_name: { workspaceId, name } },
         });
     }
 
     async create(data: { workspaceId: string; name: string }) {
-        return prisma.paymentMode.create({ data });
+        return this.prisma.paymentMode.create({ data });
     }
 
     async update(id: string, data: { name?: string }) {
-        return prisma.paymentMode.update({ where: { id }, data });
+        return this.prisma.paymentMode.update({ where: { id }, data });
     }
 
     async softDelete(id: string) {
-        return prisma.paymentMode.update({ where: { id }, data: { isActive: false } });
+        return this.prisma.paymentMode.update({ where: { id }, data: { isActive: false } });
     }
 }

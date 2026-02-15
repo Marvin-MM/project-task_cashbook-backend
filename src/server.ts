@@ -1,3 +1,5 @@
+import 'reflect-metadata';
+import './config/container';
 import app from './app';
 import { config } from './config';
 import { logger } from './utils/logger';

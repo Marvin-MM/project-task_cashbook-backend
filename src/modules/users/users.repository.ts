@@ -1,10 +1,12 @@
-import { getPrismaClient } from '../../config/database';
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 
-const prisma = getPrismaClient();
-
+@injectable()
 export class UsersRepository {
+    constructor(@inject('PrismaClient') private prisma: PrismaClient) { }
+
     async findById(id: string) {
-        return prisma.user.findUnique({
+        return this.prisma.user.findUnique({
             where: { id },
             select: {
                 id: true,
@@ -22,7 +24,7 @@ export class UsersRepository {
     }
 
     async updateProfile(id: string, data: { firstName?: string; lastName?: string }) {
-        return prisma.user.update({
+        return this.prisma.user.update({
             where: { id },
             data,
             select: {
@@ -50,7 +52,7 @@ export class UsersRepository {
         }
 
         const [users, total] = await Promise.all([
-            prisma.user.findMany({
+            this.prisma.user.findMany({
                 where,
                 select: {
                     id: true,
@@ -66,7 +68,7 @@ export class UsersRepository {
                 take: params.limit,
                 orderBy: { createdAt: 'desc' },
             }),
-            prisma.user.count({ where }),
+            this.prisma.user.count({ where }),
         ]);
 
         return { users, total };

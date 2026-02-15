@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { ReportsController } from './reports.service';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
@@ -7,7 +8,7 @@ import { CashbookPermission } from '../../core/types/permissions';
 import { reportQuerySchema } from './reports.dto';
 
 const router = Router({ mergeParams: true });
-const reportsController = new ReportsController();
+const reportsController = container.resolve(ReportsController);
 
 router.use(authenticate as any);
 

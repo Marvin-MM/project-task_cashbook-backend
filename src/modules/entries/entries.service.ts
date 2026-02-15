@@ -1,3 +1,5 @@
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { EntriesRepository } from './entries.repository';
 import {
@@ -17,18 +19,20 @@ import {
     ReviewDeleteRequestDto,
     EntryQueryDto,
 } from './entries.dto';
-import { getPrismaClient } from '../../config/database';
 import { logger } from '../../utils/logger';
 import { isDateInPast } from '../../utils/helpers';
 import { CashbookPermission, hasPermission } from '../../core/types/permissions';
 
-const prisma = getPrismaClient();
-const entriesRepository = new EntriesRepository();
-
+@injectable()
 export class EntriesService {
+    constructor(
+        private entriesRepository: EntriesRepository,
+        @inject('PrismaClient') private prisma: PrismaClient,
+    ) { }
+
     // ─── List Entries ──────────────────────────────────
     async getEntries(cashbookId: string, query: EntryQueryDto) {
-        const { entries, total } = await entriesRepository.findByCashbookId(cashbookId, {
+        const { entries, total } = await this.entriesRepository.findByCashbookId(cashbookId, {
             page: query.page,
             limit: query.limit,
             type: query.type,
@@ -58,7 +62,7 @@ export class EntriesService {
 
     // ─── Get Single Entry ─────────────────────────────
     async getEntry(entryId: string) {
-        const entry = await entriesRepository.findById(entryId);
+        const entry = await this.entriesRepository.findById(entryId);
         if (!entry || entry.isDeleted) {
             throw new NotFoundError('Entry');
         }
@@ -68,7 +72,7 @@ export class EntriesService {
     // ─── Create Entry ─────────────────────────────────
     async createEntry(cashbookId: string, userId: string, dto: CreateEntryDto) {
         // Get cashbook for backdate check
-        const cashbook = await prisma.cashbook.findUnique({
+        const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: cashbookId },
         });
 
@@ -90,7 +94,7 @@ export class EntriesService {
         const amount = new Decimal(dto.amount);
 
         // Use transaction for concurrency safety
-        const entry = await prisma.$transaction(async (tx) => {
+        const entry = await this.prisma.$transaction(async (tx) => {
             // Create entry
             const newEntry = await tx.entry.create({
                 data: {
@@ -174,12 +178,12 @@ export class EntriesService {
 
     // ─── Update Entry ─────────────────────────────────
     async updateEntry(entryId: string, userId: string, dto: UpdateEntryDto) {
-        const entry = await entriesRepository.findById(entryId);
+        const entry = await this.entriesRepository.findById(entryId);
         if (!entry || entry.isDeleted) {
             throw new NotFoundError('Entry');
         }
 
-        const cashbook = await prisma.cashbook.findUnique({
+        const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: entry.cashbookId },
         });
 
@@ -225,7 +229,7 @@ export class EntriesService {
             changes.entryDate = { from: entry.entryDate.toISOString(), to: dto.entryDate };
         }
 
-        const updated = await prisma.$transaction(async (tx) => {
+        const updated = await this.prisma.$transaction(async (tx) => {
             // Reverse old entry effect on balance
             const wasIncome = entry.type === EntryType.INCOME;
             const oldAmount = entry.amount;
@@ -330,7 +334,7 @@ export class EntriesService {
         reason: string,
         userRole: CashbookRole
     ) {
-        const entry = await entriesRepository.findById(entryId);
+        const entry = await this.entriesRepository.findById(entryId);
         if (!entry || entry.isDeleted) {
             throw new NotFoundError('Entry');
         }
@@ -347,23 +351,23 @@ export class EntriesService {
         // Users who can only delete → create delete request
         if (canDelete) {
             // Check for existing pending request
-            const existing = await entriesRepository.findPendingDeleteRequest(entryId);
+            const existing = await this.entriesRepository.findPendingDeleteRequest(entryId);
             if (existing) {
                 throw new ConflictError('A delete request is already pending for this entry');
             }
 
-            const request = await entriesRepository.createDeleteRequest({
+            const request = await this.entriesRepository.createDeleteRequest({
                 entryId,
                 requesterId: userId,
                 reason,
             });
 
-            const cashbook = await prisma.cashbook.findUnique({
+            const cashbook = await this.prisma.cashbook.findUnique({
                 where: { id: entry.cashbookId },
                 select: { workspaceId: true },
             });
 
-            await prisma.auditLog.create({
+            await this.prisma.auditLog.create({
                 data: {
                     userId,
                     workspaceId: cashbook?.workspaceId,
@@ -386,7 +390,7 @@ export class EntriesService {
         reviewerId: string,
         dto: ReviewDeleteRequestDto
     ) {
-        const request = await entriesRepository.findDeleteRequestById(requestId);
+        const request = await this.entriesRepository.findDeleteRequestById(requestId);
         if (!request) {
             throw new NotFoundError('Delete request');
         }
@@ -399,7 +403,7 @@ export class EntriesService {
             throw new AppError('You cannot review your own delete request', 400, 'SELF_REVIEW');
         }
 
-        await entriesRepository.updateDeleteRequest(requestId, {
+        await this.entriesRepository.updateDeleteRequest(requestId, {
             status: dto.status,
             reviewerId,
             reviewNote: dto.reviewNote,
@@ -411,7 +415,7 @@ export class EntriesService {
 
         const cashbook = request.entry?.cashbook;
 
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId: reviewerId,
                 workspaceId: cashbook?.workspaceId,
@@ -436,21 +440,21 @@ export class EntriesService {
 
     // ─── Get Delete Requests ──────────────────────────
     async getDeleteRequests(cashbookId: string, status?: string) {
-        return entriesRepository.findDeleteRequestsByCashbook(cashbookId, status);
+        return this.entriesRepository.findDeleteRequestsByCashbook(cashbookId, status);
     }
 
     // ─── Get Entry Audit Trail ─────────────────────────
     async getEntryAuditTrail(entryId: string) {
-        const entry = await entriesRepository.findById(entryId);
+        const entry = await this.entriesRepository.findById(entryId);
         if (!entry) {
             throw new NotFoundError('Entry');
         }
-        return entriesRepository.getEntryAudits(entryId);
+        return this.entriesRepository.getEntryAudits(entryId);
     }
 
     // ─── Internal: Perform Deletion ────────────────────
     private async performDeletion(entry: any, userId: string, reason: string) {
-        const cashbook = await prisma.cashbook.findUnique({
+        const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: entry.cashbookId },
         });
 
@@ -458,7 +462,7 @@ export class EntriesService {
             throw new NotFoundError('Cashbook');
         }
 
-        await prisma.$transaction(async (tx) => {
+        await this.prisma.$transaction(async (tx) => {
             const balanceBefore = cashbook.balance;
             const wasIncome = entry.type === EntryType.INCOME;
             const amount = entry.amount;

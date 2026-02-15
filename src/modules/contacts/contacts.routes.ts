@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { ContactsController } from './contacts.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
@@ -6,7 +7,7 @@ import { requireWorkspaceMember } from '../../middlewares/authorize';
 import { createContactSchema, updateContactSchema } from './contacts.dto';
 
 const router = Router({ mergeParams: true });
-const contactsController = new ContactsController();
+const contactsController = container.resolve(ContactsController);
 
 router.use(authenticate as any);
 

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { MembersController } from './members.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
@@ -7,7 +8,7 @@ import { inviteMemberSchema, updateMemberRoleSchema } from './members.dto';
 import { WorkspaceRole } from '../../core/types';
 
 const router = Router({ mergeParams: true });
-const membersController = new MembersController();
+const membersController = container.resolve(MembersController);
 
 router.use(authenticate as any);
 

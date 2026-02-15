@@ -1,14 +1,16 @@
+import { injectable } from 'tsyringe';
 import { Response, NextFunction } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { EntriesService } from './entries.service';
 import { AuthenticatedRequest, ApiResponse, CashbookRole } from '../../core/types';
 
-const entriesService = new EntriesService();
-
+@injectable()
 export class EntriesController {
+    constructor(private entriesService: EntriesService) { }
+
     async getAll(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const result = await entriesService.getEntries(req.params.cashbookId as string, req.query as any);
+            const result = await this.entriesService.getEntries(req.params.cashbookId as string, req.query as any);
             res.status(StatusCodes.OK).json({
                 success: true,
                 message: 'Entries retrieved successfully',
@@ -21,7 +23,7 @@ export class EntriesController {
 
     async getOne(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const entry = await entriesService.getEntry(req.params.entryId as string);
+            const entry = await this.entriesService.getEntry(req.params.entryId as string);
             res.status(StatusCodes.OK).json({
                 success: true,
                 message: 'Entry retrieved successfully',
@@ -34,7 +36,7 @@ export class EntriesController {
 
     async create(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const entry = await entriesService.createEntry(
+            const entry = await this.entriesService.createEntry(
                 req.params.cashbookId as string,
                 req.user.userId,
                 req.body
@@ -51,7 +53,7 @@ export class EntriesController {
 
     async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const entry = await entriesService.updateEntry(
+            const entry = await this.entriesService.updateEntry(
                 req.params.entryId as string,
                 req.user.userId,
                 req.body
@@ -69,7 +71,7 @@ export class EntriesController {
     async delete(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             const cashbookRole = (req as any).cashbookRole as CashbookRole;
-            const result = await entriesService.deleteEntry(
+            const result = await this.entriesService.deleteEntry(
                 req.params.entryId as string,
                 req.user.userId,
                 req.body.reason,
@@ -88,7 +90,7 @@ export class EntriesController {
     async getDeleteRequests(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             const status = req.query.status as string | undefined;
-            const requests = await entriesService.getDeleteRequests(req.params.cashbookId as string, status);
+            const requests = await this.entriesService.getDeleteRequests(req.params.cashbookId as string, status);
             res.status(StatusCodes.OK).json({
                 success: true,
                 message: 'Delete requests retrieved',
@@ -101,7 +103,7 @@ export class EntriesController {
 
     async reviewDeleteRequest(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const result = await entriesService.reviewDeleteRequest(
+            const result = await this.entriesService.reviewDeleteRequest(
                 req.params.requestId as string,
                 req.user.userId,
                 req.body
@@ -118,7 +120,7 @@ export class EntriesController {
     // ─── Audit Trail ───────────────────────────────────
     async getAuditTrail(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const audits = await entriesService.getEntryAuditTrail(req.params.entryId as string);
+            const audits = await this.entriesService.getEntryAuditTrail(req.params.entryId as string);
             res.status(StatusCodes.OK).json({
                 success: true,
                 message: 'Entry audit trail retrieved',

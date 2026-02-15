@@ -1,12 +1,21 @@
 import { Router } from 'express';
+import { container } from 'tsyringe';
 import { AuthController } from './auth.controller';
 import { validate } from '../../middlewares/validate';
 import { authenticate } from '../../middlewares/authenticate';
-import { authRateLimiter } from '../../middlewares/rateLimiter';
-import { registerSchema, loginSchema, changePasswordSchema } from './auth.dto';
+import { authRateLimiter, otpRateLimiter } from '../../middlewares/rateLimiter';
+import {
+    registerSchema,
+    loginSchema,
+    changePasswordSchema,
+    verifyEmailSchema,
+    resendVerificationSchema,
+    forgotPasswordSchema,
+    resetPasswordSchema,
+} from './auth.dto';
 
 const router = Router();
-const authController = new AuthController();
+const authController = container.resolve(AuthController);
 
 // Public routes
 router.post(
@@ -27,6 +36,36 @@ router.post(
     '/refresh',
     authRateLimiter,
     authController.refresh.bind(authController) as any
+);
+
+// Email verification
+router.post(
+    '/verify-email',
+    authRateLimiter,
+    validate(verifyEmailSchema),
+    authController.verifyEmail.bind(authController) as any
+);
+
+router.post(
+    '/resend-verification',
+    otpRateLimiter,
+    validate(resendVerificationSchema),
+    authController.resendVerification.bind(authController) as any
+);
+
+// Forgot / reset password
+router.post(
+    '/forgot-password',
+    otpRateLimiter,
+    validate(forgotPasswordSchema),
+    authController.forgotPassword.bind(authController) as any
+);
+
+router.post(
+    '/reset-password',
+    authRateLimiter,
+    validate(resetPasswordSchema),
+    authController.resetPassword.bind(authController) as any
 );
 
 // Protected routes

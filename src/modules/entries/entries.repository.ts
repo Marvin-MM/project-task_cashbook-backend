@@ -1,11 +1,11 @@
-import { getPrismaClient } from '../../config/database';
-import { Prisma } from '@prisma/client';
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient, Prisma } from '@prisma/client';
 
-const prisma = getPrismaClient();
-
+@injectable()
 export class EntriesRepository {
+    constructor(@inject('PrismaClient') private prisma: PrismaClient) { }
     async findById(id: string) {
-        return prisma.entry.findUnique({
+        return this.prisma.entry.findUnique({
             where: { id },
             include: {
                 category: true,
@@ -51,7 +51,7 @@ export class EntriesRepository {
         }
 
         const [entries, total] = await Promise.all([
-            prisma.entry.findMany({
+            this.prisma.entry.findMany({
                 where,
                 include: {
                     category: { select: { id: true, name: true, color: true } },
@@ -66,7 +66,7 @@ export class EntriesRepository {
                 take: params.limit,
                 orderBy: { [params.sortBy]: params.sortOrder },
             }),
-            prisma.entry.count({ where }),
+            this.prisma.entry.count({ where }),
         ]);
 
         return { entries, total };
@@ -80,11 +80,11 @@ export class EntriesRepository {
         oldValues?: any;
         newValues?: any;
     }) {
-        return prisma.entryAudit.create({ data: data as any });
+        return this.prisma.entryAudit.create({ data: data as any });
     }
 
     async getEntryAudits(entryId: string) {
-        return prisma.entryAudit.findMany({
+        return this.prisma.entryAudit.findMany({
             where: { entryId },
             include: {
                 user: {
@@ -101,7 +101,7 @@ export class EntriesRepository {
         requesterId: string;
         reason: string;
     }) {
-        return prisma.deleteRequest.create({
+        return this.prisma.deleteRequest.create({
             data,
             include: {
                 entry: true,
@@ -113,7 +113,7 @@ export class EntriesRepository {
     }
 
     async findDeleteRequestsByEntry(entryId: string) {
-        return prisma.deleteRequest.findMany({
+        return this.prisma.deleteRequest.findMany({
             where: { entryId },
             include: {
                 requester: {
@@ -133,7 +133,7 @@ export class EntriesRepository {
         };
         if (status) where.status = status;
 
-        return prisma.deleteRequest.findMany({
+        return this.prisma.deleteRequest.findMany({
             where,
             include: {
                 entry: {
@@ -151,7 +151,7 @@ export class EntriesRepository {
     }
 
     async findDeleteRequestById(id: string) {
-        return prisma.deleteRequest.findUnique({
+        return this.prisma.deleteRequest.findUnique({
             where: { id },
             include: {
                 entry: {
@@ -171,7 +171,7 @@ export class EntriesRepository {
         reviewerId: string;
         reviewNote?: string;
     }) {
-        return prisma.deleteRequest.update({
+        return this.prisma.deleteRequest.update({
             where: { id },
             data: {
                 status: data.status as any,
@@ -183,7 +183,7 @@ export class EntriesRepository {
     }
 
     async findPendingDeleteRequest(entryId: string) {
-        return prisma.deleteRequest.findFirst({
+        return this.prisma.deleteRequest.findFirst({
             where: { entryId, status: 'PENDING' },
         });
     }

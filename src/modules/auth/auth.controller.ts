@@ -1,15 +1,17 @@
+import { injectable } from 'tsyringe';
 import { Response, NextFunction } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { AuthService } from './auth.service';
 import { AuthenticatedRequest, ApiResponse } from '../../core/types';
 import { config } from '../../config';
 
-const authService = new AuthService();
-
+@injectable()
 export class AuthController {
+    constructor(private authService: AuthService) { }
+
     async register(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const user = await authService.register(
+            const user = await this.authService.register(
                 req.body,
                 req.ip,
                 req.get('user-agent')
@@ -17,7 +19,7 @@ export class AuthController {
 
             const response: ApiResponse = {
                 success: true,
-                message: 'Registration successful',
+                message: 'Registration successful. Please check your email for a verification code.',
                 data: user,
             };
 
@@ -29,7 +31,7 @@ export class AuthController {
 
     async login(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const result = await authService.login(
+            const result = await this.authService.login(
                 req.body,
                 req.ip,
                 req.get('user-agent')
@@ -61,7 +63,7 @@ export class AuthController {
                 return;
             }
 
-            const result = await authService.refreshTokens(
+            const result = await this.authService.refreshTokens(
                 refreshToken,
                 req.ip,
                 req.get('user-agent')
@@ -84,9 +86,10 @@ export class AuthController {
         try {
             const refreshToken = req.cookies?.refreshToken;
 
-            await authService.logout(
+            await this.authService.logout(
                 refreshToken,
                 req.user.userId,
+                req.user.jti,
                 req.ip,
                 req.get('user-agent')
             );
@@ -106,7 +109,7 @@ export class AuthController {
 
     async logoutAll(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            await authService.logoutAll(
+            await this.authService.logoutAll(
                 req.user.userId,
                 req.ip,
                 req.get('user-agent')
@@ -127,7 +130,7 @@ export class AuthController {
 
     async changePassword(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            await authService.changePassword(req.user.userId, req.body);
+            await this.authService.changePassword(req.user.userId, req.body);
 
             clearAuthCookies(res);
 
@@ -144,7 +147,7 @@ export class AuthController {
 
     async getLoginHistory(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const history = await authService.getLoginHistory(req.user.userId);
+            const history = await this.authService.getLoginHistory(req.user.userId);
 
             const response: ApiResponse = {
                 success: true,
@@ -153,6 +156,56 @@ export class AuthController {
             };
 
             res.status(StatusCodes.OK).json(response);
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    // ─── Email Verification ────────────────────────────
+    async verifyEmail(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            await this.authService.verifyEmail(req.body);
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Email verified successfully',
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    async resendVerification(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            await this.authService.resendVerification(req.body.email);
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'If that email exists and is unverified, a verification code has been sent',
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    // ─── Forgot / Reset Password ───────────────────────
+    async forgotPassword(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            await this.authService.forgotPassword(req.body.email);
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'If that email exists, a password reset code has been sent',
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    async resetPassword(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            await this.authService.resetPassword(req.body);
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Password reset successfully. Please log in with your new password.',
+            });
         } catch (error) {
             next(error);
         }

@@ -1,14 +1,16 @@
+import { injectable } from 'tsyringe';
 import { Response, NextFunction } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { UsersService } from './users.service';
 import { AuthenticatedRequest, ApiResponse } from '../../core/types';
 
-const usersService = new UsersService();
-
+@injectable()
 export class UsersController {
+    constructor(private usersService: UsersService) { }
+
     async getProfile(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const user = await usersService.getProfile(req.user.userId);
+            const user = await this.usersService.getProfile(req.user.userId);
 
             const response: ApiResponse = {
                 success: true,
@@ -24,7 +26,7 @@ export class UsersController {
 
     async updateProfile(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const user = await usersService.updateProfile(req.user.userId, req.body);
+            const user = await this.usersService.updateProfile(req.user.userId, req.body);
 
             const response: ApiResponse = {
                 success: true,

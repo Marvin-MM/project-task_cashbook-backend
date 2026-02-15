@@ -1,3 +1,5 @@
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 import { CashbooksRepository } from './cashbooks.repository';
 import {
     NotFoundError,
@@ -16,15 +18,17 @@ import {
     AddCashbookMemberDto,
     UpdateCashbookMemberRoleDto,
 } from './cashbooks.dto';
-import { getPrismaClient } from '../../config/database';
 
-const prisma = getPrismaClient();
-const cashbooksRepository = new CashbooksRepository();
-
+@injectable()
 export class CashbooksService {
+    constructor(
+        private cashbooksRepository: CashbooksRepository,
+        @inject('PrismaClient') private prisma: PrismaClient,
+    ) { }
+
     async getCashbooks(workspaceId: string, userId: string) {
         // Check workspace type
-        const workspace = await prisma.workspace.findUnique({
+        const workspace = await this.prisma.workspace.findUnique({
             where: { id: workspaceId },
         });
 
@@ -34,15 +38,15 @@ export class CashbooksService {
 
         // Personal workspace: return all cashbooks (single owner)
         if (workspace.type === WorkspaceType.PERSONAL) {
-            return cashbooksRepository.findByWorkspaceId(workspaceId);
+            return this.cashbooksRepository.findByWorkspaceId(workspaceId);
         }
 
         // Business workspace: return only cashbooks the user has access to
-        return cashbooksRepository.findUserAccessibleCashbooks(workspaceId, userId);
+        return this.cashbooksRepository.findUserAccessibleCashbooks(workspaceId, userId);
     }
 
     async getCashbook(cashbookId: string) {
-        const cashbook = await cashbooksRepository.findById(cashbookId);
+        const cashbook = await this.cashbooksRepository.findById(cashbookId);
         if (!cashbook || !cashbook.isActive) {
             throw new NotFoundError('Cashbook');
         }
@@ -50,7 +54,7 @@ export class CashbooksService {
     }
 
     async createCashbook(workspaceId: string, userId: string, dto: CreateCashbookDto) {
-        const workspace = await prisma.workspace.findUnique({
+        const workspace = await this.prisma.workspace.findUnique({
             where: { id: workspaceId },
         });
 
@@ -58,7 +62,7 @@ export class CashbooksService {
             throw new NotFoundError('Workspace');
         }
 
-        const cashbook = await prisma.$transaction(async (tx) => {
+        const cashbook = await this.prisma.$transaction(async (tx) => {
             const cb = await tx.cashbook.create({
                 data: {
                     name: dto.name,
@@ -99,19 +103,19 @@ export class CashbooksService {
     }
 
     async updateCashbook(cashbookId: string, userId: string, dto: UpdateCashbookDto) {
-        const cashbook = await cashbooksRepository.findById(cashbookId);
+        const cashbook = await this.cashbooksRepository.findById(cashbookId);
         if (!cashbook || !cashbook.isActive) {
             throw new NotFoundError('Cashbook');
         }
 
-        const updated = await cashbooksRepository.update(cashbookId, {
+        const updated = await this.cashbooksRepository.update(cashbookId, {
             ...(dto.name && { name: dto.name }),
             ...(dto.description !== undefined && { description: dto.description }),
             ...(dto.currency && { currency: dto.currency }),
             ...(dto.allowBackdate !== undefined && { allowBackdate: dto.allowBackdate }),
         });
 
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId,
                 workspaceId: cashbook.workspaceId,
@@ -126,14 +130,14 @@ export class CashbooksService {
     }
 
     async deleteCashbook(cashbookId: string, userId: string) {
-        const cashbook = await cashbooksRepository.findById(cashbookId);
+        const cashbook = await this.cashbooksRepository.findById(cashbookId);
         if (!cashbook || !cashbook.isActive) {
             throw new NotFoundError('Cashbook');
         }
 
-        await cashbooksRepository.softDelete(cashbookId);
+        await this.cashbooksRepository.softDelete(cashbookId);
 
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId,
                 workspaceId: cashbook.workspaceId,
@@ -146,16 +150,16 @@ export class CashbooksService {
 
     // ─── Cashbook Members ──────────────────────────────
     async getCashbookMembers(cashbookId: string) {
-        return cashbooksRepository.getMembers(cashbookId);
+        return this.cashbooksRepository.getMembers(cashbookId);
     }
 
     async addCashbookMember(cashbookId: string, addedByUserId: string, dto: AddCashbookMemberDto) {
-        const cashbook = await cashbooksRepository.findById(cashbookId);
+        const cashbook = await this.cashbooksRepository.findById(cashbookId);
         if (!cashbook || !cashbook.isActive) {
             throw new NotFoundError('Cashbook');
         }
 
-        const targetUser = await prisma.user.findUnique({
+        const targetUser = await this.prisma.user.findUnique({
             where: { email: dto.email },
         });
 
@@ -165,7 +169,7 @@ export class CashbooksService {
 
         // For business workspaces, user must be a workspace member
         if (cashbook.workspace.type === WorkspaceType.BUSINESS) {
-            const wsMembership = await prisma.workspaceMember.findUnique({
+            const wsMembership = await this.prisma.workspaceMember.findUnique({
                 where: {
                     workspaceId_userId: {
                         workspaceId: cashbook.workspaceId,
@@ -184,14 +188,14 @@ export class CashbooksService {
         }
 
         // Check if already a cashbook member
-        const existing = await cashbooksRepository.findMember(cashbookId, targetUser.id);
+        const existing = await this.cashbooksRepository.findMember(cashbookId, targetUser.id);
         if (existing) {
             throw new ConflictError('User is already a member of this cashbook');
         }
 
-        const member = await cashbooksRepository.addMember(cashbookId, targetUser.id, dto.role);
+        const member = await this.cashbooksRepository.addMember(cashbookId, targetUser.id, dto.role);
 
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId: addedByUserId,
                 workspaceId: cashbook.workspaceId,
@@ -211,7 +215,7 @@ export class CashbooksService {
         updatedByUserId: string,
         dto: UpdateCashbookMemberRoleDto
     ) {
-        const membership = await cashbooksRepository.findMember(cashbookId, targetUserId);
+        const membership = await this.cashbooksRepository.findMember(cashbookId, targetUserId);
         if (!membership) {
             throw new NotFoundError('Cashbook member');
         }
@@ -225,14 +229,14 @@ export class CashbooksService {
         }
 
         const oldRole = membership.role;
-        const updated = await cashbooksRepository.updateMemberRole(cashbookId, targetUserId, dto.role);
+        const updated = await this.cashbooksRepository.updateMemberRole(cashbookId, targetUserId, dto.role);
 
-        const cashbook = await prisma.cashbook.findUnique({
+        const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: cashbookId },
             select: { workspaceId: true },
         });
 
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId: updatedByUserId,
                 workspaceId: cashbook?.workspaceId,
@@ -247,7 +251,7 @@ export class CashbooksService {
     }
 
     async removeCashbookMember(cashbookId: string, targetUserId: string, removedByUserId: string) {
-        const membership = await cashbooksRepository.findMember(cashbookId, targetUserId);
+        const membership = await this.cashbooksRepository.findMember(cashbookId, targetUserId);
         if (!membership) {
             throw new NotFoundError('Cashbook member');
         }
@@ -260,14 +264,14 @@ export class CashbooksService {
             );
         }
 
-        await cashbooksRepository.removeMember(cashbookId, targetUserId);
+        await this.cashbooksRepository.removeMember(cashbookId, targetUserId);
 
-        const cashbook = await prisma.cashbook.findUnique({
+        const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: cashbookId },
             select: { workspaceId: true },
         });
 
-        await prisma.auditLog.create({
+        await this.prisma.auditLog.create({
             data: {
                 userId: removedByUserId,
                 workspaceId: cashbook?.workspaceId,
@@ -280,10 +284,96 @@ export class CashbooksService {
 
     // ─── Financial Summary ─────────────────────────────
     async getFinancialSummary(cashbookId: string) {
-        const summary = await cashbooksRepository.getFinancialSummary(cashbookId);
+        const summary = await this.cashbooksRepository.getFinancialSummary(cashbookId);
         if (!summary) {
             throw new NotFoundError('Cashbook');
         }
         return summary;
+    }
+
+    // ─── Balance Recalculation ─────────────────────────
+    async recalculateBalance(cashbookId: string, userId: string) {
+        const cashbook = await this.cashbooksRepository.findById(cashbookId);
+        if (!cashbook || !cashbook.isActive) {
+            throw new NotFoundError('Cashbook');
+        }
+
+        const oldBalance = cashbook.balance;
+        const oldTotalIncome = cashbook.totalIncome;
+        const oldTotalExpense = cashbook.totalExpense;
+
+        // Aggregate from source-of-truth (non-deleted entries)
+        const [incomeAgg, expenseAgg] = await Promise.all([
+            this.prisma.entry.aggregate({
+                where: { cashbookId, isDeleted: false, type: 'INCOME' },
+                _sum: { amount: true },
+            }),
+            this.prisma.entry.aggregate({
+                where: { cashbookId, isDeleted: false, type: 'EXPENSE' },
+                _sum: { amount: true },
+            }),
+        ]);
+
+        const totalIncome = incomeAgg._sum.amount ?? 0;
+        const totalExpense = expenseAgg._sum.amount ?? 0;
+        const balance = Number(totalIncome) - Number(totalExpense);
+
+        const updated = await this.prisma.cashbook.update({
+            where: { id: cashbookId },
+            data: {
+                balance,
+                totalIncome,
+                totalExpense,
+            },
+        });
+
+        // Audit the recalculation
+        await this.prisma.auditLog.create({
+            data: {
+                userId,
+                workspaceId: cashbook.workspaceId,
+                action: AuditAction.CASHBOOK_UPDATED,
+                resource: 'cashbook',
+                resourceId: cashbookId,
+                details: {
+                    action: 'BALANCE_RECALCULATED',
+                    oldBalance: oldBalance.toString(),
+                    oldTotalIncome: oldTotalIncome.toString(),
+                    oldTotalExpense: oldTotalExpense.toString(),
+                    newBalance: balance.toString(),
+                    newTotalIncome: totalIncome.toString(),
+                    newTotalExpense: totalExpense.toString(),
+                } as any,
+            },
+        });
+
+        return {
+            cashbookId,
+            oldBalance: oldBalance.toString(),
+            newBalance: balance.toString(),
+            totalIncome: totalIncome.toString(),
+            totalExpense: totalExpense.toString(),
+        };
+    }
+
+    // ─── Reconciliation Toggle ────────────────────────
+    async toggleReconciliation(entryId: string, cashbookId: string, userId: string) {
+        const entry = await this.prisma.entry.findUnique({
+            where: { id: entryId },
+        });
+
+        if (!entry || entry.isDeleted || entry.cashbookId !== cashbookId) {
+            throw new NotFoundError('Entry');
+        }
+
+        const updated = await this.prisma.entry.update({
+            where: { id: entryId },
+            data: { isReconciled: !entry.isReconciled },
+        });
+
+        return {
+            entryId,
+            isReconciled: updated.isReconciled,
+        };
     }
 }

@@ -1,11 +1,13 @@
-import { getPrismaClient } from '../../config/database';
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 import { WorkspaceType, WorkspaceRole } from '../../core/types';
 
-const prisma = getPrismaClient();
-
+@injectable()
 export class WorkspacesRepository {
+    constructor(@inject('PrismaClient') private prisma: PrismaClient) { }
+
     async findById(id: string) {
-        return prisma.workspace.findUnique({
+        return this.prisma.workspace.findUnique({
             where: { id },
             include: {
                 owner: {
@@ -17,7 +19,7 @@ export class WorkspacesRepository {
     }
 
     async findByOwnerId(ownerId: string) {
-        return prisma.workspace.findMany({
+        return this.prisma.workspace.findMany({
             where: { ownerId, isActive: true },
             include: {
                 _count: { select: { members: true, cashbooks: true } },
@@ -27,9 +29,8 @@ export class WorkspacesRepository {
     }
 
     async findUserWorkspaces(userId: string) {
-        // Get owned workspaces and workspaces where user is a member
         const [owned, memberships] = await Promise.all([
-            prisma.workspace.findMany({
+            this.prisma.workspace.findMany({
                 where: { ownerId: userId, isActive: true },
                 include: {
                     owner: {
@@ -38,7 +39,7 @@ export class WorkspacesRepository {
                     _count: { select: { members: true, cashbooks: true } },
                 },
             }),
-            prisma.workspaceMember.findMany({
+            this.prisma.workspaceMember.findMany({
                 where: { userId },
                 include: {
                     workspace: {
@@ -71,7 +72,7 @@ export class WorkspacesRepository {
         type: WorkspaceType;
         ownerId: string;
     }) {
-        return prisma.workspace.create({
+        return this.prisma.workspace.create({
             data,
             include: {
                 owner: {
@@ -82,7 +83,7 @@ export class WorkspacesRepository {
     }
 
     async update(id: string, data: { name?: string }) {
-        return prisma.workspace.update({
+        return this.prisma.workspace.update({
             where: { id },
             data,
             include: {
@@ -95,14 +96,14 @@ export class WorkspacesRepository {
     }
 
     async softDelete(id: string) {
-        return prisma.workspace.update({
+        return this.prisma.workspace.update({
             where: { id },
             data: { isActive: false },
         });
     }
 
     async getPersonalWorkspace(userId: string) {
-        return prisma.workspace.findFirst({
+        return this.prisma.workspace.findFirst({
             where: {
                 ownerId: userId,
                 type: WorkspaceType.PERSONAL,

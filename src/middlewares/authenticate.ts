@@ -3,12 +3,13 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { AuthenticationError } from '../core/errors/AppError';
 import { AuthenticatedRequest, JwtPayload } from '../core/types';
+import { AuthService } from '../modules/auth/auth.service';
 
-export function authenticate(
+export async function authenticate(
     req: AuthenticatedRequest,
     _res: Response,
     next: NextFunction
-): void {
+): Promise<void> {
     try {
         const token = req.cookies?.accessToken;
 
@@ -18,10 +19,19 @@ export function authenticate(
 
         const decoded = jwt.verify(token, config.JWT_ACCESS_SECRET) as JwtPayload;
 
+        // Check if token has been denylisted (logout / revocation)
+        if (decoded.jti) {
+            const isDenied = await AuthService.isTokenDenylisted(decoded.jti);
+            if (isDenied) {
+                throw new AuthenticationError('Token has been revoked');
+            }
+        }
+
         req.user = {
             userId: decoded.userId,
             email: decoded.email,
             isSuperAdmin: decoded.isSuperAdmin,
+            jti: decoded.jti,
         };
 
         next();
@@ -59,6 +69,7 @@ export function optionalAuth(
                 userId: decoded.userId,
                 email: decoded.email,
                 isSuperAdmin: decoded.isSuperAdmin,
+                jti: decoded.jti,
             };
         }
     } catch {
