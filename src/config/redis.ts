@@ -8,11 +8,7 @@ const MAX_RETRIES = 10;
 const RETRY_DELAY_MS = 3000;
 
 export function createRedisClient(): Redis {
-    const client = new Redis({
-        host: config.REDIS_HOST,
-        port: config.REDIS_PORT,
-        password: config.REDIS_PASSWORD || undefined,
-        db: config.REDIS_DB,
+    const client = new Redis(config.REDIS_URL, {
         maxRetriesPerRequest: null,
         retryStrategy(times: number) {
             if (times > MAX_RETRIES) {
@@ -27,6 +23,7 @@ export function createRedisClient(): Redis {
             const targetErrors = ['READONLY', 'ECONNRESET', 'ECONNREFUSED'];
             return targetErrors.some((e) => err.message.includes(e));
         },
+        tls: config.REDIS_URL.startsWith('rediss://') ? {} : undefined,
     });
 
     client.on('connect', () => {

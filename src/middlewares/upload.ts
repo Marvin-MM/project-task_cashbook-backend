@@ -57,7 +57,7 @@ function matchesMagicNumber(buffer: Buffer, mime: string): boolean {
     });
 }
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 
 const storage = multer.memoryStorage();
 

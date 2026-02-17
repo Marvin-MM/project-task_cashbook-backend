@@ -1,96 +1,97 @@
 import { injectable, inject } from 'tsyringe';
-import { PrismaClient, WorkspaceRole } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
-import { getS3Client } from '../config/s3';
+import { getMinioClient } from '../config/minio';
 import { config } from '../config';
-import { ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
-import { s3Breaker } from '../config/breakers';
+import { minioBreaker } from '../config/breakers';
 
 /**
- * S3 Cleanup Job — removes orphaned attachments.
+ * MinIO Cleanup Job — removes orphaned attachments.
  *
  * An attachment is "orphaned" when the DB row has been deleted but
- * the S3 object still exists (e.g. because S3 delete failed at the time).
+ * the MinIO object still exists (e.g. because delete failed at the time).
  * This job is designed to run as a periodic cron task.
  */
 @injectable()
-export class S3CleanupJob {
+export class MinioCleanupJob {
     constructor(
         @inject('PrismaClient') private prisma: PrismaClient,
     ) { }
 
     /**
-     * Find and delete S3 objects that have no corresponding Attachment row.
+     * Find and delete MinIO objects that have no corresponding Attachment row.
      * Processes in batches to avoid memory pressure.
      */
     async run(): Promise<{ deleted: number; errors: number }> {
         let deleted = 0;
         let errors = 0;
-        let continuationToken: string | undefined;
 
-        const s3 = getS3Client();
+        const client = getMinioClient();
         const prefix = 'attachments/';
 
-        do {
-            try {
-                const listResult = await s3Breaker.execute(() =>
-                    s3.send(
-                        new ListObjectsV2Command({
-                            Bucket: config.S3_BUCKET_NAME,
-                            Prefix: prefix,
-                            MaxKeys: 100,
-                            ContinuationToken: continuationToken,
-                        })
-                    )
-                );
+        try {
+            const objectsStream = client.listObjects(config.MINIO_BUCKET, prefix, true);
+            const batch: string[] = [];
+            const BATCH_SIZE = 100;
 
-                const objects = listResult.Contents ?? [];
-                continuationToken = listResult.NextContinuationToken;
-
-                if (objects.length === 0) continue;
-
-                const keys: string[] = objects
-                    .map((o: { Key?: string }) => o.Key)
-                    .filter((k): k is string => !!k);
-
-                // Check which keys still have a DB row
-                const existing = await this.prisma.attachment.findMany({
-                    where: { s3Key: { in: keys } },
-                    select: { s3Key: true },
-                });
-
-                const existingSet = new Set(existing.map((a) => a.s3Key));
-                const orphaned = keys.filter((k: string) => !existingSet.has(k));
-
-                if (orphaned.length === 0) continue;
-
-                // Delete orphaned objects
-                try {
-                    await s3Breaker.execute(() =>
-                        s3.send(
-                            new DeleteObjectsCommand({
-                                Bucket: config.S3_BUCKET_NAME,
-                                Delete: {
-                                    Objects: orphaned.map((Key: string) => ({ Key })),
-                                    Quiet: true,
-                                },
-                            })
-                        )
-                    );
-                    deleted += orphaned.length;
-                    logger.info(`S3 cleanup: deleted ${orphaned.length} orphaned objects`);
-                } catch (err) {
-                    errors += orphaned.length;
-                    logger.error('S3 cleanup: failed to delete batch', { err });
+            for await (const item of objectsStream) {
+                if (item.name) {
+                    batch.push(item.name);
                 }
-            } catch (err) {
-                logger.error('S3 cleanup: failed to list objects', { err });
-                errors++;
-                break;
-            }
-        } while (continuationToken);
 
-        logger.info(`S3 cleanup complete`, { deleted, errors });
+                if (batch.length >= BATCH_SIZE) {
+                    const result = await this.cleanupBatch(batch);
+                    deleted += result.deleted;
+                    errors += result.errors;
+                    batch.length = 0;
+                }
+            }
+
+            // Process remaining items
+            if (batch.length > 0) {
+                const result = await this.cleanupBatch(batch);
+                deleted += result.deleted;
+                errors += result.errors;
+            }
+        } catch (err) {
+            logger.error('MinIO cleanup: failed to list objects', { err });
+            errors++;
+        }
+
+        logger.info('MinIO cleanup complete', { deleted, errors });
+        return { deleted, errors };
+    }
+
+    private async cleanupBatch(keys: string[]): Promise<{ deleted: number; errors: number }> {
+        let deleted = 0;
+        let errors = 0;
+
+        // Check which keys still have a DB row
+        const existing = await this.prisma.attachment.findMany({
+            where: { s3Key: { in: keys } },
+            select: { s3Key: true },
+        });
+
+        const existingSet = new Set(existing.map((a) => a.s3Key));
+        const orphaned = keys.filter((k) => !existingSet.has(k));
+
+        if (orphaned.length === 0) return { deleted: 0, errors: 0 };
+
+        // Delete orphaned objects one by one
+        for (const objectName of orphaned) {
+            try {
+                const client = getMinioClient();
+                await minioBreaker.execute(() =>
+                    client.removeObject(config.MINIO_BUCKET, objectName)
+                );
+                deleted++;
+            } catch (err) {
+                errors++;
+                logger.error('MinIO cleanup: failed to delete object', { objectName, err });
+            }
+        }
+
+        logger.info(`MinIO cleanup: deleted ${deleted} orphaned objects`);
         return { deleted, errors };
     }
 }

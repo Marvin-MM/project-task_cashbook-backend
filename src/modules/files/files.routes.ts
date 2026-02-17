@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { container } from 'tsyringe';
-import { FilesController } from './files.service';
+import { FilesController } from './files.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { requireCashbookMember } from '../../middlewares/authorize';
 import { CashbookPermission } from '../../core/types/permissions';
@@ -29,11 +29,11 @@ router.get(
     filesController.getAll.bind(filesController) as any
 );
 
-// Download attachment (presigned URL)
+// View/stream file (proxy from MinIO)
 router.get(
-    '/:attachmentId/download/cashbook/:cashbookId',
+    '/:attachmentId/view/cashbook/:cashbookId',
     requireCashbookMember(CashbookPermission.VIEW_ENTRIES) as any,
-    filesController.download.bind(filesController) as any
+    filesController.viewFile.bind(filesController) as any
 );
 
 // Delete attachment

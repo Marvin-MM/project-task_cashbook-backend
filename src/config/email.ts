@@ -1,6 +1,7 @@
 import nodemailer, { Transporter } from 'nodemailer';
 import { config } from './index';
 import { logger } from '../utils/logger';
+import { emailQueue } from './queues';
 
 let transporter: Transporter | null = null;
 
@@ -30,7 +31,39 @@ export interface EmailOptions {
     }>;
 }
 
+/**
+ * Send email via BullMQ queue (non-blocking).
+ * The email will be processed by the email worker with retry logic.
+ */
 export async function sendEmail(options: EmailOptions): Promise<void> {
+    try {
+        await emailQueue.add('send-email', {
+            to: options.to,
+            subject: options.subject,
+            html: options.html,
+            attachments: options.attachments?.map((att) => ({
+                filename: att.filename,
+                content: att.content.toString('base64'),
+                contentType: att.contentType,
+            })),
+        });
+
+        logger.info('Email queued successfully', { to: options.to, subject: options.subject });
+    } catch (error) {
+        logger.error('Failed to queue email', {
+            to: options.to,
+            subject: options.subject,
+            error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+    }
+}
+
+/**
+ * Send email directly (synchronous, bypasses the queue).
+ * Used in critical paths where we need immediate delivery confirmation.
+ */
+export async function sendEmailDirect(options: EmailOptions): Promise<void> {
     try {
         const transport = getEmailTransporter();
         await transport.sendMail({
@@ -40,9 +73,9 @@ export async function sendEmail(options: EmailOptions): Promise<void> {
             html: options.html,
             attachments: options.attachments,
         });
-        logger.info('Email sent successfully', { to: options.to, subject: options.subject });
+        logger.info('Email sent directly', { to: options.to, subject: options.subject });
     } catch (error) {
-        logger.error('Failed to send email', {
+        logger.error('Failed to send email directly', {
             to: options.to,
             subject: options.subject,
             error: error instanceof Error ? error.message : String(error),

@@ -1,14 +1,13 @@
 import { injectable, inject } from 'tsyringe';
 import { PrismaClient } from '@prisma/client';
-import { Response, NextFunction } from 'express';
-import { StatusCodes } from 'http-status-codes';
-import { AuthenticatedRequest, AuditAction } from '../../core/types';
+import { AuditAction } from '../../core/types';
 import { NotFoundError } from '../../core/errors/AppError';
 import { ReportQueryDto } from './reports.dto';
 import PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
 import { logger } from '../../utils/logger';
 import { dbBreaker } from '../../config/breakers';
+import { reportsQueue } from '../../config/queues';
 
 @injectable()
 export class ReportsService {
@@ -16,6 +15,62 @@ export class ReportsService {
         @inject('PrismaClient') private prisma: PrismaClient,
     ) { }
 
+    /**
+     * Queue an async report generation job.
+     * Returns immediately with the job ID for status polling.
+     */
+    async queueReport(cashbookId: string, userId: string, recipientEmail: string, query: ReportQueryDto) {
+        const cashbook = await this.prisma.cashbook.findUnique({
+            where: { id: cashbookId },
+        });
+
+        if (!cashbook || !cashbook.isActive) {
+            throw new NotFoundError('Cashbook');
+        }
+
+        const job = await reportsQueue.add('generate-report', {
+            cashbookId,
+            userId,
+            recipientEmail,
+            query: {
+                startDate: query.startDate,
+                endDate: query.endDate,
+                type: query.type,
+                categoryId: query.categoryId,
+                format: query.format,
+            },
+        });
+
+        logger.info('Report job queued', { jobId: job.id, cashbookId });
+
+        return { jobId: job.id, status: 'queued' };
+    }
+
+    /**
+     * Check the status of a queued report job.
+     */
+    async getJobStatus(jobId: string) {
+        const job = await reportsQueue.getJob(jobId);
+        if (!job) {
+            throw new NotFoundError('Report job');
+        }
+
+        const state = await job.getState();
+        const progress = job.progress;
+
+        return {
+            jobId: job.id,
+            status: state,
+            progress,
+            result: job.returnvalue,
+            failedReason: job.failedReason,
+        };
+    }
+
+    /**
+     * Synchronous report generation for immediate download.
+     * Kept for small reports / direct download use-case.
+     */
     async generateReport(cashbookId: string, userId: string, query: ReportQueryDto) {
         const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: cashbookId },
@@ -219,55 +274,5 @@ export class ReportsService {
         });
 
         return Buffer.from(await workbook.xlsx.writeBuffer());
-    }
-}
-
-// Controller
-@injectable()
-export class ReportsController {
-    constructor(private reportsService: ReportsService) { }
-
-    async generate(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
-        try {
-            const data = await this.reportsService.generateReport(
-                req.params.cashbookId as string,
-                req.user.userId,
-                req.query as any
-            );
-
-            res.status(StatusCodes.OK).json({
-                success: true,
-                message: 'Report data generated',
-                data,
-            });
-        } catch (error) {
-            next(error);
-        }
-    }
-
-    async download(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
-        try {
-            const data = await this.reportsService.generateReport(
-                req.params.cashbookId as string,
-                req.user.userId,
-                req.query as any
-            );
-
-            const format = (req.query.format as string) || 'pdf';
-
-            if (format === 'pdf') {
-                const pdfBuffer = await this.reportsService.generatePDF(data);
-                res.setHeader('Content-Type', 'application/pdf');
-                res.setHeader('Content-Disposition', `attachment; filename="${data.cashbook.name}-report.pdf"`);
-                res.send(pdfBuffer);
-            } else {
-                const excelBuffer = await this.reportsService.generateExcel(data);
-                res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-                res.setHeader('Content-Disposition', `attachment; filename="${data.cashbook.name}-report.xlsx"`);
-                res.send(excelBuffer);
-            }
-        } catch (error) {
-            next(error);
-        }
     }
 }

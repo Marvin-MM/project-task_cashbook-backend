@@ -2,8 +2,6 @@ import winston from 'winston';
 import path from 'path';
 import { config } from '../config';
 
-const logDir = config.LOG_DIR;
-
 const logFormat = winston.format.combine(
     winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
     winston.format.errors({ stack: true }),
@@ -19,14 +17,17 @@ const consoleFormat = winston.format.combine(
     })
 );
 
-export const logger = winston.createLogger({
-    level: config.LOG_LEVEL,
-    format: logFormat,
-    defaultMeta: { service: config.APP_NAME },
-    transports: [
-        new winston.transports.Console({
-            format: consoleFormat,
-        }),
+const transports: winston.transport[] = [
+    new winston.transports.Console({
+        format: consoleFormat,
+    }),
+];
+
+// Only write log files in development — in production, rely on
+// stdout/stderr captured by your process manager (PM2, systemd, Docker).
+if (config.NODE_ENV === 'development') {
+    const logDir = config.LOG_DIR;
+    transports.push(
         new winston.transports.File({
             filename: path.join(logDir, 'error.log'),
             level: 'error',
@@ -38,5 +39,13 @@ export const logger = winston.createLogger({
             maxsize: 10 * 1024 * 1024,
             maxFiles: 5,
         }),
-    ],
+    );
+}
+
+export const logger = winston.createLogger({
+    level: config.LOG_LEVEL,
+    format: logFormat,
+    defaultMeta: { service: config.APP_NAME },
+    transports,
 });
+

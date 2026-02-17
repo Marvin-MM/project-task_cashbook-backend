@@ -5,6 +5,8 @@ import { config } from './config';
 import { logger } from './utils/logger';
 import { getPrismaClient } from './config/database';
 import { getRedisClient } from './config/redis';
+import { ensureBucket } from './config/minio';
+import { startWorkers, stopWorkers } from './workers';
 
 const PORT = config.PORT;
 
@@ -22,6 +24,21 @@ async function bootstrap() {
             logger.info('✅ Redis connected');
         } catch (redisError) {
             logger.warn('⚠️  Redis connection failed, some features may be degraded', { error: redisError });
+        }
+
+        // Ensure MinIO bucket exists
+        // try {
+        //     await ensureBucket();
+        // } catch (minioError) {
+        //     logger.warn('⚠️  MinIO connection failed, file features may be degraded', { error: minioError });
+        // }
+
+        // Start BullMQ workers
+        let workers: ReturnType<typeof startWorkers> | null = null;
+        try {
+            workers = startWorkers();
+        } catch (workerError) {
+            logger.warn('⚠️  Failed to start workers, background jobs will not process', { error: workerError });
         }
 
         // Start HTTP server
@@ -49,6 +66,15 @@ async function bootstrap() {
                     logger.info('Redis disconnected');
                 } catch (err) {
                     logger.error('Error disconnecting Redis', { error: err });
+                }
+
+                // Stop BullMQ workers
+                if (workers) {
+                    try {
+                        await stopWorkers(workers);
+                    } catch (err) {
+                        logger.error('Error stopping workers', { error: err });
+                    }
                 }
 
                 logger.info('Graceful shutdown complete');

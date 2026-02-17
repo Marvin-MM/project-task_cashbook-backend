@@ -11,10 +11,7 @@ const envSchema = z.object({
 
     DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
 
-    REDIS_HOST: z.string().default('localhost'),
-    REDIS_PORT: z.coerce.number().default(6379),
-    REDIS_PASSWORD: z.string().optional().default(''),
-    REDIS_DB: z.coerce.number().default(0),
+    REDIS_URL: z.string().default('redis://localhost:6379'),
 
     JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
     JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
@@ -31,11 +28,12 @@ const envSchema = z.object({
     RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000),
     RATE_LIMIT_MAX: z.coerce.number().default(100),
 
-    AWS_REGION: z.string().default('us-east-1'),
-    AWS_ACCESS_KEY_ID: z.string().default(''),
-    AWS_SECRET_ACCESS_KEY: z.string().default(''),
-    S3_BUCKET_NAME: z.string().default('cashbook-attachments'),
-    S3_PRESIGNED_URL_EXPIRY: z.coerce.number().default(3600),
+    MINIO_ENDPOINT: z.string().optional().default('localhost'),
+    MINIO_PORT: z.coerce.number().optional().default(9000),
+    MINIO_USE_SSL: z.string().optional().default('false').transform((v) => v === 'true'),
+    MINIO_ACCESS_KEY: z.string().min(1, 'MINIO_ACCESS_KEY is required').optional(),
+    MINIO_SECRET_KEY: z.string().min(1, 'MINIO_SECRET_KEY is required').optional(),
+    MINIO_BUCKET: z.string().optional().default('cashbook-attachments'),
 
     SMTP_HOST: z.string().default('smtp.gmail.com'),
     SMTP_PORT: z.coerce.number().default(587),
