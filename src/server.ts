@@ -5,7 +5,7 @@ import { config } from './config';
 import { logger } from './utils/logger';
 import { getPrismaClient } from './config/database';
 import { getRedisClient } from './config/redis';
-import { ensureBucket } from './config/minio';
+// import { ensureBucket } from './config/minio';
 import { startWorkers, stopWorkers } from './workers';
 
 const PORT = config.PORT;
