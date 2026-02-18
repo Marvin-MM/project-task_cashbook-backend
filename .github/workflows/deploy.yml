@@ -1,0 +1,67 @@
+name: Build and Deploy to VPS
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  # Using the secret directly here ensures consistency
+  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/cashbook-app
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          # We explicitly push two tags:
+          # 1. The commit SHA (for precise versioning)
+          # 2. 'latest' (for convenience)
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          target: runner
+
+  deploy-to-vps:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_IP }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            # 1. Update the Deployment to use the new image SHA
+            # K3s will see the new hash and automatically pull it (because of imagePullPolicy: Always)
+            kubectl set image deployment/cashbook-app \
+              cashbook-api=${{ env.IMAGE_NAME }}:${{ github.sha }} \
+              -n tast-project-cashbook-app
+
+            # 2. Trigger the InitContainer (DB Push) implicitly by restarting
+            # (set image triggers a rollout, which runs init containers)
+            
+            # 3. Wait for rollout to finish
+            # If the app crashes (or DB push fails), this times out and fails the GitHub Action
+            kubectl rollout status deployment/cashbook-app \
+              -n tast-project-cashbook-app --timeout=120s

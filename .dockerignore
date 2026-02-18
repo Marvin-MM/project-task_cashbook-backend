@@ -1,0 +1,51 @@
+# Dependencies (installed fresh inside Docker)
+node_modules
+npm-debug.log*
+
+# Build output (built inside Docker)
+dist
+
+# Environment & secrets — NEVER ship these into the image
+.env
+.env.*
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+
+# Docker (no need to copy itself)
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github
+
+# Agent / AI tooling
+.gemini
+.agent
+
+# Dev config
+.eslintrc*
+.prettierrc*
+.editorconfig
+tsconfig.tsbuildinfo
+
+# Docs
+README.md
+LICENSE
+CHANGELOG.md
