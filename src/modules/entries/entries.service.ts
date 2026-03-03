@@ -119,6 +119,15 @@ export class EntriesService {
             if (account.archivedAt) {
                 throw new AppError('Cannot create entries for an archived account', 400, 'ACCOUNT_ARCHIVED');
             }
+
+            // Currency mismatch check (Issue 4)
+            if (account.currency !== cashbook.currency) {
+                throw new AppError(
+                    `Account currency (${account.currency}) does not match cashbook currency (${cashbook.currency})`,
+                    400,
+                    'CURRENCY_MISMATCH'
+                );
+            }
         }
 
         // Obligation Pre-validation requirements
@@ -158,6 +167,11 @@ export class EntriesService {
 
         // Use transaction for concurrency safety
         const entry = await this.prisma.$transaction(async (tx) => {
+            // Read cashbook inside transaction for accurate balanceBefore (Issue 7)
+            const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
+                where: { id: cashbookId },
+            });
+
             // Create entry
             const newEntry = await tx.entry.create({
                 data: {
@@ -182,24 +196,28 @@ export class EntriesService {
                 },
             });
 
-            // Update cashbook balance atomically
-            const balanceBefore = cashbook.balance;
+            // Update cashbook balance atomically ONLY if not linked to an account
+            const balanceBefore = lockedCashbook.balance;
             const isIncome = dto.type === EntryType.INCOME;
 
-            await tx.cashbook.update({
-                where: { id: cashbookId },
-                data: {
-                    balance: isIncome
-                        ? { increment: amount }
-                        : { decrement: amount },
-                    totalIncome: isIncome ? { increment: amount } : undefined,
-                    totalExpense: !isIncome ? { increment: amount } : undefined,
-                },
-            });
+            let balanceAfter = balanceBefore;
 
-            const balanceAfter = isIncome
-                ? balanceBefore.add(amount)
-                : balanceBefore.sub(amount);
+            if (!dto.accountId) {
+                await tx.cashbook.update({
+                    where: { id: cashbookId },
+                    data: {
+                        balance: isIncome
+                            ? { increment: amount }
+                            : { decrement: amount },
+                        totalIncome: isIncome ? { increment: amount } : undefined,
+                        totalExpense: !isIncome ? { increment: amount } : undefined,
+                    },
+                });
+
+                balanceAfter = isIncome
+                    ? balanceBefore.add(amount)
+                    : balanceBefore.sub(amount);
+            }
 
             if (dto.accountId) {
                 // 1. Lock the account row to prevent race conditions
@@ -393,46 +411,61 @@ export class EntriesService {
         }
 
         const updated = await this.prisma.$transaction(async (tx) => {
+            // Read cashbook inside transaction for accurate balanceBefore (Issue 7)
+            const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
+                where: { id: entry.cashbookId },
+            });
+
+            // Figure out the new target account upfront
+            const targetAccountId = dto.accountId !== undefined ? dto.accountId : existingTx?.accountId;
+
             // Reverse old entry effect on balance
             const wasIncome = entry.type === EntryType.INCOME;
             const oldAmount = entry.amount;
-            const balanceBefore = cashbook.balance;
+            const balanceBefore = lockedCashbook.balance;
+            let balanceAfter = balanceBefore;
 
-            // Remove old amount from balance
-            await tx.cashbook.update({
-                where: { id: entry.cashbookId },
-                data: {
-                    balance: wasIncome
-                        ? { decrement: oldAmount }
-                        : { increment: oldAmount },
-                    totalIncome: wasIncome ? { decrement: oldAmount } : undefined,
-                    totalExpense: !wasIncome ? { decrement: oldAmount } : undefined,
-                },
-            });
+            // ONLY reverse from cashbook if old entry was NOT linked to an account
+            if (!existingTx) {
+                // Remove old amount from balance
+                await tx.cashbook.update({
+                    where: { id: entry.cashbookId },
+                    data: {
+                        balance: wasIncome
+                            ? { decrement: oldAmount }
+                            : { increment: oldAmount },
+                        totalIncome: wasIncome ? { decrement: oldAmount } : undefined,
+                        totalExpense: !wasIncome ? { decrement: oldAmount } : undefined,
+                    },
+                });
+
+                balanceAfter = wasIncome
+                    ? balanceBefore.sub(oldAmount)
+                    : balanceBefore.add(oldAmount);
+            }
 
             // Apply new amount
             const newType = dto.type || entry.type;
             const newAmount = dto.amount ? new Decimal(dto.amount) : entry.amount;
             const isIncome = newType === EntryType.INCOME;
 
-            await tx.cashbook.update({
-                where: { id: entry.cashbookId },
-                data: {
-                    balance: isIncome
-                        ? { increment: newAmount }
-                        : { decrement: newAmount },
-                    totalIncome: isIncome ? { increment: newAmount } : undefined,
-                    totalExpense: !isIncome ? { increment: newAmount } : undefined,
-                },
-            });
+            // ONLY apply to cashbook if new entry is NOT linked to an account
+            if (!targetAccountId) {
+                await tx.cashbook.update({
+                    where: { id: entry.cashbookId },
+                    data: {
+                        balance: isIncome
+                            ? { increment: newAmount }
+                            : { decrement: newAmount },
+                        totalIncome: isIncome ? { increment: newAmount } : undefined,
+                        totalExpense: !isIncome ? { increment: newAmount } : undefined,
+                    },
+                });
 
-            // Calculate new balance
-            let balanceAfter = wasIncome
-                ? balanceBefore.sub(oldAmount)
-                : balanceBefore.add(oldAmount);
-            balanceAfter = isIncome
-                ? balanceAfter.add(newAmount)
-                : balanceAfter.sub(newAmount);
+                balanceAfter = isIncome
+                    ? balanceAfter.add(newAmount)
+                    : balanceAfter.sub(newAmount);
+            }
 
             // Deal with Accounts
             if (existingTx || dto.accountId) {
@@ -450,16 +483,23 @@ export class EntriesService {
                     });
                 }
 
-                const targetAccountId = dto.accountId !== undefined ? dto.accountId : existingTx?.accountId;
-
                 if (targetAccountId) {
                     const needsApply = hasAccountChanged || oldAmount.toString() !== newAmount.toString() || wasIncome !== isIncome;
 
                     if (needsApply || !existingTx) {
-                        // Check archive status
+                        // Check archive status (Issue 5 — block all balance changes on archived accounts)
                         const targetAccount = await tx.account.findUniqueOrThrow({ where: { id: targetAccountId } });
-                        if (targetAccount.archivedAt && targetAccountId !== (existingTx?.accountId as string | undefined)) {
-                            throw new AppError('Cannot move entry to an archived account', 400, 'ACCOUNT_ARCHIVED');
+                        if (targetAccount.archivedAt) {
+                            throw new AppError('Cannot modify entries linked to an archived account', 400, 'ACCOUNT_ARCHIVED');
+                        }
+
+                        // Currency mismatch check (Issue 4)
+                        if (hasAccountChanged && targetAccount.currency !== lockedCashbook.currency) {
+                            throw new AppError(
+                                `Account currency (${targetAccount.currency}) does not match cashbook currency (${lockedCashbook.currency})`,
+                                400,
+                                'CURRENCY_MISMATCH'
+                            );
                         }
 
                         // Lock Target Account
@@ -830,30 +870,39 @@ export class EntriesService {
         }
 
         await this.prisma.$transaction(async (tx) => {
-            const balanceBefore = cashbook.balance;
+            // Read cashbook inside transaction for accurate balanceBefore
+            const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
+                where: { id: entry.cashbookId },
+            });
+
+            const balanceBefore = lockedCashbook.balance;
             const wasIncome = entry.type === EntryType.INCOME;
             const amount = entry.amount;
 
-            // Reverse the entry effect on balance
-            await tx.cashbook.update({
-                where: { id: entry.cashbookId },
-                data: {
-                    balance: wasIncome
-                        ? { decrement: amount }
-                        : { increment: amount },
-                    totalIncome: wasIncome ? { decrement: amount } : undefined,
-                    totalExpense: !wasIncome ? { decrement: amount } : undefined,
-                },
-            });
-
-            const balanceAfter = wasIncome
-                ? balanceBefore.sub(amount)
-                : balanceBefore.add(amount);
-
-            // Reverse Account balance if linked
+            // Check if there's a linked account FIRST
             const existingTx = await tx.accountTransaction.findFirst({
                 where: { sourceId: entry.id, sourceType: TransactionSourceType.CASHBOOK_ENTRY }
             });
+
+            let balanceAfter = balanceBefore;
+
+            // Only reverse from cashbook if the entry was NOT linked to an account
+            if (!existingTx) {
+                await tx.cashbook.update({
+                    where: { id: entry.cashbookId },
+                    data: {
+                        balance: wasIncome
+                            ? { decrement: amount }
+                            : { increment: amount },
+                        totalIncome: wasIncome ? { decrement: amount } : undefined,
+                        totalExpense: !wasIncome ? { decrement: amount } : undefined,
+                    },
+                });
+
+                balanceAfter = wasIncome
+                    ? balanceBefore.sub(amount)
+                    : balanceBefore.add(amount);
+            }
 
             if (existingTx) {
                 // Reverse Account balance

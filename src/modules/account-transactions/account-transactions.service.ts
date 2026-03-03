@@ -1,15 +1,17 @@
-import { injectable } from 'tsyringe';
+import { injectable, inject } from 'tsyringe';
+import { PrismaClient, TransactionSourceType } from '@prisma/client';
 import { AccountTransactionsRepository } from './account-transactions.repository';
 import { CreateAccountTransactionBody, UpdateAccountTransactionBody } from './account-transactions.dto';
 import { AppError, NotFoundError } from '../../core/errors/AppError';
 import { AuditAction, EntryType } from '../../core/types';
-import { getPrismaClient } from '../../config/database';
 import { Decimal } from '@prisma/client/runtime/library';
-import { TransactionSourceType } from '@prisma/client';
 
 @injectable()
 export class AccountTransactionsService {
-    constructor(private repository: AccountTransactionsRepository) { }
+    constructor(
+        private repository: AccountTransactionsRepository,
+        @inject('PrismaClient') private prisma: PrismaClient,
+    ) { }
 
     async getAllTransactionsByAccount(accountId: string, workspaceId: string, pagination?: { skip: number; take: number }) {
         return this.repository.findAllByAccount(accountId, workspaceId, pagination);
@@ -24,7 +26,7 @@ export class AccountTransactionsService {
         const amount = new Decimal(data.amount);
         const isIncome = data.type === EntryType.INCOME;
 
-        return getPrismaClient().$transaction(async (tx) => {
+        return this.prisma.$transaction(async (tx) => {
             // Lock account row for updates
             await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${accountId}::uuid FOR UPDATE`;
 
@@ -47,19 +49,25 @@ export class AccountTransactionsService {
                 }
             }
 
-            const currentBalance = account.balance;
-            let newBalance = isIncome ? currentBalance.add(amount) : currentBalance.sub(amount);
+            const balanceBefore = account.balance;
 
-            if (!account.allowNegative && newBalance.lessThan(0)) {
-                throw new AppError(`Transaction exceeds account balance. Current balance is ${currentBalance.toString()}`, 400, 'INSUFFICIENT_FUNDS');
+            // Negative balance guard
+            if (!account.allowNegative && !isIncome) {
+                const newBalance = balanceBefore.sub(amount);
+                if (newBalance.lessThan(0)) {
+                    throw new AppError(`Transaction exceeds account balance. Current balance is ${balanceBefore.toString()}`, 400, 'INSUFFICIENT_FUNDS');
+                }
             }
 
+            // Use increment/decrement for atomic balance update (Issue 8)
             await tx.account.update({
                 where: { id: accountId },
                 data: {
                     balance: isIncome ? { increment: amount } : { decrement: amount }
                 }
             });
+
+            const balanceAfter = isIncome ? balanceBefore.add(amount) : balanceBefore.sub(amount);
 
             const transaction = await tx.accountTransaction.create({
                 data: {
@@ -73,6 +81,7 @@ export class AccountTransactionsService {
                 }
             });
 
+            // Generic audit log
             await tx.auditLog.create({
                 data: {
                     userId,
@@ -81,12 +90,31 @@ export class AccountTransactionsService {
                     resource: 'account_transaction',
                     resourceId: transaction.id,
                     details: {
-                        previous_balance: currentBalance,
-                        new_balance: newBalance,
-                        delta: isIncome ? amount : amount.negated(),
+                        previous_balance: balanceBefore.toString(),
+                        new_balance: balanceAfter.toString(),
+                        delta: isIncome ? amount.toString() : amount.negated().toString(),
                         type: data.type,
-                        amount: amount
+                        amount: amount.toString()
                     } as any
+                }
+            });
+
+            // Financial audit log (Issue 6)
+            await tx.financialAuditLog.create({
+                data: {
+                    userId,
+                    workspaceId,
+                    accountId,
+                    action: AuditAction.ACCOUNT_TRANSACTION_DIRECT_CREATED as any,
+                    amount,
+                    balanceBefore,
+                    balanceAfter,
+                    details: {
+                        accountName: account.name,
+                        type: data.type,
+                        sourceType: 'DIRECT',
+                        transactionId: transaction.id,
+                    },
                 }
             });
 
@@ -101,7 +129,7 @@ export class AccountTransactionsService {
         userId: string,
         data: UpdateAccountTransactionBody
     ) {
-        return getPrismaClient().$transaction(async (tx) => {
+        return this.prisma.$transaction(async (tx) => {
             await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${accountId}::uuid FOR UPDATE`;
             const account = await tx.account.findUnique({ where: { id: accountId } });
 
@@ -125,25 +153,42 @@ export class AccountTransactionsService {
                 }
             }
 
-            const currentBalance = account.balance;
+            const balanceBefore = account.balance;
             const oldAmount = transaction.amount;
             const wasIncome = transaction.type === EntryType.INCOME;
-            let balanceWithoutTx = wasIncome ? currentBalance.sub(oldAmount) : currentBalance.add(oldAmount);
 
             const newType = data.type || transaction.type;
             const newAmount = data.amount ? new Decimal(data.amount) : transaction.amount;
             const isIncome = newType === EntryType.INCOME;
 
-            let newBalance = isIncome ? balanceWithoutTx.add(newAmount) : balanceWithoutTx.sub(newAmount);
+            // Reverse old effect, then apply new (using increment/decrement — Issue 8)
+            // Step 1: Reverse old
+            await tx.account.update({
+                where: { id: accountId },
+                data: {
+                    balance: wasIncome ? { decrement: oldAmount } : { increment: oldAmount }
+                }
+            });
 
-            if (!account.allowNegative && newBalance.lessThan(0)) {
-                throw new AppError('Transaction exceeds account balance.', 400, 'INSUFFICIENT_FUNDS');
+            // Step 2: Apply new
+            const balanceWithoutTx = wasIncome ? balanceBefore.sub(oldAmount) : balanceBefore.add(oldAmount);
+
+            // Negative balance guard
+            if (!account.allowNegative && !isIncome) {
+                const provisional = balanceWithoutTx.sub(newAmount);
+                if (provisional.lessThan(0)) {
+                    throw new AppError('Transaction exceeds account balance.', 400, 'INSUFFICIENT_FUNDS');
+                }
             }
 
             await tx.account.update({
                 where: { id: accountId },
-                data: { balance: newBalance }
+                data: {
+                    balance: isIncome ? { increment: newAmount } : { decrement: newAmount }
+                }
             });
+
+            const balanceAfter = isIncome ? balanceWithoutTx.add(newAmount) : balanceWithoutTx.sub(newAmount);
 
             const updatedTransaction = await tx.accountTransaction.update({
                 where: { id },
@@ -155,6 +200,7 @@ export class AccountTransactionsService {
                 }
             });
 
+            // Generic audit log
             await tx.auditLog.create({
                 data: {
                     userId,
@@ -163,11 +209,29 @@ export class AccountTransactionsService {
                     resource: 'account_transaction',
                     resourceId: id,
                     details: {
-                        previous_balance: currentBalance,
-                        new_balance: newBalance,
-                        delta: newBalance.sub(currentBalance),
+                        previous_balance: balanceBefore.toString(),
+                        new_balance: balanceAfter.toString(),
+                        delta: balanceAfter.sub(balanceBefore).toString(),
                         changes: data
                     } as any
+                }
+            });
+
+            // Financial audit log
+            await tx.financialAuditLog.create({
+                data: {
+                    userId,
+                    workspaceId,
+                    accountId,
+                    action: AuditAction.ACCOUNT_TRANSACTION_DIRECT_UPDATED as any,
+                    amount: newAmount,
+                    balanceBefore,
+                    balanceAfter,
+                    details: {
+                        transactionId: id,
+                        sourceType: 'DIRECT',
+                        changes: data
+                    },
                 }
             });
 
@@ -181,7 +245,7 @@ export class AccountTransactionsService {
         accountId: string,
         userId: string
     ) {
-        return getPrismaClient().$transaction(async (tx) => {
+        return this.prisma.$transaction(async (tx) => {
             await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${accountId}::uuid FOR UPDATE`;
             const account = await tx.account.findUnique({ where: { id: accountId } });
 
@@ -198,23 +262,31 @@ export class AccountTransactionsService {
                 throw new AppError('Linked transactions can only be deleted via cashbook entries.', 403, 'FORBIDDEN');
             }
 
-            const currentBalance = account.balance;
+            const balanceBefore = account.balance;
             const oldAmount = transaction.amount;
             const wasIncome = transaction.type === EntryType.INCOME;
 
-            let newBalance = wasIncome ? currentBalance.sub(oldAmount) : currentBalance.add(oldAmount);
-
-            if (!account.allowNegative && newBalance.lessThan(0)) {
-                throw new AppError('Reversing this transaction would exceed the account balance limit.', 400, 'INSUFFICIENT_FUNDS');
+            // Negative balance guard
+            if (!account.allowNegative && wasIncome) {
+                const provisional = balanceBefore.sub(oldAmount);
+                if (provisional.lessThan(0)) {
+                    throw new AppError('Reversing this transaction would exceed the account balance limit.', 400, 'INSUFFICIENT_FUNDS');
+                }
             }
 
+            // Use increment/decrement for atomic balance update (Issue 8)
             await tx.account.update({
                 where: { id: accountId },
-                data: { balance: newBalance }
+                data: {
+                    balance: wasIncome ? { decrement: oldAmount } : { increment: oldAmount }
+                }
             });
+
+            const balanceAfter = wasIncome ? balanceBefore.sub(oldAmount) : balanceBefore.add(oldAmount);
 
             await tx.accountTransaction.delete({ where: { id } });
 
+            // Generic audit log
             await tx.auditLog.create({
                 data: {
                     userId,
@@ -223,10 +295,27 @@ export class AccountTransactionsService {
                     resource: 'account_transaction',
                     resourceId: id,
                     details: {
-                        previous_balance: currentBalance,
-                        new_balance: newBalance,
-                        delta: newBalance.sub(currentBalance)
+                        previous_balance: balanceBefore.toString(),
+                        new_balance: balanceAfter.toString(),
+                        delta: balanceAfter.sub(balanceBefore).toString()
                     } as any
+                }
+            });
+
+            // Financial audit log
+            await tx.financialAuditLog.create({
+                data: {
+                    userId,
+                    workspaceId,
+                    accountId,
+                    action: AuditAction.ACCOUNT_TRANSACTION_DIRECT_DELETED as any,
+                    amount: oldAmount,
+                    balanceBefore,
+                    balanceAfter,
+                    details: {
+                        transactionId: id,
+                        sourceType: 'DIRECT',
+                    },
                 }
             });
         });

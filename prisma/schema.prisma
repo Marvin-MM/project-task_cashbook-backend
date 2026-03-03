@@ -407,7 +407,8 @@ model FinancialAuditLog {
   id            String   @id @default(uuid()) @db.Uuid
   userId        String   @map("user_id") @db.Uuid
   workspaceId   String   @map("workspace_id") @db.Uuid
-  cashbookId    String   @map("cashbook_id") @db.Uuid
+  cashbookId    String?  @map("cashbook_id") @db.Uuid
+  accountId     String?  @map("account_id") @db.Uuid
   entryId       String?  @map("entry_id") @db.Uuid
   action        String
   amount        Decimal? @db.Decimal(20, 4)
@@ -423,6 +424,7 @@ model FinancialAuditLog {
   @@index([userId])
   @@index([workspaceId])
   @@index([cashbookId])
+  @@index([accountId])
   @@index([entryId])
   @@index([action])
   @@index([createdAt])
