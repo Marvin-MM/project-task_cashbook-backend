@@ -130,7 +130,7 @@ model Cashbook {
   workspaceId   String   @map("workspace_id") @db.Uuid
   name          String
   description   String?
-  currency      String   @default("USD")
+  currency      String   @default("UGX")
   balance       Decimal  @default(0) @db.Decimal(20, 4)
   totalIncome   Decimal  @default(0) @map("total_income") @db.Decimal(20, 4)
   totalExpense  Decimal  @default(0) @map("total_expense") @db.Decimal(20, 4)

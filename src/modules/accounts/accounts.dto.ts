@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+const decimalString = z.string().regex(
+    /^\d+(\.\d{1,4})?$/,
+    'Amount must be a valid decimal number with up to 4 decimal places'
+);
+
 export const createAccountSchema = z.object({
     accountTypeId: z.string().uuid('Invalid account type ID'),
     name: z.string().min(1, 'Name is required').max(100, 'Name must be at most 100 characters'),
@@ -8,6 +13,7 @@ export const createAccountSchema = z.object({
     excludeFromTotal: z.boolean().optional(),
     allowNegative: z.boolean().optional(),
     note: z.string().max(500).optional(),
+    initialBalance: decimalString.optional(),
 });
 
 export const updateAccountSchema = z.object({

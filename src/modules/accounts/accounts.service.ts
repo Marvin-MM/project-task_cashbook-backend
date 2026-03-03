@@ -1,5 +1,5 @@
 import { injectable, inject } from 'tsyringe';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, TransactionSourceType, EntryType } from '@prisma/client';
 import { AccountsRepository } from './accounts.repository';
 import { CreateAccountBody, UpdateAccountBody, ArchiveAccountBody } from './accounts.dto';
 import { AppError, NotFoundError } from '../../core/errors/AppError';
@@ -24,10 +24,15 @@ export class AccountsService {
                 throw new AppError('Invalid account type provided', 400, 'INVALID_ACCOUNT_TYPE');
             }
 
+            const { initialBalance, ...accountData } = data;
+            const initialAmount = new Decimal(initialBalance || '0');
+            const hasInitialBalance = !initialAmount.equals(0);
+
             const account = await tx.account.create({
                 data: {
                     workspaceId,
-                    ...data
+                    ...accountData,
+                    balance: initialAmount,
                 },
                 include: { accountType: true }
             });
@@ -39,9 +44,65 @@ export class AccountsService {
                     action: AuditAction.ACCOUNT_CREATED,
                     resource: 'account',
                     resourceId: account.id,
-                    details: { name: account.name, type: accountType.name, currency: account.currency } as any
+                    details: { name: account.name, type: accountType.name, currency: account.currency, initialBalance: hasInitialBalance ? initialAmount.toString() : '0' } as any
                 }
             });
+
+            // If an initial balance is provided, create a direct transaction to back it up
+            if (hasInitialBalance) {
+                const isIncome = initialAmount.greaterThan(0);
+                const absAmount = initialAmount.abs();
+                const transactionType = isIncome ? EntryType.INCOME : EntryType.EXPENSE;
+
+                const transaction = await tx.accountTransaction.create({
+                    data: {
+                        workspaceId,
+                        accountId: account.id,
+                        sourceType: TransactionSourceType.DIRECT,
+                        type: transactionType,
+                        amount: absAmount,
+                        description: 'Initial Balance',
+                    }
+                });
+
+                // Generic audit log for this opening transaction
+                await tx.auditLog.create({
+                    data: {
+                        userId,
+                        workspaceId,
+                        action: AuditAction.ACCOUNT_TRANSACTION_DIRECT_CREATED as any,
+                        resource: 'account_transaction',
+                        resourceId: transaction.id,
+                        details: {
+                            previous_balance: '0',
+                            new_balance: initialAmount.toString(),
+                            delta: initialAmount.toString(),
+                            type: transactionType,
+                            amount: absAmount.toString()
+                        } as any
+                    }
+                });
+
+                // Financial audit log
+                await tx.financialAuditLog.create({
+                    data: {
+                        userId,
+                        workspaceId,
+                        accountId: account.id,
+                        action: AuditAction.ACCOUNT_TRANSACTION_DIRECT_CREATED as any,
+                        amount: absAmount,
+                        balanceBefore: new Decimal(0),
+                        balanceAfter: initialAmount,
+                        details: {
+                            accountName: account.name,
+                            type: transactionType,
+                            sourceType: 'DIRECT',
+                            transactionId: transaction.id,
+                            isInitialBalance: true
+                        },
+                    }
+                });
+            }
 
             return account;
         });
