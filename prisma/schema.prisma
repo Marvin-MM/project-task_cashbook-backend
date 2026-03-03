@@ -173,6 +173,7 @@ model Entry {
   cashbookId    String    @map("cashbook_id") @db.Uuid
   type          EntryType
   amount        Decimal   @db.Decimal(20, 4)
+  chargeAmount  Decimal?  @map("charge_amount") @db.Decimal(20, 4)
   description   String
   categoryId    String?   @map("category_id") @db.Uuid
   contactId     String?   @map("contact_id") @db.Uuid
@@ -548,6 +549,7 @@ model AccountTransaction {
   sourceId          String?               @map("source_id") @db.Uuid
   type              EntryType // income / expense
   amount            Decimal               @db.Decimal(20, 4)
+  chargeAmount      Decimal?              @map("charge_amount") @db.Decimal(20, 4)
   description       String
   accountCategoryId String?               @map("account_category_id") @db.Uuid
   createdAt         DateTime              @default(now()) @map("created_at")

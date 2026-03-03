@@ -8,6 +8,7 @@ const decimalString = z.string().regex(
 export const createEntrySchema = z.object({
     type: z.enum(['INCOME', 'EXPENSE']),
     amount: decimalString,
+    chargeAmount: decimalString.optional(),
     description: z.string().min(1, 'Description is required').max(1000),
     categoryId: z.string().uuid().optional(),
     contactId: z.string().uuid().optional(),
@@ -20,6 +21,7 @@ export const createEntrySchema = z.object({
 export const updateEntrySchema = z.object({
     type: z.enum(['INCOME', 'EXPENSE']).optional(),
     amount: decimalString.optional(),
+    chargeAmount: decimalString.nullable().optional(),
     description: z.string().min(1).max(1000).optional(),
     categoryId: z.string().uuid().nullable().optional(),
     contactId: z.string().uuid().nullable().optional(),

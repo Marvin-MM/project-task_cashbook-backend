@@ -25,6 +25,8 @@ export class AccountTransactionsService {
     ) {
         const amount = new Decimal(data.amount);
         const isIncome = data.type === EntryType.INCOME;
+        const chargeAmount = data.chargeAmount ? new Decimal(data.chargeAmount) : new Decimal(0);
+        const effectiveAmount = isIncome ? amount.sub(chargeAmount) : amount.add(chargeAmount);
 
         return this.prisma.$transaction(async (tx) => {
             // Lock account row for updates
@@ -53,7 +55,7 @@ export class AccountTransactionsService {
 
             // Negative balance guard
             if (!account.allowNegative && !isIncome) {
-                const newBalance = balanceBefore.sub(amount);
+                const newBalance = balanceBefore.sub(effectiveAmount);
                 if (newBalance.lessThan(0)) {
                     throw new AppError(`Transaction exceeds account balance. Current balance is ${balanceBefore.toString()}`, 400, 'INSUFFICIENT_FUNDS');
                 }
@@ -63,11 +65,11 @@ export class AccountTransactionsService {
             await tx.account.update({
                 where: { id: accountId },
                 data: {
-                    balance: isIncome ? { increment: amount } : { decrement: amount }
+                    balance: isIncome ? { increment: effectiveAmount } : { decrement: effectiveAmount }
                 }
             });
 
-            const balanceAfter = isIncome ? balanceBefore.add(amount) : balanceBefore.sub(amount);
+            const balanceAfter = isIncome ? balanceBefore.add(effectiveAmount) : balanceBefore.sub(effectiveAmount);
 
             const transaction = await tx.accountTransaction.create({
                 data: {
@@ -76,6 +78,7 @@ export class AccountTransactionsService {
                     sourceType: TransactionSourceType.DIRECT,
                     type: data.type as any,
                     amount,
+                    chargeAmount: chargeAmount.greaterThan(0) ? chargeAmount : null,
                     description: data.description,
                     accountCategoryId: data.accountCategoryId
                 }
@@ -92,9 +95,10 @@ export class AccountTransactionsService {
                     details: {
                         previous_balance: balanceBefore.toString(),
                         new_balance: balanceAfter.toString(),
-                        delta: isIncome ? amount.toString() : amount.negated().toString(),
+                        delta: isIncome ? effectiveAmount.toString() : effectiveAmount.negated().toString(),
                         type: data.type,
-                        amount: amount.toString()
+                        amount: amount.toString(),
+                        ...(chargeAmount.greaterThan(0) ? { chargeAmount: chargeAmount.toString() } : {})
                     } as any
                 }
             });
@@ -114,6 +118,7 @@ export class AccountTransactionsService {
                         type: data.type,
                         sourceType: 'DIRECT',
                         transactionId: transaction.id,
+                        ...(chargeAmount.greaterThan(0) ? { chargeAmount: chargeAmount.toString() } : {})
                     },
                 }
             });
@@ -156,26 +161,32 @@ export class AccountTransactionsService {
             const balanceBefore = account.balance;
             const oldAmount = transaction.amount;
             const wasIncome = transaction.type === EntryType.INCOME;
+            const oldChargeAmount = transaction.chargeAmount || new Decimal(0);
+            const oldEffectiveAmount = wasIncome ? oldAmount.sub(oldChargeAmount) : oldAmount.add(oldChargeAmount);
 
             const newType = data.type || transaction.type;
             const newAmount = data.amount ? new Decimal(data.amount) : transaction.amount;
             const isIncome = newType === EntryType.INCOME;
+            const newChargeAmount = data.chargeAmount !== undefined
+                ? (data.chargeAmount ? new Decimal(data.chargeAmount) : new Decimal(0))
+                : (transaction.chargeAmount || new Decimal(0));
+            const newEffectiveAmount = isIncome ? newAmount.sub(newChargeAmount) : newAmount.add(newChargeAmount);
 
             // Reverse old effect, then apply new (using increment/decrement — Issue 8)
             // Step 1: Reverse old
             await tx.account.update({
                 where: { id: accountId },
                 data: {
-                    balance: wasIncome ? { decrement: oldAmount } : { increment: oldAmount }
+                    balance: wasIncome ? { decrement: oldEffectiveAmount } : { increment: oldEffectiveAmount }
                 }
             });
 
             // Step 2: Apply new
-            const balanceWithoutTx = wasIncome ? balanceBefore.sub(oldAmount) : balanceBefore.add(oldAmount);
+            const balanceWithoutTx = wasIncome ? balanceBefore.sub(oldEffectiveAmount) : balanceBefore.add(oldEffectiveAmount);
 
             // Negative balance guard
             if (!account.allowNegative && !isIncome) {
-                const provisional = balanceWithoutTx.sub(newAmount);
+                const provisional = balanceWithoutTx.sub(newEffectiveAmount);
                 if (provisional.lessThan(0)) {
                     throw new AppError('Transaction exceeds account balance.', 400, 'INSUFFICIENT_FUNDS');
                 }
@@ -184,17 +195,18 @@ export class AccountTransactionsService {
             await tx.account.update({
                 where: { id: accountId },
                 data: {
-                    balance: isIncome ? { increment: newAmount } : { decrement: newAmount }
+                    balance: isIncome ? { increment: newEffectiveAmount } : { decrement: newEffectiveAmount }
                 }
             });
 
-            const balanceAfter = isIncome ? balanceWithoutTx.add(newAmount) : balanceWithoutTx.sub(newAmount);
+            const balanceAfter = isIncome ? balanceWithoutTx.add(newEffectiveAmount) : balanceWithoutTx.sub(newEffectiveAmount);
 
             const updatedTransaction = await tx.accountTransaction.update({
                 where: { id },
                 data: {
                     ...(data.type && { type: data.type as any }),
                     ...(data.amount && { amount: newAmount }),
+                    ...(data.chargeAmount !== undefined ? { chargeAmount: data.chargeAmount ? new Decimal(data.chargeAmount) : null } : {}),
                     ...(data.description && { description: data.description }),
                     ...(data.accountCategoryId !== undefined && { accountCategoryId: data.accountCategoryId })
                 }
@@ -212,7 +224,8 @@ export class AccountTransactionsService {
                         previous_balance: balanceBefore.toString(),
                         new_balance: balanceAfter.toString(),
                         delta: balanceAfter.sub(balanceBefore).toString(),
-                        changes: data
+                        changes: data,
+                        ...(newChargeAmount.greaterThan(0) ? { chargeAmount: newChargeAmount.toString() } : {})
                     } as any
                 }
             });
@@ -265,10 +278,12 @@ export class AccountTransactionsService {
             const balanceBefore = account.balance;
             const oldAmount = transaction.amount;
             const wasIncome = transaction.type === EntryType.INCOME;
+            const chargeAmount = transaction.chargeAmount || new Decimal(0);
+            const effectiveAmount = wasIncome ? oldAmount.sub(chargeAmount) : oldAmount.add(chargeAmount);
 
             // Negative balance guard
             if (!account.allowNegative && wasIncome) {
-                const provisional = balanceBefore.sub(oldAmount);
+                const provisional = balanceBefore.sub(effectiveAmount);
                 if (provisional.lessThan(0)) {
                     throw new AppError('Reversing this transaction would exceed the account balance limit.', 400, 'INSUFFICIENT_FUNDS');
                 }
@@ -278,11 +293,11 @@ export class AccountTransactionsService {
             await tx.account.update({
                 where: { id: accountId },
                 data: {
-                    balance: wasIncome ? { decrement: oldAmount } : { increment: oldAmount }
+                    balance: wasIncome ? { decrement: effectiveAmount } : { increment: effectiveAmount }
                 }
             });
 
-            const balanceAfter = wasIncome ? balanceBefore.sub(oldAmount) : balanceBefore.add(oldAmount);
+            const balanceAfter = wasIncome ? balanceBefore.sub(effectiveAmount) : balanceBefore.add(effectiveAmount);
 
             await tx.accountTransaction.delete({ where: { id } });
 

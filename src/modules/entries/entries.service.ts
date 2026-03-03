@@ -178,6 +178,7 @@ export class EntriesService {
                     cashbookId,
                     type: dto.type as any,
                     amount,
+                    chargeAmount: dto.chargeAmount ? new Decimal(dto.chargeAmount) : null,
                     description: dto.description,
                     categoryId: dto.categoryId || null,
                     contactId: dto.contactId || null,
@@ -199,22 +200,26 @@ export class EntriesService {
             // Update cashbook atomically. totalIncome/totalExpense ALWAYS update. Balance ONLY updates if not linked to an account.
             const balanceBefore = lockedCashbook.balance;
             const isIncome = dto.type === EntryType.INCOME;
+            const chargeAmount = dto.chargeAmount ? new Decimal(dto.chargeAmount) : new Decimal(0);
+            const effectiveAmount = isIncome ? amount.sub(chargeAmount) : amount.add(chargeAmount);
 
             let balanceAfter = balanceBefore;
 
             await tx.cashbook.update({
                 where: { id: cashbookId },
                 data: {
-                    balance: !dto.accountId ? (isIncome ? { increment: amount } : { decrement: amount }) : undefined,
+                    balance: !dto.accountId ? (isIncome ? { increment: effectiveAmount } : { decrement: effectiveAmount }) : undefined,
                     totalIncome: isIncome ? { increment: amount } : undefined,
-                    totalExpense: !isIncome ? { increment: amount } : undefined,
+                    totalExpense: isIncome
+                        ? (chargeAmount.greaterThan(0) ? { increment: chargeAmount } : undefined)
+                        : { increment: amount.add(chargeAmount) },
                 },
             });
 
             if (!dto.accountId) {
                 balanceAfter = isIncome
-                    ? balanceBefore.add(amount)
-                    : balanceBefore.sub(amount);
+                    ? balanceBefore.add(effectiveAmount)
+                    : balanceBefore.sub(effectiveAmount);
             }
 
             if (dto.accountId) {
@@ -228,7 +233,7 @@ export class EntriesService {
 
                 // 3. Prevent Negative Balance if allowNegative is false
                 if (!lockedAccount.allowNegative && !isIncome) {
-                    const newAccountBalance = lockedAccount.balance.sub(amount);
+                    const newAccountBalance = lockedAccount.balance.sub(effectiveAmount);
                     if (newAccountBalance.lessThan(0)) {
                         throw new AppError(`Transaction exceeds account balance. Current balance is ${lockedAccount.balance.toString()}`, 400, 'INSUFFICIENT_FUNDS');
                     }
@@ -238,7 +243,7 @@ export class EntriesService {
                 await tx.account.update({
                     where: { id: dto.accountId },
                     data: {
-                        balance: isIncome ? { increment: amount } : { decrement: amount }
+                        balance: isIncome ? { increment: effectiveAmount } : { decrement: effectiveAmount }
                     }
                 });
 
@@ -251,6 +256,7 @@ export class EntriesService {
                         sourceId: newEntry.id,
                         type: dto.type as any,
                         amount,
+                        chargeAmount: chargeAmount.greaterThan(0) ? chargeAmount : null,
                         description: newEntry.description,
                     }
                 });
@@ -319,6 +325,7 @@ export class EntriesService {
                     newValues: {
                         type: dto.type,
                         amount: dto.amount,
+                        chargeAmount: dto.chargeAmount || null,
                         description: dto.description,
                         entryDate: dto.entryDate,
                     },
@@ -339,6 +346,7 @@ export class EntriesService {
                     details: {
                         type: dto.type,
                         description: dto.description,
+                        chargeAmount: dto.chargeAmount || null,
                     },
                 },
             });
@@ -397,6 +405,11 @@ export class EntriesService {
             newValues.amount = dto.amount;
             changes.amount = { from: entry.amount.toString(), to: dto.amount };
         }
+        if (dto.chargeAmount !== undefined && dto.chargeAmount !== (entry.chargeAmount?.toString() || null)) {
+            oldValues.chargeAmount = entry.chargeAmount?.toString() || null;
+            newValues.chargeAmount = dto.chargeAmount;
+            changes.chargeAmount = { from: entry.chargeAmount?.toString() || null, to: dto.chargeAmount };
+        }
         if (dto.description && dto.description !== entry.description) {
             oldValues.description = entry.description;
             newValues.description = dto.description;
@@ -420,6 +433,8 @@ export class EntriesService {
             // Reverse old entry effect on balance
             const wasIncome = entry.type === EntryType.INCOME;
             const oldAmount = entry.amount;
+            const oldChargeAmount = entry.chargeAmount || new Decimal(0);
+            const oldEffectiveAmount = wasIncome ? oldAmount.sub(oldChargeAmount) : oldAmount.add(oldChargeAmount);
             const balanceBefore = lockedCashbook.balance;
             let balanceAfter = balanceBefore;
 
@@ -427,37 +442,45 @@ export class EntriesService {
             await tx.cashbook.update({
                 where: { id: entry.cashbookId },
                 data: {
-                    balance: !existingTx ? (wasIncome ? { decrement: oldAmount } : { increment: oldAmount }) : undefined,
+                    balance: !existingTx ? (wasIncome ? { decrement: oldEffectiveAmount } : { increment: oldEffectiveAmount }) : undefined,
                     totalIncome: wasIncome ? { decrement: oldAmount } : undefined,
-                    totalExpense: !wasIncome ? { decrement: oldAmount } : undefined,
+                    totalExpense: wasIncome
+                        ? (oldChargeAmount.greaterThan(0) ? { decrement: oldChargeAmount } : undefined)
+                        : { decrement: oldAmount.add(oldChargeAmount) },
                 },
             });
 
             if (!existingTx) {
                 balanceAfter = wasIncome
-                    ? balanceBefore.sub(oldAmount)
-                    : balanceBefore.add(oldAmount);
+                    ? balanceBefore.sub(oldEffectiveAmount)
+                    : balanceBefore.add(oldEffectiveAmount);
             }
 
             // Apply new amount
             const newType = dto.type || entry.type;
             const newAmount = dto.amount ? new Decimal(dto.amount) : entry.amount;
             const isIncome = newType === EntryType.INCOME;
+            const newChargeAmount = dto.chargeAmount !== undefined
+                ? (dto.chargeAmount ? new Decimal(dto.chargeAmount) : new Decimal(0))
+                : (entry.chargeAmount || new Decimal(0));
+            const newEffectiveAmount = isIncome ? newAmount.sub(newChargeAmount) : newAmount.add(newChargeAmount);
 
             // ALWAYS update totalIncome/totalExpense for the new entry. ONLY apply to cashbook balance if new entry is NOT linked to an account
             await tx.cashbook.update({
                 where: { id: entry.cashbookId },
                 data: {
-                    balance: !targetAccountId ? (isIncome ? { increment: newAmount } : { decrement: newAmount }) : undefined,
+                    balance: !targetAccountId ? (isIncome ? { increment: newEffectiveAmount } : { decrement: newEffectiveAmount }) : undefined,
                     totalIncome: isIncome ? { increment: newAmount } : undefined,
-                    totalExpense: !isIncome ? { increment: newAmount } : undefined,
+                    totalExpense: isIncome
+                        ? (newChargeAmount.greaterThan(0) ? { increment: newChargeAmount } : undefined)
+                        : { increment: newAmount.add(newChargeAmount) },
                 },
             });
 
             if (!targetAccountId) {
                 balanceAfter = isIncome
-                    ? balanceAfter.add(newAmount)
-                    : balanceAfter.sub(newAmount);
+                    ? balanceAfter.add(newEffectiveAmount)
+                    : balanceAfter.sub(newEffectiveAmount);
             }
 
             // Deal with Accounts
@@ -471,7 +494,7 @@ export class EntriesService {
                     await tx.account.update({
                         where: { id: existingTx.accountId },
                         data: {
-                            balance: wasIncome ? { decrement: oldAmount } : { increment: oldAmount }
+                            balance: wasIncome ? { decrement: oldEffectiveAmount } : { increment: oldEffectiveAmount }
                         }
                     });
                 }
@@ -501,7 +524,7 @@ export class EntriesService {
 
                         // Negative Balance Check
                         if (!lockedTarget.allowNegative && !isIncome) {
-                            const provisional = lockedTarget.balance.sub(newAmount);
+                            const provisional = lockedTarget.balance.sub(newEffectiveAmount);
                             if (provisional.lessThan(0)) {
                                 throw new AppError(`Transaction exceeds account balance.`, 400, 'INSUFFICIENT_FUNDS');
                             }
@@ -511,7 +534,7 @@ export class EntriesService {
                         await tx.account.update({
                             where: { id: targetAccountId },
                             data: {
-                                balance: isIncome ? { increment: newAmount } : { decrement: newAmount }
+                                balance: isIncome ? { increment: newEffectiveAmount } : { decrement: newEffectiveAmount }
                             }
                         });
                     }
@@ -523,6 +546,7 @@ export class EntriesService {
                             data: {
                                 ...(hasAccountChanged && { accountId: targetAccountId as string | undefined }),
                                 amount: newAmount,
+                                chargeAmount: newChargeAmount.greaterThan(0) ? newChargeAmount : null,
                                 type: newType as any,
                                 description: dto.description || existingTx.description
                             }
@@ -537,6 +561,7 @@ export class EntriesService {
                                 sourceId: entryId,
                                 type: newType as any,
                                 amount: newAmount,
+                                chargeAmount: newChargeAmount.greaterThan(0) ? newChargeAmount : null,
                                 description: dto.description || entry.description
                             }
                         });
@@ -676,6 +701,7 @@ export class EntriesService {
                 data: {
                     ...(dto.type && { type: dto.type as any }),
                     ...(dto.amount && { amount: new Decimal(dto.amount) }),
+                    ...(dto.chargeAmount !== undefined ? { chargeAmount: dto.chargeAmount ? new Decimal(dto.chargeAmount) : null } : {}),
                     ...(dto.description && { description: dto.description }),
                     ...(dto.categoryId !== undefined ? { categoryId: dto.categoryId } : {}),
                     ...(dto.contactId !== undefined ? { contactId: dto.contactId } : {}),
@@ -871,6 +897,8 @@ export class EntriesService {
             const balanceBefore = lockedCashbook.balance;
             const wasIncome = entry.type === EntryType.INCOME;
             const amount = entry.amount;
+            const chargeAmount = entry.chargeAmount || new Decimal(0);
+            const effectiveAmount = wasIncome ? amount.sub(chargeAmount) : amount.add(chargeAmount);
 
             // Check if there's a linked account FIRST
             const existingTx = await tx.accountTransaction.findFirst({
@@ -883,16 +911,18 @@ export class EntriesService {
             await tx.cashbook.update({
                 where: { id: entry.cashbookId },
                 data: {
-                    balance: !existingTx ? (wasIncome ? { decrement: amount } : { increment: amount }) : undefined,
+                    balance: !existingTx ? (wasIncome ? { decrement: effectiveAmount } : { increment: effectiveAmount }) : undefined,
                     totalIncome: wasIncome ? { decrement: amount } : undefined,
-                    totalExpense: !wasIncome ? { decrement: amount } : undefined,
+                    totalExpense: wasIncome
+                        ? (chargeAmount.greaterThan(0) ? { decrement: chargeAmount } : undefined)
+                        : { decrement: amount.add(chargeAmount) },
                 },
             });
 
             if (!existingTx) {
                 balanceAfter = wasIncome
-                    ? balanceBefore.sub(amount)
-                    : balanceBefore.add(amount);
+                    ? balanceBefore.sub(effectiveAmount)
+                    : balanceBefore.add(effectiveAmount);
             }
 
             if (existingTx) {
@@ -902,7 +932,7 @@ export class EntriesService {
                 await tx.account.update({
                     where: { id: existingTx.accountId },
                     data: {
-                        balance: wasIncome ? { decrement: amount } : { increment: amount }
+                        balance: wasIncome ? { decrement: effectiveAmount } : { increment: effectiveAmount }
                     }
                 });
 

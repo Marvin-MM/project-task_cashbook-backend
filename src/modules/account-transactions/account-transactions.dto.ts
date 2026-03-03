@@ -11,6 +11,7 @@ export const createAccountTransactionSchema = z.object({
         message: 'Invalid transaction type'
     }),
     amount: decimalString,
+    chargeAmount: decimalString.optional(),
     description: z.string().min(1, 'Description is required').max(255, 'Description too long'),
     accountCategoryId: z.string().uuid('Invalid category ID').optional().nullable(),
 });
