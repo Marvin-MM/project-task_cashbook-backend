@@ -50,11 +50,29 @@ export class EntriesService {
 
         const totalPages = Math.ceil(total / query.limit);
 
+        const entryIds = entries.map(e => e.id);
+        const inventoryTransactions = entryIds.length > 0 ? await this.prisma.inventoryTransaction.findMany({
+            where: {
+                referenceType: InventoryReferenceType.ENTRY,
+                referenceId: { in: entryIds }
+            },
+            include: {
+                item: { select: { id: true, name: true, sku: true, unit: true } }
+            }
+        }) : [];
+
+        const invMap = new Map();
+        inventoryTransactions.forEach(it => {
+            if (!invMap.has(it.referenceId)) invMap.set(it.referenceId, []);
+            invMap.get(it.referenceId).push(it);
+        });
+
         const mappedEntries = entries.map(entry => {
             const { accountTransactions, ...rest } = entry as any;
             return {
                 ...rest,
                 account: accountTransactions?.[0]?.account || null,
+                inventoryItems: invMap.get(entry.id) || [],
             };
         });
 
@@ -77,10 +95,21 @@ export class EntriesService {
         if (!entry || entry.isDeleted) {
             throw new NotFoundError('Entry');
         }
+        const inventoryTransactions = await this.prisma.inventoryTransaction.findMany({
+            where: {
+                referenceType: InventoryReferenceType.ENTRY,
+                referenceId: entryId
+            },
+            include: {
+                item: { select: { id: true, name: true, sku: true, unit: true } }
+            }
+        });
+
         const { accountTransactions, ...rest } = entry as any;
         return {
             ...rest,
             account: accountTransactions?.[0]?.account || null,
+            inventoryItems: inventoryTransactions,
         };
     }
 
@@ -363,6 +392,7 @@ export class EntriesService {
                     amount,
                     dto.inventoryItems,
                     userId,
+                    dto.description,
                 );
             }
 
@@ -780,6 +810,7 @@ export class EntriesService {
                     newAmount,
                     dto.inventoryItems,
                     userId,
+                    dto.description || entry.description,
                 );
             }
 

@@ -466,6 +466,7 @@ export class InventoryService {
         entryAmount: Decimal,
         inventoryItems: InventoryLineItemDto[],
         createdById: string,
+        notes: string | null = null,
     ) {
         const isPurchase = entryType === 'EXPENSE';
 
@@ -503,7 +504,7 @@ export class InventoryService {
                     createdById,
                     InventoryReferenceType.ENTRY,
                     entryId,
-                    null,
+                    notes,
                     tx,
                 );
             } else {
@@ -516,7 +517,7 @@ export class InventoryService {
                     createdById,
                     InventoryReferenceType.ENTRY,
                     entryId,
-                    null,
+                    notes,
                     tx,
                 );
             }
@@ -535,6 +536,7 @@ export class InventoryService {
         transactionAmount: Decimal,
         inventoryItems: InventoryLineItemDto[],
         createdById: string,
+        notes: string | null = null,
     ) {
         const isPurchase = transactionType === 'EXPENSE';
 
@@ -569,7 +571,7 @@ export class InventoryService {
                     createdById,
                     InventoryReferenceType.ACCOUNT_TRANSACTION,
                     transactionId,
-                    null,
+                    notes,
                     tx,
                 );
             } else {
@@ -581,7 +583,7 @@ export class InventoryService {
                     createdById,
                     InventoryReferenceType.ACCOUNT_TRANSACTION,
                     transactionId,
-                    null,
+                    notes,
                     tx,
                 );
             }
@@ -600,6 +602,7 @@ export class InventoryService {
         obligationAmount: Decimal,
         inventoryItems: InventoryLineItemDto[],
         createdById: string,
+        notes: string | null = null,
     ) {
         for (const lineItem of inventoryItems) {
             const item = await tx.inventoryItem.findUnique({
@@ -631,7 +634,7 @@ export class InventoryService {
                 createdById,
                 InventoryReferenceType.OBLIGATION,
                 obligationId,
-                null,
+                notes,
                 tx,
             );
         }

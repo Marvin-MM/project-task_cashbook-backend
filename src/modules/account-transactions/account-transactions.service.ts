@@ -16,7 +16,31 @@ export class AccountTransactionsService {
     ) { }
 
     async getAllTransactionsByAccount(accountId: string, workspaceId: string, pagination?: { skip: number; take: number }) {
-        return this.repository.findAllByAccount(accountId, workspaceId, pagination);
+        const [total, transactions] = await this.repository.findAllByAccount(accountId, workspaceId, pagination);
+
+        const txIds = transactions.map(t => t.id);
+        const inventoryTransactions = txIds.length > 0 ? await this.prisma.inventoryTransaction.findMany({
+            where: {
+                referenceType: InventoryReferenceType.ACCOUNT_TRANSACTION,
+                referenceId: { in: txIds }
+            },
+            include: {
+                item: { select: { id: true, name: true, sku: true, unit: true } }
+            }
+        }) : [];
+
+        const invMap = new Map();
+        inventoryTransactions.forEach(it => {
+            if (!invMap.has(it.referenceId)) invMap.set(it.referenceId, []);
+            invMap.get(it.referenceId).push(it);
+        });
+
+        const mappedTransactions = transactions.map(tx => ({
+            ...tx,
+            inventoryItems: invMap.get(tx.id) || [],
+        }));
+
+        return [total, mappedTransactions] as const;
     }
 
     async createDirectTransaction(
@@ -135,6 +159,7 @@ export class AccountTransactionsService {
                     amount,
                     data.inventoryItems,
                     userId,
+                    data.description,
                 );
             }
 
@@ -279,6 +304,7 @@ export class AccountTransactionsService {
                     newAmount,
                     data.inventoryItems,
                     userId,
+                    data.description || updatedTransaction.description,
                 );
             }
 

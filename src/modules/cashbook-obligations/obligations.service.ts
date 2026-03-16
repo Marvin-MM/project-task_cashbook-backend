@@ -24,8 +24,30 @@ export class ObligationsService {
         const { obligations, total } = await this.obligationsRepo.findByCashbookId(cashbookId, query);
         const totalPages = Math.ceil(total / query.limit);
 
+        const obligationIds = obligations.map(o => o.id);
+        const inventoryTransactions = obligationIds.length > 0 ? await this.prisma.inventoryTransaction.findMany({
+            where: {
+                referenceType: InventoryReferenceType.OBLIGATION,
+                referenceId: { in: obligationIds }
+            },
+            include: {
+                item: { select: { id: true, name: true, sku: true, unit: true } }
+            }
+        }) : [];
+
+        const invMap = new Map();
+        inventoryTransactions.forEach(it => {
+            if (!invMap.has(it.referenceId)) invMap.set(it.referenceId, []);
+            invMap.get(it.referenceId).push(it);
+        });
+
+        const mappedObligations = obligations.map(o => ({
+            ...o,
+            inventoryItems: invMap.get(o.id) || [],
+        }));
+
         return {
-            data: obligations,
+            data: mappedObligations,
             pagination: {
                 page: query.page,
                 limit: query.limit,
@@ -47,7 +69,20 @@ export class ObligationsService {
             throw new NotFoundError('Obligation');
         }
 
-        return obligation;
+        const inventoryTransactions = await this.prisma.inventoryTransaction.findMany({
+            where: {
+                referenceType: InventoryReferenceType.OBLIGATION,
+                referenceId: id
+            },
+            include: {
+                item: { select: { id: true, name: true, sku: true, unit: true } }
+            }
+        });
+
+        return {
+            ...obligation,
+            inventoryItems: inventoryTransactions,
+        };
     }
 
     // ─── Create Obligation ─────────────────────────────
@@ -103,6 +138,7 @@ export class ObligationsService {
                     amount,
                     dto.inventoryItems,
                     userId,
+                    dto.description || dto.title,
                 );
             }
 
