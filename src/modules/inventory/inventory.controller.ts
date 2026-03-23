@@ -191,4 +191,32 @@ export class InventoryController {
             next(error);
         }
     }
+
+    // ─── Analytics ───────────────────────────────────────
+
+    async getAnalyticsMetrics(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.getAnalyticsMetrics(req.params.workspaceId as string, req.query as any);
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Analytics metrics retrieved successfully',
+                data,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    async getAnalyticsTrends(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.getAnalyticsTrends(req.params.workspaceId as string, req.query as any);
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Analytics trends retrieved successfully',
+                data,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
 }

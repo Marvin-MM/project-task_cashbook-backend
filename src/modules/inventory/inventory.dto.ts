@@ -118,6 +118,12 @@ export const cogsReportQuerySchema = z.object({
     endDate: z.string().datetime().optional(),
 });
 
+export const analyticsQuerySchema = z.object({
+    startDate: z.string().datetime().optional(),
+    endDate: z.string().datetime().optional(),
+    interval: z.enum(['DAILY', 'WEEKLY', 'MONTHLY']).default('DAILY'),
+});
+
 // ─── Params schemas ────────────────────────────────────
 
 export const itemIdParamSchema = z.object({
@@ -133,3 +139,4 @@ export type CreateInventoryTransactionDto = z.infer<typeof createInventoryTransa
 export type InventoryTransactionQueryDto = z.infer<typeof inventoryTransactionQuerySchema>;
 export type InventoryLineItemDto = z.infer<typeof inventoryLineItemSchema>;
 export type CogsReportQueryDto = z.infer<typeof cogsReportQuerySchema>;
+export type AnalyticsQueryDto = z.infer<typeof analyticsQuerySchema>;

@@ -12,6 +12,7 @@ import {
     InventoryTransactionQueryDto,
     InventoryLineItemDto,
     CogsReportQueryDto,
+    AnalyticsQueryDto,
 } from './inventory.dto';
 
 // Stock-in transaction types (increase quantityOnHand)
@@ -1066,6 +1067,86 @@ export class InventoryService {
             lowStockThreshold: item.lowStockThreshold,
             deficit: (item.lowStockThreshold ?? 0) - (item.stock?.quantityOnHand ?? 0),
         }));
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // ─── Analytics ─────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════
+
+    async getAnalyticsMetrics(workspaceId: string, query: AnalyticsQueryDto) {
+        // High-level summary
+        const [totalItemsCount, lowStockItems, valuationData, cogsData] = await Promise.all([
+            this.prisma.inventoryItem.count({ where: { workspaceId, isActive: true } }),
+            this.getLowStockAlerts(workspaceId),
+            this.getInventoryValuation(workspaceId),
+            this.getCogsSummary(workspaceId, { startDate: query.startDate, endDate: query.endDate })
+        ]);
+
+        return {
+            totalInventoryValue: valuationData.totalValue,
+            totalItems: totalItemsCount,
+            lowStockCount: lowStockItems.length,
+            totalCogs: cogsData.totalCostOfGoodsSold,
+            totalRevenue: cogsData.totalRevenue,
+            grossProfit: cogsData.grossProfit,
+        };
+    }
+
+    async getAnalyticsTrends(workspaceId: string, query: AnalyticsQueryDto) {
+        // Fetch all relevant transactions first
+        const transactions = await this.repository.getCogsSummary(workspaceId, query.startDate, query.endDate);
+        
+        // Group by requested interval map
+        const trendsMap = new Map<string, { revenue: Decimal, cogs: Decimal, profit: Decimal }>();
+
+        // Sort ascending for chronological order
+        transactions.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+        for (const t of transactions) {
+            const date = t.createdAt;
+            let groupKey = '';
+            
+            if (query.interval === 'MONTHLY') {
+                groupKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+            } else if (query.interval === 'WEEKLY') {
+                // approximate ISO week or just start of week
+                const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+                d.setUTCDate(d.getUTCDate() - d.getUTCDay() + 1); // Monday
+                groupKey = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+            } else {
+                // DAILY
+                groupKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+            }
+
+            if (!trendsMap.has(groupKey)) {
+                trendsMap.set(groupKey, { revenue: new Decimal(0), cogs: new Decimal(0), profit: new Decimal(0) });
+            }
+
+            const current = trendsMap.get(groupKey)!;
+
+            if (t.costOfGoodsSold) {
+                current.cogs = current.cogs.add(new Decimal(t.costOfGoodsSold));
+            }
+            if ((t as any).sellingPrice) {
+                const qty = Math.abs(t.quantity);
+                const rev = new Decimal((t as any).sellingPrice).mul(qty);
+                current.revenue = current.revenue.add(rev);
+            }
+            
+            current.profit = current.revenue.sub(current.cogs);
+        }
+
+        const data = Array.from(trendsMap.entries()).map(([label, values]) => ({
+            label,
+            totalRevenue: values.revenue.toString(),
+            totalCogs: values.cogs.toString(),
+            grossProfit: values.profit.toString(),
+        }));
+
+        return {
+            interval: query.interval || 'DAILY',
+            data
+        };
     }
 
     // ═══════════════════════════════════════════════════════

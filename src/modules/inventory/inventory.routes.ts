@@ -13,6 +13,7 @@ import {
     inventoryTransactionQuerySchema,
     cogsReportQuerySchema,
     itemIdParamSchema,
+    analyticsQuerySchema,
 } from './inventory.dto';
 
 const router = Router({ mergeParams: true });
@@ -121,6 +122,24 @@ router.get(
     '/reports/low-stock',
     requireWorkspaceMember() as any,
     controller.getLowStock.bind(controller) as any
+);
+
+// ─── Analytics ─────────────────────────────────────────
+
+// Analytics metrics
+router.get(
+    '/analytics/metrics',
+    requireWorkspaceMember() as any,
+    validate(analyticsQuerySchema, 'query'),
+    controller.getAnalyticsMetrics.bind(controller) as any
+);
+
+// Analytics trends
+router.get(
+    '/analytics/trends',
+    requireWorkspaceMember() as any,
+    validate(analyticsQuerySchema, 'query'),
+    controller.getAnalyticsTrends.bind(controller) as any
 );
 
 export default router;
