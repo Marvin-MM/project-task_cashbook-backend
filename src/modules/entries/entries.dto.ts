@@ -19,7 +19,8 @@ export const createEntrySchema = z.object({
     inventoryItems: z.array(z.object({
         itemId: z.string().uuid('Invalid inventory item ID'),
         quantity: z.coerce.number().int().min(1, 'Quantity must be at least 1'),
-        unitCost: decimalString.optional(),
+        unitCost: decimalString.optional(),   // For EXPENSE entries: acquisition cost. For INCOME entries: ignored for COGS.
+        sellingPrice: decimalString.optional(), // For INCOME entries: revenue per unit (stored for gross-margin reporting).
     })).optional(),
 });
 
@@ -37,7 +38,8 @@ export const updateEntrySchema = z.object({
     inventoryItems: z.array(z.object({
         itemId: z.string().uuid('Invalid inventory item ID'),
         quantity: z.coerce.number().int().min(1, 'Quantity must be at least 1'),
-        unitCost: decimalString.optional(),
+        unitCost: decimalString.optional(),   // For EXPENSE entries: acquisition cost. For INCOME entries: ignored for COGS.
+        sellingPrice: decimalString.optional(), // For INCOME entries: revenue per unit (stored for gross-margin reporting).
     })).optional(),
 });
 

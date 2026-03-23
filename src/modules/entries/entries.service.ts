@@ -793,25 +793,32 @@ export class EntriesService {
             });
 
             // ─── Inventory Integration (reverse old + reapply) ─────
-            // Reverse any existing inventory transactions for this entry
-            await this.inventoryService.reverseInventoryForReference(
-                tx,
-                InventoryReferenceType.ENTRY,
-                entryId,
-            );
-
-            // If new inventory items provided, process them
-            if (dto.inventoryItems && dto.inventoryItems.length > 0) {
-                await this.inventoryService.processEntryInventory(
+            // Only touch inventory if the caller explicitly sent `inventoryItems`.
+            // If dto.inventoryItems is undefined → caller did not intend to change
+            // inventory at all, so we must NOT reverse the existing transactions.
+            // If dto.inventoryItems is an empty array → caller intentionally cleared
+            // all inventory links (reverse existing, apply nothing).
+            if (dto.inventoryItems !== undefined) {
+                // Reverse existing inventory transactions for this entry
+                await this.inventoryService.reverseInventoryForReference(
                     tx,
-                    cashbook.workspaceId,
+                    InventoryReferenceType.ENTRY,
                     entryId,
-                    newType,
-                    newAmount,
-                    dto.inventoryItems,
-                    userId,
-                    dto.description || entry.description,
                 );
+
+                // Re-apply if new items provided
+                if (dto.inventoryItems.length > 0) {
+                    await this.inventoryService.processEntryInventory(
+                        tx,
+                        cashbook.workspaceId,
+                        entryId,
+                        newType,
+                        newAmount,
+                        dto.inventoryItems,
+                        userId,
+                        dto.description || entry.description,
+                    );
+                }
             }
 
             return updatedEntry;

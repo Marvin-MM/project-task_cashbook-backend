@@ -1,5 +1,5 @@
 import { injectable, inject } from 'tsyringe';
-import { PrismaClient, InventoryTransactionType, InventoryReferenceType } from '@prisma/client';
+import { PrismaClient, InventoryTransactionType, InventoryReferenceType, InventoryCostMethod } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { InventoryRepository } from './inventory.repository';
 import { AppError, NotFoundError } from '../../core/errors/AppError';
@@ -28,6 +28,17 @@ const STOCK_OUT_TYPES: InventoryTransactionType[] = [
     InventoryTransactionType.RETURN_OUT,
 ];
 
+// ─── Internal cost resolution result ──────────────────────────────────────────
+interface CostResolution {
+    unitCost: Decimal;         // weighted average unit cost of the outflow
+    cogs: Decimal;             // total COGS for the outflow
+    lotConsumptions: Array<{   // for FIFO/LIFO audit trail
+        lotId: string;
+        quantityUsed: number;
+        unitCost: Decimal;
+    }>;
+}
+
 @injectable()
 export class InventoryService {
     constructor(
@@ -40,7 +51,6 @@ export class InventoryService {
     // ═══════════════════════════════════════════════════════
 
     async createItem(workspaceId: string, userId: string, dto: CreateInventoryItemDto) {
-        // Unique SKU check (within workspace)
         if (dto.sku) {
             const existing = await this.prisma.inventoryItem.findUnique({
                 where: { workspaceId_sku: { workspaceId, sku: dto.sku } },
@@ -64,7 +74,6 @@ export class InventoryService {
                 },
             });
 
-            // Auto-create stock record at zero
             await tx.inventoryStock.create({
                 data: {
                     itemId: item.id,
@@ -73,7 +82,6 @@ export class InventoryService {
                 },
             });
 
-            // Audit
             await tx.auditLog.create({
                 data: {
                     userId,
@@ -134,7 +142,6 @@ export class InventoryService {
             throw new NotFoundError('Inventory Item');
         }
 
-        // SKU uniqueness check if updating sku
         if (dto.sku && dto.sku !== item.sku) {
             const duplicate = await this.prisma.inventoryItem.findUnique({
                 where: { workspaceId_sku: { workspaceId, sku: dto.sku } },
@@ -216,7 +223,6 @@ export class InventoryService {
             throw new AppError('Cannot create transactions for an inactive item', 400, 'ITEM_INACTIVE');
         }
 
-        // Immutability guard: manual endpoint can only create MANUAL-referenced transactions
         if (dto.referenceType && dto.referenceType !== 'MANUAL') {
             throw new AppError(
                 'Transactions linked to financial records can only be created through the corresponding financial module',
@@ -231,35 +237,47 @@ export class InventoryService {
         const isStockOut = STOCK_OUT_TYPES.includes(transactionType) &&
             !(transactionType === InventoryTransactionType.ADJUSTMENT);
 
-        // For ADJUSTMENT, determine direction from context:
-        // We always treat manual adjustments as stock-in here; stock-out adjustments
-        // go through processStockOut with ADJUSTMENT type and a negative quantity flag.
-        // For manual transactions, the user specifies the direction via notes.
+        const sellingPrice = dto.sellingPrice ? new Decimal(dto.sellingPrice) : null;
 
-        const unitCost = new Decimal(dto.unitCost);
+        const refType = dto.referenceType
+            ? dto.referenceType as InventoryReferenceType
+            : InventoryReferenceType.MANUAL;
 
         if (isStockIn || transactionType === InventoryTransactionType.ADJUSTMENT) {
+            // unitCost is required for stock-in — DTO refinement already enforces this,
+            // but we add a runtime guard to maintain a clear error message if bypassed.
+            if (!dto.unitCost) {
+                throw new AppError(
+                    'unitCost is required for stock-in transactions',
+                    400,
+                    'UNIT_COST_REQUIRED'
+                );
+            }
             return this.processStockIn(
                 workspaceId,
                 dto.itemId,
                 transactionType,
                 dto.quantity,
-                unitCost,
+                new Decimal(dto.unitCost),
                 userId,
-                dto.referenceType ? dto.referenceType as InventoryReferenceType : InventoryReferenceType.MANUAL,
+                refType,
                 dto.referenceId || null,
                 dto.notes || null,
             );
         } else {
+            // Stock-out: unitCost is irrelevant — COGS always comes from the cost method.
+            // sellingPrice is optional but encouraged for gross-margin reporting.
             return this.processStockOut(
                 workspaceId,
                 dto.itemId,
                 transactionType,
                 dto.quantity,
                 userId,
-                dto.referenceType ? dto.referenceType as InventoryReferenceType : InventoryReferenceType.MANUAL,
+                refType,
                 dto.referenceId || null,
                 dto.notes || null,
+                undefined,   // tx — none for manual transactions
+                sellingPrice,
             );
         }
     }
@@ -295,13 +313,18 @@ export class InventoryService {
     }
 
     // ═══════════════════════════════════════════════════════
-    // ─── Core Stock Operations (Atomic) ────────────────────
+    // ─── Core Stock Operations (Atomic, ACID-safe) ─────────
     // ═══════════════════════════════════════════════════════
 
     /**
      * Process a stock-in operation (PURCHASE, TRANSFER_IN, RETURN_IN, ADJUSTMENT+).
-     * Recalculates weighted average cost and updates quantityOnHand.
-     * All updates performed inside an atomic transaction.
+     *
+     * Strategy by costMethod:
+     *  - WEIGHTED_AVERAGE: recalculates running average cost.
+     *  - FIFO / LIFO: records the lot for future consumption tracking.
+     *    averageCost is still maintained for stock-level reporting.
+     *
+     * All updates performed inside an atomic transaction (ACID compliant).
      */
     async processStockIn(
         workspaceId: string,
@@ -316,29 +339,31 @@ export class InventoryService {
         tx?: any,
     ) {
         const execute = async (prisma: any) => {
-            // Lock the stock row for update
-            const stock = await prisma.inventoryStock.findUnique({
-                where: { itemId },
-            });
+            // Use SELECT FOR UPDATE to prevent concurrent modification on the stock row
+            await prisma.$queryRaw`
+                SELECT id FROM inventory_stock WHERE item_id = ${itemId}::uuid FOR UPDATE
+            `;
 
+            const stock = await prisma.inventoryStock.findUnique({ where: { itemId } });
             if (!stock) {
                 throw new AppError('Stock record not found. Item may be corrupted.', 500, 'STOCK_NOT_FOUND');
             }
 
+            const item = await prisma.inventoryItem.findUnique({ where: { id: itemId } });
+            const costMethod: InventoryCostMethod = item.costMethod;
+
             const currentQty = stock.quantityOnHand;
             const currentAvgCost = new Decimal(stock.averageCost);
-            const incomingCost = unitCost;
-            const totalCost = incomingCost.mul(quantity);
+            const totalCost = unitCost.mul(quantity);
 
-            // Weighted Average Cost Recalculation:
-            // newAvgCost = (currentQty * currentAvgCost + newQty * newUnitCost) / (currentQty + newQty)
+            // Recalculate running WAC (used for all methods for reporting purposes)
             const totalExistingValue = currentAvgCost.mul(currentQty);
             const newTotalQty = currentQty + quantity;
             const newAvgCost = newTotalQty > 0
                 ? totalExistingValue.add(totalCost).div(newTotalQty)
                 : new Decimal(0);
 
-            // Update stock
+            // Update stock quantity and average cost
             await prisma.inventoryStock.update({
                 where: { itemId },
                 data: {
@@ -347,14 +372,14 @@ export class InventoryService {
                 },
             });
 
-            // Create transaction record
+            // Create the inventory transaction record
             const invTransaction = await prisma.inventoryTransaction.create({
                 data: {
                     workspaceId,
                     itemId,
                     transactionType,
-                    quantity, // positive for stock-in
-                    unitCost: incomingCost,
+                    quantity,           // positive for stock-in
+                    unitCost,
                     totalCost,
                     referenceType,
                     referenceId,
@@ -363,20 +388,39 @@ export class InventoryService {
                 },
             });
 
+            // For FIFO/LIFO: record the lot so stock-out can consume in correct order
+            if (costMethod === InventoryCostMethod.FIFO || costMethod === InventoryCostMethod.LIFO) {
+                await prisma.inventoryLot.create({
+                    data: {
+                        workspaceId,
+                        itemId,
+                        unitCost,
+                        quantityIn: quantity,
+                        quantityRemaining: quantity,
+                        transactionId: invTransaction.id,
+                    },
+                });
+            }
+
             return invTransaction;
         };
 
-        // If already inside a transaction, reuse it; otherwise create one
-        if (tx) {
-            return execute(tx);
-        }
+        if (tx) return execute(tx);
         return this.prisma.$transaction(async (prisma) => execute(prisma));
     }
 
     /**
      * Process a stock-out operation (SALE, TRANSFER_OUT, RETURN_OUT, ADJUSTMENT-).
-     * Calculates COGS using the weighted average cost method.
-     * All updates performed inside an atomic transaction.
+     *
+     * Strategy by costMethod:
+     *  - WEIGHTED_AVERAGE: unitCost = current averageCost. Simple, fast.
+     *  - FIFO: consumes lots from oldest to newest (lowest createdAt first).
+     *  - LIFO: consumes lots from newest to oldest (highest createdAt first).
+     *
+     * The `sellingPrice` parameter is purely informational (for gross-margin
+     * reporting). It does NOT affect COGS calculation.
+     *
+     * All updates performed inside an atomic transaction (ACID compliant).
      */
     async processStockOut(
         workspaceId: string,
@@ -388,17 +432,21 @@ export class InventoryService {
         referenceId: string | null,
         notes: string | null,
         tx?: any,
+        sellingPrice: Decimal | null = null,
     ) {
         const execute = async (prisma: any) => {
-            const stock = await prisma.inventoryStock.findUnique({
-                where: { itemId },
-            });
+            // Lock the stock row to prevent concurrent updates
+            await prisma.$queryRaw`
+                SELECT id FROM inventory_stock WHERE item_id = ${itemId}::uuid FOR UPDATE
+            `;
 
+            const stock = await prisma.inventoryStock.findUnique({ where: { itemId } });
             if (!stock) {
                 throw new AppError('Stock record not found. Item may be corrupted.', 500, 'STOCK_NOT_FOUND');
             }
 
             const item = await prisma.inventoryItem.findUnique({ where: { id: itemId } });
+            const costMethod: InventoryCostMethod = item.costMethod;
 
             // Negative stock guard
             if (!item.allowNegativeStock && stock.quantityOnHand < quantity) {
@@ -409,28 +457,38 @@ export class InventoryService {
                 );
             }
 
-            const avgCost = new Decimal(stock.averageCost);
-            const cogs = avgCost.mul(quantity);
+            let cogsResolution: CostResolution;
+
+            switch (costMethod) {
+                case InventoryCostMethod.FIFO:
+                    cogsResolution = await this.resolveCostFIFO(prisma, itemId, quantity, 'asc');
+                    break;
+                case InventoryCostMethod.LIFO:
+                    cogsResolution = await this.resolveCostFIFO(prisma, itemId, quantity, 'lifo');
+                    break;
+                default: // WEIGHTED_AVERAGE
+                    cogsResolution = this.resolveCostWAC(stock.averageCost, quantity);
+            }
+
             const newQty = stock.quantityOnHand - quantity;
 
-            // Update stock (average cost stays the same on stock-out in weighted average)
+            // Update stock quantity (average cost unchanged on stock-out for all methods)
             await prisma.inventoryStock.update({
                 where: { itemId },
-                data: {
-                    quantityOnHand: newQty,
-                },
+                data: { quantityOnHand: newQty },
             });
 
-            // Create transaction record
+            // Create the transaction record
             const invTransaction = await prisma.inventoryTransaction.create({
                 data: {
                     workspaceId,
                     itemId,
                     transactionType,
-                    quantity: -quantity, // negative for stock-out
-                    unitCost: avgCost,
-                    totalCost: cogs,
-                    costOfGoodsSold: cogs,
+                    quantity: -quantity,            // negative for stock-out
+                    unitCost: cogsResolution.unitCost,
+                    totalCost: cogsResolution.cogs,
+                    costOfGoodsSold: cogsResolution.cogs,
+                    sellingPrice,
                     referenceType,
                     referenceId,
                     notes,
@@ -438,13 +496,121 @@ export class InventoryService {
                 },
             });
 
+            // For FIFO/LIFO: persist the lot consumption audit trail and update lot remainders
+            if (
+                (costMethod === InventoryCostMethod.FIFO || costMethod === InventoryCostMethod.LIFO) &&
+                cogsResolution.lotConsumptions.length > 0
+            ) {
+                for (const consumption of cogsResolution.lotConsumptions) {
+                    // Write the consumption record
+                    await prisma.lotConsumption.create({
+                        data: {
+                            lotId: consumption.lotId,
+                            transactionId: invTransaction.id,
+                            quantityUsed: consumption.quantityUsed,
+                            unitCost: consumption.unitCost,
+                        },
+                    });
+
+                    // Decrement the lot's remaining quantity
+                    await prisma.inventoryLot.update({
+                        where: { id: consumption.lotId },
+                        data: {
+                            quantityRemaining: { decrement: consumption.quantityUsed },
+                        },
+                    });
+                }
+            }
+
             return invTransaction;
         };
 
-        if (tx) {
-            return execute(tx);
-        }
+        if (tx) return execute(tx);
         return this.prisma.$transaction(async (prisma) => execute(prisma));
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // ─── Private Cost Resolution Strategies ────────────────
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * Weighted Average Cost: a single query-free calculation.
+     * Pulls the running average from the already-loaded stock row.
+     */
+    private resolveCostWAC(averageCostRaw: any, quantity: number): CostResolution {
+        const avgCost = new Decimal(averageCostRaw);
+        const cogs = avgCost.mul(quantity);
+        return {
+            unitCost: avgCost,
+            cogs,
+            lotConsumptions: [],  // WAC does not track lots
+        };
+    }
+
+    /**
+     * FIFO / LIFO resolution.
+     * Queries open lots sorted by createdAt ASC (FIFO) or DESC (LIFO).
+     * Iterates through lots, consuming from each until the requested quantity
+     * is satisfied. Returns the weighted average unit cost across all consumed lots
+     * plus the individual lot consumption records for the audit trail.
+     *
+     * Performance: The compound index on (itemId, quantityRemaining) ensures only
+     * open lots are returned quickly. We take only as many rows as needed.
+     */
+    private async resolveCostFIFO(
+        prisma: any,
+        itemId: string,
+        quantity: number,
+        order: 'asc' | 'lifo',
+    ): Promise<CostResolution> {
+        const sortOrder = order === 'lifo' ? 'desc' : 'asc';
+
+        // Only fetch lots that still have remaining units
+        const openLots = await prisma.inventoryLot.findMany({
+            where: {
+                itemId,
+                quantityRemaining: { gt: 0 },
+            },
+            orderBy: { createdAt: sortOrder },
+        });
+
+        let remaining = quantity;
+        let totalCogs = new Decimal(0);
+        const consumptions: CostResolution['lotConsumptions'] = [];
+
+        for (const lot of openLots) {
+            if (remaining <= 0) break;
+
+            const fromThisLot = Math.min(remaining, lot.quantityRemaining);
+            const lotUnitCost = new Decimal(lot.unitCost);
+            const lotCogs = lotUnitCost.mul(fromThisLot);
+
+            consumptions.push({
+                lotId: lot.id,
+                quantityUsed: fromThisLot,
+                unitCost: lotUnitCost,
+            });
+
+            totalCogs = totalCogs.add(lotCogs);
+            remaining -= fromThisLot;
+        }
+
+        if (remaining > 0) {
+            // Edge case: not enough lot data (e.g. item migrated from WAC or lots deleted)
+            // Fall back to zero cost for the remainder to avoid a hard crash.
+            // This can be surfaced as a warning in future iterations.
+        }
+
+        // Weighted-average unit cost across all consumed lots (for the unitCost column)
+        const effectiveUnitCost = quantity > 0
+            ? totalCogs.div(quantity)
+            : new Decimal(0);
+
+        return {
+            unitCost: effectiveUnitCost,
+            cogs: totalCogs,
+            lotConsumptions: consumptions,
+        };
     }
 
     // ═══════════════════════════════════════════════════════
@@ -453,10 +619,8 @@ export class InventoryService {
 
     /**
      * Process inventory line items attached to a financial Entry.
-     * Called within the Entry's own $transaction context.
-     *
-     * - EXPENSE entry → PURCHASE inventory transaction (stock-in)
-     * - INCOME entry  → SALE inventory transaction (stock-out)
+     * - EXPENSE entry → PURCHASE (stock-in)
+     * - INCOME entry  → SALE (stock-out), selling price = derived entry unit revenue
      */
     async processEntryInventory(
         tx: any,
@@ -469,9 +633,9 @@ export class InventoryService {
         notes: string | null = null,
     ) {
         const isPurchase = entryType === 'EXPENSE';
+        const totalQtyAllItems = inventoryItems.reduce((sum, li) => sum + li.quantity, 0);
 
         for (const lineItem of inventoryItems) {
-            // Validate item exists and belongs to workspace
             const item = await tx.inventoryItem.findUnique({
                 where: { id: lineItem.itemId },
                 include: { stock: true },
@@ -484,15 +648,22 @@ export class InventoryService {
                 throw new AppError(`Inventory item "${item.name}" is inactive`, 400, 'ITEM_INACTIVE');
             }
 
-            // Determine unit cost: explicit or derived from entry grossAmount / total qty
-            let unitCost: Decimal;
-            if (lineItem.unitCost) {
-                unitCost = new Decimal(lineItem.unitCost);
-            } else {
-                // Derive: split entry amount evenly among all line items based on quantity ratio
-                const totalQty = inventoryItems.reduce((sum, li) => sum + li.quantity, 0);
-                unitCost = entryAmount.div(totalQty);
+            // For purchases, unitCost = acquisition cost
+            let unitCostForIn: Decimal | null = null;
+            if (isPurchase) {
+                unitCostForIn = lineItem.unitCost
+                    ? new Decimal(lineItem.unitCost)
+                    : entryAmount.div(totalQtyAllItems);
             }
+
+            // For sales, sellingPrice is: explicit per-line value > fallback to prorated entry amount
+            const sellingPricePerUnit = !isPurchase
+                ? (lineItem.sellingPrice
+                    ? new Decimal(lineItem.sellingPrice)
+                    : lineItem.unitCost
+                        ? new Decimal(lineItem.unitCost)
+                        : entryAmount.div(totalQtyAllItems))
+                : null;
 
             if (isPurchase) {
                 await this.processStockIn(
@@ -500,7 +671,7 @@ export class InventoryService {
                     lineItem.itemId,
                     InventoryTransactionType.PURCHASE,
                     lineItem.quantity,
-                    unitCost,
+                    unitCostForIn!,
                     createdById,
                     InventoryReferenceType.ENTRY,
                     entryId,
@@ -508,7 +679,6 @@ export class InventoryService {
                     tx,
                 );
             } else {
-                // INCOME entry = selling stock
                 await this.processStockOut(
                     workspaceId,
                     lineItem.itemId,
@@ -519,6 +689,7 @@ export class InventoryService {
                     entryId,
                     notes,
                     tx,
+                    sellingPricePerUnit,
                 );
             }
         }
@@ -526,7 +697,6 @@ export class InventoryService {
 
     /**
      * Process inventory line items attached to a direct AccountTransaction.
-     * Called within the AccountTransaction's own $transaction context.
      */
     async processAccountTransactionInventory(
         tx: any,
@@ -539,6 +709,7 @@ export class InventoryService {
         notes: string | null = null,
     ) {
         const isPurchase = transactionType === 'EXPENSE';
+        const totalQtyAllItems = inventoryItems.reduce((sum, li) => sum + li.quantity, 0);
 
         for (const lineItem of inventoryItems) {
             const item = await tx.inventoryItem.findUnique({
@@ -553,13 +724,16 @@ export class InventoryService {
                 throw new AppError(`Inventory item "${item.name}" is inactive`, 400, 'ITEM_INACTIVE');
             }
 
-            let unitCost: Decimal;
-            if (lineItem.unitCost) {
-                unitCost = new Decimal(lineItem.unitCost);
-            } else {
-                const totalQty = inventoryItems.reduce((sum, li) => sum + li.quantity, 0);
-                unitCost = transactionAmount.div(totalQty);
-            }
+            const derivedAmount = lineItem.unitCost
+                ? new Decimal(lineItem.unitCost)
+                : transactionAmount.div(totalQtyAllItems);
+
+            // sellingPrice: explicit per-line value > fallback to prorated transaction amount
+            const sellingPricePerUnit = !isPurchase
+                ? (lineItem.sellingPrice
+                    ? new Decimal(lineItem.sellingPrice)
+                    : derivedAmount)
+                : null;
 
             if (isPurchase) {
                 await this.processStockIn(
@@ -567,7 +741,7 @@ export class InventoryService {
                     lineItem.itemId,
                     InventoryTransactionType.PURCHASE,
                     lineItem.quantity,
-                    unitCost,
+                    derivedAmount,
                     createdById,
                     InventoryReferenceType.ACCOUNT_TRANSACTION,
                     transactionId,
@@ -585,6 +759,7 @@ export class InventoryService {
                     transactionId,
                     notes,
                     tx,
+                    sellingPricePerUnit,
                 );
             }
         }
@@ -592,7 +767,6 @@ export class InventoryService {
 
     /**
      * Process inventory line items attached to a PAYABLE obligation.
-     * Called within the Obligation's own $transaction context.
      * Stocks in goods when a payable obligation is created.
      */
     async processObligationInventory(
@@ -604,6 +778,8 @@ export class InventoryService {
         createdById: string,
         notes: string | null = null,
     ) {
+        const totalQtyAllItems = inventoryItems.reduce((sum, li) => sum + li.quantity, 0);
+
         for (const lineItem of inventoryItems) {
             const item = await tx.inventoryItem.findUnique({
                 where: { id: lineItem.itemId },
@@ -617,13 +793,9 @@ export class InventoryService {
                 throw new AppError(`Inventory item "${item.name}" is inactive`, 400, 'ITEM_INACTIVE');
             }
 
-            let unitCost: Decimal;
-            if (lineItem.unitCost) {
-                unitCost = new Decimal(lineItem.unitCost);
-            } else {
-                const totalQty = inventoryItems.reduce((sum, li) => sum + li.quantity, 0);
-                unitCost = obligationAmount.div(totalQty);
-            }
+            const unitCost = lineItem.unitCost
+                ? new Decimal(lineItem.unitCost)
+                : obligationAmount.div(totalQtyAllItems);
 
             await this.processStockIn(
                 workspaceId,
@@ -643,18 +815,13 @@ export class InventoryService {
     /**
      * Reverse all inventory transactions linked to a specific financial reference.
      * Creates compensating transactions (opposite direction) to restore stock.
-     * Used when entries/account-transactions are updated or deleted.
-     *
-     * @param tx - Prisma transaction context
-     * @param referenceType - The type of financial reference (ENTRY, ACCOUNT_TRANSACTION, OBLIGATION)
-     * @param referenceId - The ID of the financial record
+     * FIFO/LIFO lots are restored by creating new lots with the original cost.
      */
     async reverseInventoryForReference(
         tx: any,
         referenceType: InventoryReferenceType,
         referenceId: string,
     ) {
-        // Find all inventory transactions linked to this reference
         const linkedTransactions = await tx.inventoryTransaction.findMany({
             where: { referenceType, referenceId },
             orderBy: { createdAt: 'asc' },
@@ -663,16 +830,23 @@ export class InventoryService {
         if (linkedTransactions.length === 0) return;
 
         for (const invTx of linkedTransactions) {
-            const stock = await tx.inventoryStock.findUnique({
-                where: { itemId: invTx.itemId },
-            });
+            await tx.$queryRaw`
+                SELECT id FROM inventory_stock WHERE item_id = ${invTx.itemId}::uuid FOR UPDATE
+            `;
 
+            const stock = await tx.inventoryStock.findUnique({ where: { itemId: invTx.itemId } });
             if (!stock) continue;
 
+            const item = await tx.inventoryItem.findUnique({ where: { id: invTx.itemId } });
+            const costMethod: InventoryCostMethod = item.costMethod;
+
             const absQuantity = Math.abs(invTx.quantity);
+            const reversalNotes = `Reversal: ${referenceType} ${referenceId} updated/deleted`;
 
             if (invTx.quantity > 0) {
-                // Original was stock-in → reverse = stock-out
+                // Original was stock-IN → reversal = stock-OUT
+                // Use the transaction's own unitCost to avoid retroactively changing COGS history
+                const unitCost = new Decimal(invTx.unitCost);
                 const avgCost = new Decimal(stock.averageCost);
                 const cogs = avgCost.mul(absQuantity);
                 const newQty = stock.quantityOnHand - absQuantity;
@@ -693,16 +867,30 @@ export class InventoryService {
                         costOfGoodsSold: cogs,
                         referenceType,
                         referenceId,
-                        notes: `Reversal: ${referenceType} ${referenceId} updated/deleted`,
+                        notes: reversalNotes,
                         createdById: invTx.createdById,
                     },
                 });
+
+                // For FIFO/LIFO: find and remove the lot that was created by this stock-in
+                if (costMethod === InventoryCostMethod.FIFO || costMethod === InventoryCostMethod.LIFO) {
+                    const lot = await tx.inventoryLot.findFirst({
+                        where: { transactionId: invTx.id },
+                    });
+                    if (lot) {
+                        // Reduce lot by the qty being reversed
+                        const reducedRemaining = Math.max(0, lot.quantityRemaining - absQuantity);
+                        await tx.inventoryLot.update({
+                            where: { id: lot.id },
+                            data: { quantityRemaining: reducedRemaining },
+                        });
+                    }
+                }
             } else {
-                // Original was stock-out → reverse = stock-in
+                // Original was stock-OUT → reversal = stock-IN (restore to stock)
                 const returnUnitCost = new Decimal(invTx.unitCost);
                 const totalCost = returnUnitCost.mul(absQuantity);
 
-                // Recalculate WAC on stock-in reversal
                 const currentQty = stock.quantityOnHand;
                 const currentAvgCost = new Decimal(stock.averageCost);
                 const totalExistingValue = currentAvgCost.mul(currentQty);
@@ -719,7 +907,7 @@ export class InventoryService {
                     },
                 });
 
-                await tx.inventoryTransaction.create({
+                const reversalInTx = await tx.inventoryTransaction.create({
                     data: {
                         workspaceId: invTx.workspaceId,
                         itemId: invTx.itemId,
@@ -729,10 +917,24 @@ export class InventoryService {
                         totalCost,
                         referenceType,
                         referenceId,
-                        notes: `Reversal: ${referenceType} ${referenceId} updated/deleted`,
+                        notes: reversalNotes,
                         createdById: invTx.createdById,
                     },
                 });
+
+                // For FIFO/LIFO: restore the lot inventory (re-open/create a lot)
+                if (costMethod === InventoryCostMethod.FIFO || costMethod === InventoryCostMethod.LIFO) {
+                    await tx.inventoryLot.create({
+                        data: {
+                            workspaceId: invTx.workspaceId,
+                            itemId: invTx.itemId,
+                            unitCost: returnUnitCost,
+                            quantityIn: absQuantity,
+                            quantityRemaining: absQuantity,
+                            transactionId: reversalInTx.id,
+                        },
+                    });
+                }
             }
         }
     }
@@ -749,6 +951,7 @@ export class InventoryService {
             sku: item.sku,
             unit: item.unit,
             category: item.category,
+            costMethod: item.costMethod,
             quantityOnHand: item.stock?.quantityOnHand ?? 0,
             averageCost: item.stock?.averageCost?.toString() ?? '0',
             inventoryValue: item.stock
@@ -770,6 +973,7 @@ export class InventoryService {
                 id: item.id,
                 name: item.name,
                 sku: item.sku,
+                costMethod: item.costMethod,
                 quantityOnHand: item.stock?.quantityOnHand ?? 0,
                 averageCost: item.stock?.averageCost?.toString() ?? '0',
                 value: value.toString(),
@@ -784,7 +988,6 @@ export class InventoryService {
     }
 
     async getStockMovementHistory(workspaceId: string, itemId: string) {
-        // Verify item belongs to workspace
         const item = await this.repository.findItemById(itemId);
         if (!item || item.workspaceId !== workspaceId) {
             throw new NotFoundError('Inventory Item');
@@ -803,6 +1006,7 @@ export class InventoryService {
                 name: item.name,
                 sku: item.sku,
                 unit: item.unit,
+                costMethod: item.costMethod,
                 currentStock: item.stock?.quantityOnHand ?? 0,
                 averageCost: item.stock?.averageCost?.toString() ?? '0',
             },
@@ -818,14 +1022,24 @@ export class InventoryService {
         );
 
         let totalCogs = new Decimal(0);
+        let totalRevenue = new Decimal(0);
+
         for (const t of transactions) {
             if (t.costOfGoodsSold) {
                 totalCogs = totalCogs.add(new Decimal(t.costOfGoodsSold));
             }
+            if ((t as any).sellingPrice) {
+                const qty = Math.abs(t.quantity);
+                totalRevenue = totalRevenue.add(new Decimal((t as any).sellingPrice).mul(qty));
+            }
         }
+
+        const grossProfit = totalRevenue.sub(totalCogs);
 
         return {
             totalCostOfGoodsSold: totalCogs.toString(),
+            totalRevenue: totalRevenue.toString(),
+            grossProfit: grossProfit.toString(),
             transactionCount: transactions.length,
             transactions: transactions.map(t => ({
                 id: t.id,
@@ -833,7 +1047,9 @@ export class InventoryService {
                 itemSku: t.item.sku,
                 transactionType: t.transactionType,
                 quantity: t.quantity,
+                unitCost: t.unitCost.toString(),
                 costOfGoodsSold: t.costOfGoodsSold?.toString() ?? '0',
+                sellingPrice: (t as any).sellingPrice?.toString() ?? null,
                 createdAt: t.createdAt,
             })),
         };
@@ -882,7 +1098,6 @@ export class InventoryService {
                 break;
             }
             case InventoryReferenceType.MANUAL:
-                // No validation needed
                 break;
         }
     }

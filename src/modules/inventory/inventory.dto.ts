@@ -41,20 +41,52 @@ const STOCK_IN_TYPES = ['PURCHASE', 'TRANSFER_IN', 'RETURN_IN', 'ADJUSTMENT'] as
 const STOCK_OUT_TYPES = ['SALE', 'TRANSFER_OUT', 'RETURN_OUT', 'ADJUSTMENT'] as const;
 const ALL_TRANSACTION_TYPES = ['PURCHASE', 'SALE', 'ADJUSTMENT', 'TRANSFER_IN', 'TRANSFER_OUT', 'RETURN_IN', 'RETURN_OUT'] as const;
 
+// Stock direction helpers (mirrors the service constants)
+const STOCK_IN_TRANSACTION_TYPES = ['PURCHASE', 'TRANSFER_IN', 'RETURN_IN'] as const;
+const STOCK_OUT_TRANSACTION_TYPES = ['SALE', 'TRANSFER_OUT', 'RETURN_OUT'] as const;
+
 export const createInventoryTransactionSchema = z.object({
     itemId: z.string().uuid('Invalid item ID'),
     transactionType: z.enum(ALL_TRANSACTION_TYPES),
     quantity: z.coerce.number().int().min(1, 'Quantity must be at least 1'),
-    unitCost: decimalString,
+    // unitCost is required only for stock-IN types (PURCHASE, TRANSFER_IN, RETURN_IN, ADJUSTMENT).
+    // For stock-OUT types (SALE, TRANSFER_OUT, RETURN_OUT) COGS is always calculated by the cost
+    // method (WAC / FIFO / LIFO) and unitCost is ignored — omit it to avoid confusion.
+    unitCost: decimalString.optional(),
+    // sellingPrice is the revenue per unit. Relevant only for stock-OUT types.
+    // Stored separately from COGS so gross-margin can be computed per transaction.
+    sellingPrice: decimalString.optional(),
     referenceType: z.enum(['ENTRY', 'ACCOUNT_TRANSACTION', 'OBLIGATION', 'MANUAL']).optional(),
     referenceId: z.string().uuid().optional(),
     notes: z.string().max(1000).optional(),
-}).refine(
+})
+.refine(
     (data) => {
-        // Require notes for ADJUSTMENT type
-        if (data.transactionType === 'ADJUSTMENT' && (!data.notes || data.notes.trim() === '')) {
-            return false;
-        }
+        // Stock-in types require an acquisition cost so the lot / WAC can be recorded.
+        const isStockIn = (STOCK_IN_TRANSACTION_TYPES as readonly string[]).includes(data.transactionType);
+        if (isStockIn && !data.unitCost) return false;
+        return true;
+    },
+    {
+        message: 'unitCost is required for stock-in transactions (PURCHASE, TRANSFER_IN, RETURN_IN)',
+        path: ['unitCost'],
+    }
+)
+.refine(
+    (data) => {
+        // ADJUSTMENTs act as stock-in but also need a cost for the lot value.
+        if (data.transactionType === 'ADJUSTMENT' && !data.unitCost) return false;
+        return true;
+    },
+    {
+        message: 'unitCost is required for ADJUSTMENT transactions',
+        path: ['unitCost'],
+    }
+)
+.refine(
+    (data) => {
+        // Notes are mandatory for ADJUSTMENT so there is always an explanation.
+        if (data.transactionType === 'ADJUSTMENT' && (!data.notes || data.notes.trim() === '')) return false;
         return true;
     },
     { message: 'Notes are required for adjustment transactions', path: ['notes'] }
@@ -75,7 +107,8 @@ export const inventoryTransactionQuerySchema = z.object({
 export const inventoryLineItemSchema = z.object({
     itemId: z.string().uuid('Invalid inventory item ID'),
     quantity: z.coerce.number().int().min(1, 'Quantity must be at least 1'),
-    unitCost: decimalString.optional(), // If omitted, derived from entry amount / total quantity
+    unitCost: decimalString.optional(),      // Acquisition cost (EXPENSE/purchase contexts)
+    sellingPrice: decimalString.optional(),  // Selling price per unit (INCOME/sale contexts, for gross-margin reporting)
 });
 
 // ─── Report query schemas ──────────────────────────────

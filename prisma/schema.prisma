@@ -623,6 +623,7 @@ model InventoryItem {
   workspace    Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   stock        InventoryStock?
   transactions InventoryTransaction[]
+  lots         InventoryLot[]
 
   @@unique([workspaceId, sku])
   @@index([workspaceId])
@@ -650,13 +651,15 @@ model InventoryTransaction {
   unitCost        Decimal                  @map("unit_cost") @db.Decimal(20, 4)
   totalCost       Decimal                  @map("total_cost") @db.Decimal(20, 4)
   costOfGoodsSold Decimal?                 @map("cost_of_goods_sold") @db.Decimal(20, 4)
+  sellingPrice    Decimal?                 @map("selling_price") @db.Decimal(20, 4)
   referenceType   InventoryReferenceType?  @map("reference_type")
   referenceId     String?                  @map("reference_id") @db.Uuid
   notes           String?
   createdById     String                   @map("created_by_id") @db.Uuid
   createdAt       DateTime                 @default(now()) @map("created_at")
 
-  item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  item            InventoryItem    @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  lotConsumptions LotConsumption[]
 
   @@index([itemId])
   @@index([workspaceId])
@@ -664,4 +667,43 @@ model InventoryTransaction {
   @@index([transactionType])
   @@index([createdAt])
   @@map("inventory_transactions")
+}
+
+// ─── Lot-based costing (FIFO / LIFO) ─────────────────────
+
+// One "lot" is created for each stock-in event for FIFO/LIFO items.
+// Tracks how many units remain from that purchase at its original unit cost.
+model InventoryLot {
+  id                String   @id @default(uuid()) @db.Uuid
+  workspaceId       String   @map("workspace_id") @db.Uuid
+  itemId            String   @map("item_id") @db.Uuid
+  unitCost          Decimal  @map("unit_cost") @db.Decimal(20, 4)
+  quantityIn        Int      @map("quantity_in")
+  quantityRemaining Int      @map("quantity_remaining")
+  transactionId     String   @map("transaction_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  item         InventoryItem    @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  consumptions LotConsumption[]
+
+  @@index([itemId, quantityRemaining])
+  @@index([workspaceId])
+  @@index([createdAt])
+  @@map("inventory_lots")
+}
+
+// Links a stock-out transaction to the lot(s) it consumed.
+model LotConsumption {
+  id            String  @id @default(uuid()) @db.Uuid
+  lotId         String  @map("lot_id") @db.Uuid
+  transactionId String  @map("transaction_id") @db.Uuid
+  quantityUsed  Int     @map("quantity_used")
+  unitCost      Decimal @map("unit_cost") @db.Decimal(20, 4)
+
+  lot         InventoryLot         @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([lotId])
+  @@index([transactionId])
+  @@map("lot_consumptions")
 }
