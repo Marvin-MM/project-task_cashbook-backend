@@ -19,6 +19,8 @@ import accountCategoriesRoutes from '../modules/account-categories/account-categ
 import accountsRoutes from '../modules/accounts/accounts.routes';
 import accountTransactionsRoutes from '../modules/account-transactions/account-transactions.routes';
 import inventoryRoutes from '../modules/inventory/inventory.routes';
+import catalogRoutes from '../modules/catalog/catalog.routes';
+import invoicingRoutes from '../modules/invoicing/invoicing.routes';
 
 const router = Router();
 
@@ -32,6 +34,8 @@ router.use('/workspaces/:workspaceId/account-categories', accountCategoriesRoute
 router.use('/workspaces/:workspaceId/accounts', accountsRoutes);
 router.use('/workspaces/:workspaceId/accounts/:accountId/transactions', accountTransactionsRoutes);
 router.use('/workspaces/:workspaceId/inventory', inventoryRoutes);
+router.use('/workspaces/:workspaceId/catalog', catalogRoutes);
+router.use('/workspaces/:workspaceId/invoices', invoicingRoutes);
 router.use('/cashbooks', cashbooksRoutes);
 router.use('/cashbooks/:cashbookId/obligations', obligationsRouter);
 router.use('/entries', entriesRoutes);

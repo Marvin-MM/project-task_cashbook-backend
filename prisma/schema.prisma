@@ -101,6 +101,10 @@ model Workspace {
   accounts           Account[]
   accountCategories  AccountCategory[]
   inventoryItems     InventoryItem[]
+  taxes              Tax[]
+  productsServices   ProductService[]
+  invoices           Invoice[]
+  invoiceSettings    InvoiceSettings?
 
   @@index([ownerId])
   @@index([type])
@@ -280,18 +284,24 @@ model CashbookObligation {
   outstandingAmount Decimal          @map("outstanding_amount") @db.Decimal(20, 4)
   status            ObligationStatus @default(OPEN)
   dueDate           DateTime?        @map("due_date")
+  contactId         String?          @map("contact_id") @db.Uuid
+  referenceType     String?          @map("reference_type") // e.g. 'INVOICE'
+  referenceId       String?          @map("reference_id") @db.Uuid
   archivedAt        DateTime?        @map("archived_at")
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   cashbook  Cashbook  @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
+  contact   Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
   entries   Entry[]
 
   @@index([workspaceId])
   @@index([cashbookId])
   @@index([status])
   @@index([dueDate])
+  @@index([contactId])
+  @@index([referenceType, referenceId])
   @@map("cashbook_obligations")
 }
 
@@ -316,23 +326,51 @@ model Category {
 
 // ─── Contact ───────────────────────────────────────────
 
+enum ContactType {
+  PERSONAL
+  CUSTOMER
+  VENDOR
+}
+
 model Contact {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @map("workspace_id") @db.Uuid
+  id          String      @id @default(uuid()) @db.Uuid
+  workspaceId String      @map("workspace_id") @db.Uuid
+  type        ContactType @default(PERSONAL)
   name        String
   email       String?
   phone       String?
   company     String?
   notes       String?
-  isActive    Boolean  @default(true) @map("is_active")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  isActive    Boolean     @default(true) @map("is_active")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  entries   Entry[]
+  workspace       Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entries         Entry[]
+  customerProfile CustomerProfile?
+  obligations     CashbookObligation[]
+  invoices        Invoice[]
 
   @@index([workspaceId])
+  @@index([type])
   @@map("contacts")
+}
+
+model CustomerProfile {
+  id              String   @id @default(uuid()) @db.Uuid
+  contactId       String   @unique @map("contact_id") @db.Uuid
+  billingAddress  Json?    @map("billing_address")
+  shippingAddress Json?    @map("shipping_address")
+  currency        String?
+  accountNumber   String?  @map("account_number")
+  taxId           String?  @map("tax_id")
+  notes           String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@map("customer_profiles")
 }
 
 // ─── Payment Mode ──────────────────────────────────────
@@ -603,6 +641,7 @@ enum InventoryReferenceType {
   ENTRY
   ACCOUNT_TRANSACTION
   OBLIGATION
+  INVOICE
   MANUAL
 }
 
@@ -707,3 +746,137 @@ model LotConsumption {
   @@index([transactionId])
   @@map("lot_consumptions")
 }
+
+// ─── Catalog (Products/Services + Tax) ─────────────────
+
+enum ProductServiceType {
+  PRODUCT
+  SERVICE
+}
+
+model Tax {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  name           String
+  rate           Decimal  @db.Decimal(10, 4) // e.g. 18.0000 for 18%
+  isCompound     Boolean  @default(false) @map("is_compound")
+  isRecoverable  Boolean  @default(true) @map("is_recoverable")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  productsServices ProductService[]
+  invoiceItems    InvoiceItem[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@map("taxes")
+}
+
+model ProductService {
+  id          String             @id @default(uuid()) @db.Uuid
+  workspaceId String             @map("workspace_id") @db.Uuid
+  name        String
+  description String?
+  price       Decimal            @default(0) @db.Decimal(20, 4)
+  type        ProductServiceType
+  isSellable  Boolean            @default(true) @map("is_sellable")
+  isBuyable   Boolean            @default(false) @map("is_buyable")
+  taxId       String?            @map("tax_id") @db.Uuid
+  isActive    Boolean            @default(true) @map("is_active")
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tax          Tax?          @relation(fields: [taxId], references: [id], onDelete: SetNull)
+  invoiceItems InvoiceItem[]
+
+  @@index([workspaceId])
+  @@index([type])
+  @@map("products_services")
+}
+
+// ─── Invoicing ─────────────────────────────────────────
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+}
+
+model Invoice {
+  id              String        @id @default(uuid()) @db.Uuid
+  workspaceId     String        @map("workspace_id") @db.Uuid
+  customerId      String        @map("customer_id") @db.Uuid
+  invoiceNumber   String        @map("invoice_number")
+  status          InvoiceStatus @default(DRAFT)
+  issueDate       DateTime      @map("issue_date")
+  dueDate         DateTime      @map("due_date")
+  currency        String        @default("UGX")
+  subtotal        Decimal       @default(0) @db.Decimal(20, 4)
+  discountAmount  Decimal       @default(0) @map("discount_amount") @db.Decimal(20, 4)
+  taxAmount       Decimal       @default(0) @map("tax_amount") @db.Decimal(20, 4)
+  totalAmount     Decimal       @default(0) @map("total_amount") @db.Decimal(20, 4)
+  amountPaid      Decimal       @default(0) @map("amount_paid") @db.Decimal(20, 4)
+  amountDue       Decimal       @default(0) @map("amount_due") @db.Decimal(20, 4)
+  notes           String?
+  footer          String?
+  createdById     String        @map("created_by_id") @db.Uuid
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customer  Contact       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  items     InvoiceItem[]
+
+  @@unique([workspaceId, invoiceNumber])
+  @@index([workspaceId])
+  @@index([customerId])
+  @@index([status])
+  @@index([issueDate])
+  @@index([dueDate])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id               String  @id @default(uuid()) @db.Uuid
+  invoiceId        String  @map("invoice_id") @db.Uuid
+  productServiceId String? @map("product_service_id") @db.Uuid
+  name             String // snapshot of product/service name at time of invoicing
+  description      String?
+  quantity         Decimal @db.Decimal(20, 4)
+  unitPrice        Decimal @map("unit_price") @db.Decimal(20, 4)
+  taxId            String? @map("tax_id") @db.Uuid
+  taxRate          Decimal @default(0) @map("tax_rate") @db.Decimal(10, 4) // snapshot
+  taxAmount        Decimal @default(0) @map("tax_amount") @db.Decimal(20, 4)
+  total            Decimal @default(0) @db.Decimal(20, 4)
+
+  invoice        Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productService ProductService? @relation(fields: [productServiceId], references: [id], onDelete: SetNull)
+  tax            Tax?            @relation(fields: [taxId], references: [id], onDelete: SetNull)
+
+  @@index([invoiceId])
+  @@map("invoice_items")
+}
+
+model InvoiceSettings {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @unique @map("workspace_id") @db.Uuid
+  logoUrl       String?  @map("logo_url")
+  accentColor   String?  @default("#4F46E5") @map("accent_color")
+  template      String   @default("classic") // classic | modern | contemporary
+  defaultTerms  String?  @map("default_terms")
+  defaultFooter String?  @map("default_footer")
+  defaultNotes  String?  @map("default_notes")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_settings")
+}
+

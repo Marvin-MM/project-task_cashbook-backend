@@ -345,6 +345,12 @@ export class EntriesService {
                         } as any
                     }
                 })
+
+                // 6. Sync invoice if obligation references one
+                if (lockedObligation.referenceType === 'INVOICE' && lockedObligation.referenceId) {
+                    const { InvoicingService } = await import('../invoicing/invoicing.service');
+                    await InvoicingService.syncInvoicePayment(tx, lockedObligation.referenceId, newOutstanding);
+                }
             }
 
             // Create entry audit
