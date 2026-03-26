@@ -6,6 +6,7 @@ import { AppError, NotFoundError } from '../../core/errors/AppError';
 import { AuditAction } from '../../core/types';
 import { generateInvoicePdf } from './pdf.generator';
 import { sendEmail } from '../../config/email';
+import { invoiceEmailTemplate } from '../../utils/emailTemplates';
 import { InventoryService } from '../inventory/inventory.service';
 import {
     CreateInvoiceDto,
@@ -300,26 +301,61 @@ export class InvoicingService {
             });
         });
 
-        // 5. Generate ephemeral PDF and queue email (outside transaction — failure is non-blocking)
+        // 5. Generate ephemeral PDF and send professional email (outside transaction — failure is non-blocking)
         try {
             if (invoice.customer.email) {
                 const [settings, workspace] = await Promise.all([
                     this.repository.getInvoiceSettings(workspaceId),
                     this.prisma.workspace.findUnique({ where: { id: workspaceId } }),
                 ]);
-                const pdfBuffer = await generateInvoicePdf(invoice, settings, workspace?.name || 'Business');
+
+                // Fetch the freshly-sent invoice with inventory item data for PDF
+                const invoiceForPdf = await this.prisma.invoice.findUnique({
+                    where: { id: invoiceId },
+                    include: {
+                        customer: {
+                            select: { id: true, name: true, email: true, phone: true, company: true, customerProfile: true },
+                        },
+                        items: {
+                            include: {
+                                inventoryItem: { select: { name: true, sku: true, unit: true } },
+                                tax: { select: { id: true, name: true, rate: true } },
+                            },
+                            orderBy: { id: 'asc' },
+                        },
+                    },
+                });
+
+                const businessName = workspace?.name || 'Business';
+                const pdfBuffer = await generateInvoicePdf(
+                    invoiceForPdf as any,
+                    settings,
+                    businessName,
+                );
+
+                // Build items summary for email body (≤5 shown inline, rest noted)
+                const itemsSummary = (invoiceForPdf?.items || []).map(item => ({
+                    name: item.name,
+                    quantity: String(item.quantity),
+                    total: Number(item.total).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+                }));
+
+                const htmlBody = invoiceEmailTemplate({
+                    customerName: invoice.customer.name,
+                    businessName,
+                    invoiceNumber: invoice.invoiceNumber,
+                    currency: invoice.currency,
+                    totalAmount: Number(invoice.totalAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+                    dueDate: new Date(invoice.dueDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+                    itemsSummary,
+                    notes: invoice.notes,
+                    logoUrl: settings?.logoUrl || null,
+                });
 
                 await sendEmail({
                     to: invoice.customer.email,
-                    subject: `Invoice ${invoice.invoiceNumber} from ${workspace?.name || 'Business'}`,
-                    html: `
-                        <h2>Invoice ${invoice.invoiceNumber}</h2>
-                        <p>Dear ${invoice.customer.name},</p>
-                        <p>Please find attached your invoice for <strong>${invoice.currency} ${invoice.totalAmount}</strong>.</p>
-                        <p>Due date: <strong>${new Date(invoice.dueDate).toLocaleDateString()}</strong></p>
-                        ${invoice.notes ? `<p>${invoice.notes}</p>` : ''}
-                        <p>Thank you for your business!</p>
-                    `,
+                    subject: `Invoice ${invoice.invoiceNumber} from ${businessName}`,
+                    html: htmlBody,
                     attachments: [{
                         filename: `${invoice.invoiceNumber}.pdf`,
                         content: pdfBuffer,
@@ -328,7 +364,7 @@ export class InvoicingService {
                 });
             }
         } catch (_err) {
-            // Email failure must not roll back the send operation.
+            // Email / PDF failure must not roll back the send operation.
             // Invoice is already SENT and obligation already created.
         }
 
