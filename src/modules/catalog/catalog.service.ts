@@ -123,6 +123,21 @@ export class CatalogService {
             }
         }
 
+        // Validate inventoryItemId if provided (only meaningful for PRODUCT type)
+        if (dto.inventoryItemId) {
+            if (dto.type !== 'PRODUCT') {
+                throw new AppError('inventoryItemId can only be set on PRODUCT type items', 400, 'INVALID_INVENTORY_LINK');
+            }
+            const invItem = await this.prisma.inventoryItem.findUnique({
+                where: { id: dto.inventoryItemId },
+                select: { id: true, workspaceId: true, isActive: true },
+            });
+            if (!invItem || invItem.workspaceId !== workspaceId || !invItem.isActive) {
+                throw new AppError('Inventory item not found or inactive', 404, 'INVALID_INVENTORY_ITEM');
+            }
+        }
+
+        // inventoryItemId is now in the Prisma client after db push + generate
         const item = await this.prisma.productService.create({
             data: {
                 workspaceId,
@@ -133,12 +148,13 @@ export class CatalogService {
                 isSellable: dto.isSellable ?? true,
                 isBuyable: dto.isBuyable ?? false,
                 taxId: dto.taxId || null,
+                inventoryItemId: dto.inventoryItemId || null,
             },
             include: { tax: true },
         });
 
         await this.prisma.auditLog.create({
-            data: { userId, workspaceId, action: AuditAction.PRODUCT_SERVICE_CREATED, resource: 'product_service', resourceId: item.id, details: { name: dto.name, type: dto.type } as any },
+            data: { userId, workspaceId, action: AuditAction.PRODUCT_SERVICE_CREATED, resource: 'product_service', resourceId: item.id, details: { name: dto.name, type: dto.type, inventoryItemId: dto.inventoryItemId || null } as any },
         });
 
         return item;
@@ -156,11 +172,27 @@ export class CatalogService {
             }
         }
 
+        // Validate inventoryItemId if being set (only valid on PRODUCT type)
+        const effectiveType = dto.type || (item as any).type;
+        if (dto.inventoryItemId) {
+            if (effectiveType !== 'PRODUCT') {
+                throw new AppError('inventoryItemId can only be set on PRODUCT type items', 400, 'INVALID_INVENTORY_LINK');
+            }
+            const invItem = await this.prisma.inventoryItem.findUnique({
+                where: { id: dto.inventoryItemId },
+                select: { id: true, workspaceId: true, isActive: true },
+            });
+            if (!invItem || invItem.workspaceId !== workspaceId || !invItem.isActive) {
+                throw new AppError('Inventory item not found or inactive', 404, 'INVALID_INVENTORY_ITEM');
+            }
+        }
+
         const updated = await this.prisma.productService.update({
             where: { id },
             data: {
                 ...dto,
                 type: dto.type ? (dto.type as ProductServiceType) : undefined,
+                inventoryItemId: dto.inventoryItemId !== undefined ? (dto.inventoryItemId || null) : undefined,
             },
             include: { tax: true },
         });

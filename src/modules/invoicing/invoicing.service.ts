@@ -1,11 +1,12 @@
 import { injectable, inject } from 'tsyringe';
-import { PrismaClient, InvoiceStatus, ContactType, ObligationStatus, ObligationType, ProductServiceType, InventoryReferenceType, InventoryTransactionType } from '@prisma/client';
+import { PrismaClient, InvoiceStatus, ContactType, ObligationStatus, ObligationType, InventoryReferenceType, InventoryTransactionType } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { InvoicingRepository } from './invoicing.repository';
 import { AppError, NotFoundError } from '../../core/errors/AppError';
 import { AuditAction } from '../../core/types';
 import { generateInvoicePdf } from './pdf.generator';
 import { sendEmail } from '../../config/email';
+import { InventoryService } from '../inventory/inventory.service';
 import {
     CreateInvoiceDto,
     UpdateInvoiceDto,
@@ -13,10 +14,25 @@ import {
     UpdateInvoiceSettingsDto,
 } from './invoicing.dto';
 
+// ─── Internal type for calculated line items ───────────────────────────────────
+interface CalculatedItem {
+    productServiceId?: string;
+    inventoryItemId?: string;  // resolved from productService.inventoryItemId or item-level override
+    name: string;
+    description?: string;
+    quantity: Decimal;
+    unitPrice: Decimal;
+    taxId?: string;
+    taxRate: Decimal;
+    taxAmount: Decimal;
+    total: Decimal;
+}
+
 @injectable()
 export class InvoicingService {
     constructor(
         private repository: InvoicingRepository,
+        private inventoryService: InventoryService,
         @inject('PrismaClient') private prisma: PrismaClient,
     ) { }
 
@@ -62,11 +78,10 @@ export class InvoicingService {
             throw new AppError('Due date must be on or after the issue date', 400, 'INVALID_DUE_DATE');
         }
 
-        // Server-side calculations
+        // Server-side calculations (resolves inventoryItemId via product service link)
         const { items, subtotal, taxAmount, discountAmount, totalAmount, amountDue } =
             await this.calculateInvoiceTotals(workspaceId, dto.items, dto.discountAmount);
 
-        // Block negative totals
         if (totalAmount.lessThan(0)) {
             throw new AppError('Invoice total cannot be negative', 400, 'NEGATIVE_TOTAL');
         }
@@ -93,11 +108,12 @@ export class InvoicingService {
                 },
             });
 
-            // Create invoice items
+            // Create invoice items — including the resolved inventoryItemId snapshot
             await tx.invoiceItem.createMany({
                 data: items.map(item => ({
                     invoiceId: inv.id,
                     productServiceId: item.productServiceId || null,
+                    inventoryItemId: item.inventoryItemId || null,
                     name: item.name,
                     description: item.description || null,
                     quantity: item.quantity,
@@ -139,7 +155,6 @@ export class InvoicingService {
             throw new AppError('Only DRAFT invoices can be edited', 400, 'INVOICE_NOT_EDITABLE');
         }
 
-        // Validate customer if changing
         if (dto.customerId) {
             const customer = await this.prisma.contact.findUnique({ where: { id: dto.customerId } });
             if (!customer || customer.workspaceId !== workspaceId || customer.type !== ContactType.CUSTOMER) {
@@ -147,7 +162,6 @@ export class InvoicingService {
             }
         }
 
-        // Validate duplication if changing invoice number
         if (dto.invoiceNumber && dto.invoiceNumber !== existing.invoiceNumber) {
             const dup = await this.prisma.invoice.findUnique({
                 where: { workspaceId_invoiceNumber: { workspaceId, invoiceNumber: dto.invoiceNumber } },
@@ -166,13 +180,13 @@ export class InvoicingService {
 
             calculatedData = { subtotal, taxAmount, discountAmount, totalAmount, amountDue };
 
-            // Replace items
             await this.prisma.$transaction(async (tx) => {
                 await tx.invoiceItem.deleteMany({ where: { invoiceId } });
                 await tx.invoiceItem.createMany({
                     data: items.map(item => ({
                         invoiceId,
                         productServiceId: item.productServiceId || null,
+                        inventoryItemId: item.inventoryItemId || null,
                         name: item.name,
                         description: item.description || null,
                         quantity: item.quantity,
@@ -221,7 +235,6 @@ export class InvoicingService {
             throw new AppError('Only DRAFT invoices can be sent', 400, 'INVALID_STATUS');
         }
 
-        // Validate cashbook
         const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: cashbookId },
             select: { id: true, workspaceId: true, isActive: true },
@@ -231,20 +244,20 @@ export class InvoicingService {
         }
 
         await this.prisma.$transaction(async (tx) => {
-            // 1. Update invoice status to SENT
+            // 1. Mark invoice as SENT
             await tx.invoice.update({
                 where: { id: invoiceId },
                 data: { status: InvoiceStatus.SENT },
             });
 
-            // 2. Create RECEIVABLE obligation
+            // 2. Create a RECEIVABLE obligation linked back to this invoice
             await tx.cashbookObligation.create({
                 data: {
                     workspaceId,
                     cashbookId,
                     type: ObligationType.RECEIVABLE,
                     title: `Invoice ${invoice.invoiceNumber}`,
-                    description: `Receivable for invoice ${invoice.invoiceNumber} - ${invoice.customer.name}`,
+                    description: `Receivable for invoice ${invoice.invoiceNumber} — ${invoice.customer.name}`,
                     totalAmount: invoice.totalAmount,
                     outstandingAmount: invoice.amountDue,
                     status: ObligationStatus.OPEN,
@@ -255,68 +268,45 @@ export class InvoicingService {
                 },
             });
 
-            // 3. Inventory stock-out for PRODUCT items
-            const productItems = invoice.items.filter(
-                item => item.productService?.type === ProductServiceType.PRODUCT
-            );
-            if (productItems.length > 0) {
-                for (const item of productItems) {
-                    // Find inventory item by product name or linked productServiceId
-                    // We use a raw query to find inventory items matching the product
-                    const inventoryItems = await tx.inventoryItem.findMany({
-                        where: {
-                            workspaceId,
-                            name: item.name,
-                            isActive: true,
-                        },
-                        include: { stock: true },
-                    });
+            // 3. Stock-out for every invoice line item that has a resolved inventoryItemId.
+            //    We use the proper processStockOut path to ensure:
+            //      - SELECT FOR UPDATE locking (no concurrent stock race)
+            //      - Correct FIFO/LIFO/WAC COGS resolution
+            //      - LotConsumption audit trail for FIFO/LIFO items
+            //      - Negative-stock guard respects item's allowNegativeStock flag
+            for (const lineItem of invoice.items) {
+                if (!lineItem.inventoryItemId) continue; // service or free-text item — skip
 
-                    if (inventoryItems.length > 0) {
-                        const invItem = inventoryItems[0];
-                        const qty = Math.round(Number(item.quantity));
-                        if (qty > 0) {
-                            await tx.inventoryTransaction.create({
-                                data: {
-                                    workspaceId,
-                                    itemId: invItem.id,
-                                    transactionType: InventoryTransactionType.SALE,
-                                    quantity: -qty,
-                                    unitCost: invItem.stock?.averageCost || new Decimal(0),
-                                    totalCost: (invItem.stock?.averageCost || new Decimal(0)).mul(qty),
-                                    sellingPrice: item.unitPrice,
-                                    referenceType: InventoryReferenceType.INVOICE,
-                                    referenceId: invoiceId,
-                                    notes: `Stock-out for invoice ${invoice.invoiceNumber}`,
-                                    createdById: userId,
-                                },
-                            });
+                const qty = Math.round(Number(lineItem.quantity));
+                if (qty <= 0) continue;
 
-                            // Update stock
-                            if (invItem.stock) {
-                                await tx.inventoryStock.update({
-                                    where: { itemId: invItem.id },
-                                    data: {
-                                        quantityOnHand: { decrement: qty },
-                                    },
-                                });
-                            }
-                        }
-                    }
-                }
+                await this.inventoryService.processStockOut(
+                    workspaceId,
+                    lineItem.inventoryItemId,
+                    InventoryTransactionType.SALE,
+                    qty,
+                    userId,
+                    InventoryReferenceType.INVOICE,
+                    invoiceId,
+                    `Stock-out for invoice ${invoice.invoiceNumber}`,
+                    tx,                          // run inside same transaction
+                    new Decimal(lineItem.unitPrice), // selling price for margin reporting
+                );
             }
 
-            // 4. Audit
+            // 4. Audit log
             await tx.auditLog.create({
                 data: { userId, workspaceId, action: AuditAction.INVOICE_SENT, resource: 'invoice', resourceId: invoiceId },
             });
         });
 
-        // 5. Generate PDF and send email (outside transaction, queued)
+        // 5. Generate ephemeral PDF and queue email (outside transaction — failure is non-blocking)
         try {
             if (invoice.customer.email) {
-                const settings = await this.repository.getInvoiceSettings(workspaceId);
-                const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+                const [settings, workspace] = await Promise.all([
+                    this.repository.getInvoiceSettings(workspaceId),
+                    this.prisma.workspace.findUnique({ where: { id: workspaceId } }),
+                ]);
                 const pdfBuffer = await generateInvoicePdf(invoice, settings, workspace?.name || 'Business');
 
                 await sendEmail({
@@ -337,9 +327,9 @@ export class InvoicingService {
                     }],
                 });
             }
-        } catch (error) {
-            // Email failure should not block the send operation
-            // The invoice is already marked as SENT and obligation created
+        } catch (_err) {
+            // Email failure must not roll back the send operation.
+            // Invoice is already SENT and obligation already created.
         }
 
         return this.repository.findById(invoiceId);
@@ -359,20 +349,27 @@ export class InvoicingService {
             throw new AppError('Invoice is already voided', 400, 'ALREADY_VOIDED');
         }
 
-        // Cannot void if payments have been made
         if (new Decimal(invoice.amountPaid).greaterThan(0)) {
-            throw new AppError('Cannot void an invoice with payments applied. Refund payments first.', 400, 'HAS_PAYMENTS');
+            throw new AppError(
+                'Cannot void an invoice with payments applied. Refund payments first.',
+                400,
+                'HAS_PAYMENTS'
+            );
         }
 
         await this.prisma.$transaction(async (tx) => {
-            // Update invoice status
+            // 1. Mark invoice VOID
             await tx.invoice.update({
                 where: { id: invoiceId },
                 data: { status: InvoiceStatus.VOID },
             });
 
-            // Cancel linked obligation if exists
-            if (invoice.status === InvoiceStatus.SENT || invoice.status === InvoiceStatus.OVERDUE) {
+            // 2. Cancel the linked RECEIVABLE obligation if there is one
+            if (
+                invoice.status === InvoiceStatus.SENT ||
+                invoice.status === InvoiceStatus.OVERDUE ||
+                invoice.status === InvoiceStatus.PARTIALLY_PAID
+            ) {
                 await tx.cashbookObligation.updateMany({
                     where: {
                         referenceType: 'INVOICE',
@@ -383,9 +380,10 @@ export class InvoicingService {
                 });
             }
 
-            // Reverse inventory transactions if any
-            await this.reverseInvoiceInventory(tx, invoiceId, workspaceId);
+            // 3. Reverse inventory stock-outs via RETURN_IN (proper lot restoration for FIFO/LIFO)
+            await this.reverseInvoiceInventory(tx, invoice, workspaceId, userId);
 
+            // 4. Audit
             await tx.auditLog.create({
                 data: { userId, workspaceId, action: AuditAction.INVOICE_VOIDED, resource: 'invoice', resourceId: invoiceId },
             });
@@ -404,7 +402,6 @@ export class InvoicingService {
             throw new NotFoundError('Invoice');
         }
 
-        // Only DRAFT or VOID invoices can be deleted
         if (invoice.status !== InvoiceStatus.DRAFT && invoice.status !== InvoiceStatus.VOID) {
             throw new AppError('Only DRAFT or VOID invoices can be deleted', 400, 'CANNOT_DELETE');
         }
@@ -507,7 +504,6 @@ export class InvoicingService {
             _count: { id: true },
         });
 
-        // Enrich with customer names
         const customerIds = results.map(r => r.customerId);
         const customers = await this.prisma.contact.findMany({
             where: { id: { in: customerIds } },
@@ -529,16 +525,12 @@ export class InvoicingService {
     async getSettings(workspaceId: string) {
         let settings = await this.repository.getInvoiceSettings(workspaceId);
         if (!settings) {
-            // Create default settings
-            settings = await this.prisma.invoiceSettings.create({
-                data: { workspaceId },
-            });
+            settings = await this.prisma.invoiceSettings.create({ data: { workspaceId } });
         }
         return settings;
     }
 
     async updateSettings(workspaceId: string, userId: string, dto: UpdateInvoiceSettingsDto) {
-        // Upsert settings
         const settings = await this.prisma.invoiceSettings.upsert({
             where: { workspaceId },
             create: { workspaceId, ...dto },
@@ -559,13 +551,11 @@ export class InvoicingService {
     /**
      * Called after an Entry payment is applied to an obligation that references an invoice.
      * Updates the invoice's amount_paid, amount_due, and status.
-     * Runs inside the caller's transaction.
+     * Must run inside the caller's Prisma transaction.
      */
     static async syncInvoicePayment(tx: any, obligationReferenceId: string, newOutstanding: Decimal) {
-        const invoice = await tx.invoice.findUnique({
-            where: { id: obligationReferenceId },
-        });
-        if (!invoice) return; // Not an invoice-linked obligation
+        const invoice = await tx.invoice.findUnique({ where: { id: obligationReferenceId } });
+        if (!invoice) return;
 
         const totalAmount = new Decimal(invoice.totalAmount);
         const amountPaid = totalAmount.sub(newOutstanding);
@@ -577,7 +567,7 @@ export class InvoicingService {
         } else if (amountPaid.greaterThan(0)) {
             newStatus = InvoiceStatus.PARTIALLY_PAID;
         } else {
-            newStatus = invoice.status; // keep current
+            newStatus = invoice.status;
         }
 
         await tx.invoice.update({
@@ -587,13 +577,21 @@ export class InvoicingService {
     }
 
     // ═══════════════════════════════════════════════════════
-    // ─── Helpers ───────────────────────────────────────────
+    // ─── Private Helpers ───────────────────────────────────
     // ═══════════════════════════════════════════════════════
 
+    /**
+     * Calculate all invoice totals server-side using Decimal.js precision.
+     *
+     * Also auto-resolves inventoryItemId from the linked ProductService so that
+     * sendInvoice can reliably determine which physical stock item to decrement
+     * without any fragile name-matching.
+     */
     private async calculateInvoiceTotals(
         workspaceId: string,
         items: Array<{
             productServiceId?: string;
+            inventoryItemId?: string;  // can also be provided explicitly on free-text goods lines
             name: string;
             description?: string;
             quantity: string;
@@ -601,24 +599,18 @@ export class InvoicingService {
             taxId?: string;
         }>,
         discountAmountStr?: string,
-    ) {
+    ): Promise<{
+        items: CalculatedItem[];
+        subtotal: Decimal;
+        taxAmount: Decimal;
+        discountAmount: Decimal;
+        totalAmount: Decimal;
+        amountDue: Decimal;
+    }> {
         let subtotal = new Decimal(0);
-        let totalTax = new Decimal(0);
         const discountAmount = discountAmountStr ? new Decimal(discountAmountStr) : new Decimal(0);
+        const calculatedItems: CalculatedItem[] = [];
 
-        const calculatedItems: Array<{
-            productServiceId?: string;
-            name: string;
-            description?: string;
-            quantity: Decimal;
-            unitPrice: Decimal;
-            taxId?: string;
-            taxRate: Decimal;
-            taxAmount: Decimal;
-            total: Decimal;
-        }> = [];
-
-        // Collect all non-compound taxes first for compound calculation base
         for (const item of items) {
             const qty = new Decimal(item.quantity);
             const price = new Decimal(item.unitPrice);
@@ -633,14 +625,24 @@ export class InvoicingService {
                 if (tax && tax.workspaceId === workspaceId && tax.isActive) {
                     taxRate = new Decimal(tax.rate);
                     taxId = tax.id;
+                    // Compound taxes deferred to second pass
+                    taxAmount = tax.isCompound ? new Decimal(0) : lineTotal.mul(taxRate).div(100);
+                }
+            }
 
-                    if (tax.isCompound) {
-                        // Compound tax: calculated on (subtotal + non-compound taxes)
-                        // We'll recalculate this in a second pass
-                        taxAmount = new Decimal(0); // placeholder
-                    } else {
-                        taxAmount = lineTotal.mul(taxRate).div(100);
-                    }
+            // ── Resolve inventoryItemId ───────────────────────────────
+            // Priority: 1) explicit override on the line item
+            //           2) productService.inventoryItemId
+            //           3) null (service or free-text item — no stock affected)
+            let resolvedInventoryItemId: string | undefined = item.inventoryItemId;
+
+            if (!resolvedInventoryItemId && item.productServiceId) {
+                const ps = await this.prisma.productService.findUnique({
+                    where: { id: item.productServiceId },
+                    select: { inventoryItemId: true, workspaceId: true },
+                });
+                if (ps && ps.workspaceId === workspaceId && ps.inventoryItemId) {
+                    resolvedInventoryItemId = ps.inventoryItemId;
                 }
             }
 
@@ -648,6 +650,7 @@ export class InvoicingService {
 
             calculatedItems.push({
                 productServiceId: item.productServiceId,
+                inventoryItemId: resolvedInventoryItemId,
                 name: item.name,
                 description: item.description,
                 quantity: qty,
@@ -659,7 +662,7 @@ export class InvoicingService {
             });
         }
 
-        // Second pass: calculate compound taxes
+        // Second pass: resolve compound taxes (tax on line total + non-compound taxes)
         const nonCompoundTax = calculatedItems.reduce((sum, i) => sum.add(i.taxAmount), new Decimal(0));
         for (const item of calculatedItems) {
             if (item.taxId) {
@@ -672,9 +675,8 @@ export class InvoicingService {
             }
         }
 
-        totalTax = calculatedItems.reduce((sum, i) => sum.add(i.taxAmount), new Decimal(0));
+        const totalTax = calculatedItems.reduce((sum, i) => sum.add(i.taxAmount), new Decimal(0));
         const totalAmount = subtotal.sub(discountAmount).add(totalTax);
-        const amountDue = totalAmount; // no payments yet
 
         return {
             items: calculatedItems,
@@ -682,33 +684,54 @@ export class InvoicingService {
             taxAmount: totalTax,
             discountAmount,
             totalAmount,
-            amountDue,
+            amountDue: totalAmount,
         };
     }
 
-    private async reverseInvoiceInventory(tx: any, invoiceId: string, workspaceId: string) {
+    /**
+     * Reverse inventory stock-outs when an invoice is voided.
+     *
+     * Uses processStockIn (RETURN_IN) instead of raw stock increments so that:
+     * - WAC average cost is recalculated correctly
+     * - A new lot is created for FIFO/LIFO items at the same unit cost as the original sale
+     * This preserves full audit trail integrity.
+     */
+    private async reverseInvoiceInventory(tx: any, invoice: any, workspaceId: string, userId: string) {
+        // Only reverse if this invoice was ever sent (stock-out happened on SENT transition)
+        if (
+            invoice.status !== InvoiceStatus.SENT &&
+            invoice.status !== InvoiceStatus.OVERDUE &&
+            invoice.status !== InvoiceStatus.PARTIALLY_PAID
+        ) {
+            return;
+        }
+
+        // Find every inventory transaction created for this invoice
         const invTransactions = await tx.inventoryTransaction.findMany({
             where: {
                 referenceType: InventoryReferenceType.INVOICE,
-                referenceId: invoiceId,
+                referenceId: invoice.id,
+                transactionType: InventoryTransactionType.SALE,
             },
         });
 
         for (const t of invTransactions) {
-            const qty = Math.abs(t.quantity);
-            // Restore stock
-            await tx.inventoryStock.update({
-                where: { itemId: t.itemId },
-                data: { quantityOnHand: { increment: qty } },
-            });
-        }
+            const qty = Math.abs(Number(t.quantity));
+            if (qty <= 0) continue;
 
-        // Delete the inventory transactions
-        await tx.inventoryTransaction.deleteMany({
-            where: {
-                referenceType: InventoryReferenceType.INVOICE,
-                referenceId: invoiceId,
-            },
-        });
+            // RETURN_IN: stock-in at the same unit cost as the original outflow (COGS cost)
+            await this.inventoryService.processStockIn(
+                workspaceId,
+                t.itemId,
+                InventoryTransactionType.RETURN_IN,
+                qty,
+                new Decimal(t.unitCost), // restore at the COGS unit cost recorded on the SALE
+                userId,
+                InventoryReferenceType.INVOICE,
+                invoice.id,
+                `Inventory reversal for voided invoice ${invoice.invoiceNumber}`,
+                tx,
+            );
+        }
     }
 }

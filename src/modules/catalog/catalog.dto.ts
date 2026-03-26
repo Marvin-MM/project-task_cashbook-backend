@@ -32,6 +32,8 @@ export const createProductServiceSchema = z.object({
     isSellable: z.boolean().default(true),
     isBuyable: z.boolean().default(false),
     taxId: z.string().uuid().optional(),
+    // For PRODUCT type: link to an inventory item so invoicing can perform correct stock-outs
+    inventoryItemId: z.string().uuid().optional(),
 });
 
 export const updateProductServiceSchema = z.object({
@@ -42,6 +44,7 @@ export const updateProductServiceSchema = z.object({
     isSellable: z.boolean().optional(),
     isBuyable: z.boolean().optional(),
     taxId: z.string().uuid().nullable().optional(),
+    inventoryItemId: z.string().uuid().nullable().optional(),
     isActive: z.boolean().optional(),
 });
 

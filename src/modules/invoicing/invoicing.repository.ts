@@ -53,7 +53,7 @@ export class InvoicingRepository {
                 },
                 items: {
                     include: {
-                        productService: { select: { id: true, name: true, type: true } },
+                        productService: { select: { id: true, name: true, type: true, inventoryItemId: true } },
                         tax: { select: { id: true, name: true, rate: true } },
                     },
                     orderBy: { id: 'asc' },

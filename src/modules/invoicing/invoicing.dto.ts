@@ -9,6 +9,9 @@ const decimalString = z.string().regex(
 
 const invoiceItemSchema = z.object({
     productServiceId: z.string().uuid().optional(),
+    // Explicit inventory item link — use this on free-text lines that represent physical goods
+    // (not needed when productServiceId resolves to a product with inventoryItemId set)
+    inventoryItemId: z.string().uuid().optional(),
     name: z.string().min(1, 'Item name is required').max(200),
     description: z.string().max(1000).optional(),
     quantity: decimalString,
