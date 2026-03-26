@@ -22,9 +22,12 @@ export class ContactsService {
         return this.contactsRepository.findByWorkspaceId(workspaceId, query?.type);
     }
 
-    async getContact(contactId: string) {
+    async getContact(contactId: string, workspaceId: string) {
         const contact = await this.contactsRepository.findById(contactId);
-        if (!contact || !contact.isActive) throw new NotFoundError('Contact');
+        // Enforce workspace ownership — never expose contacts from another workspace
+        if (!contact || !contact.isActive || contact.workspaceId !== workspaceId) {
+            throw new NotFoundError('Contact');
+        }
         return contact;
     }
 
@@ -40,33 +43,44 @@ export class ContactsService {
         return contact;
     }
 
-    async updateContact(contactId: string, userId: string, dto: UpdateContactDto) {
+    async updateContact(contactId: string, workspaceId: string, userId: string, dto: UpdateContactDto) {
         const contact = await this.contactsRepository.findById(contactId);
-        if (!contact || !contact.isActive) throw new NotFoundError('Contact');
+        // Enforce workspace ownership before any mutation
+        if (!contact || !contact.isActive || contact.workspaceId !== workspaceId) {
+            throw new NotFoundError('Contact');
+        }
         const updated = await this.contactsRepository.update(contactId, {
             ...dto,
             type: dto.type ? (dto.type as ContactType) : undefined,
         });
         await this.prisma.auditLog.create({
-            data: { userId, workspaceId: contact.workspaceId, action: AuditAction.CONTACT_UPDATED, resource: 'contact', resourceId: contactId, details: dto as any },
+            data: { userId, workspaceId, action: AuditAction.CONTACT_UPDATED, resource: 'contact', resourceId: contactId, details: dto as any },
         });
         return updated;
     }
 
-    async deleteContact(contactId: string, userId: string) {
+    async deleteContact(contactId: string, workspaceId: string, userId: string) {
         const contact = await this.contactsRepository.findById(contactId);
-        if (!contact || !contact.isActive) throw new NotFoundError('Contact');
+        // Enforce workspace ownership before deletion
+        if (!contact || !contact.isActive || contact.workspaceId !== workspaceId) {
+            throw new NotFoundError('Contact');
+        }
         await this.contactsRepository.softDelete(contactId);
         await this.prisma.auditLog.create({
-            data: { userId, workspaceId: contact.workspaceId, action: AuditAction.CONTACT_DELETED, resource: 'contact', resourceId: contactId },
+            data: { userId, workspaceId, action: AuditAction.CONTACT_DELETED, resource: 'contact', resourceId: contactId },
         });
     }
 
     // ─── Customer Profile ──────────────────────────────
 
-    async createCustomerProfile(contactId: string, userId: string, dto: CreateCustomerProfileDto) {
+    async createCustomerProfile(contactId: string, workspaceId: string, userId: string, dto: CreateCustomerProfileDto) {
         const contact = await this.contactsRepository.findById(contactId);
-        if (!contact || !contact.isActive) throw new NotFoundError('Contact');
+        // ── THE REPORTED BUG ─────────────────────────────────────────────────────
+        // Without this check any caller with a valid contactId from a different
+        // workspace could create a customer profile on that foreign contact.
+        if (!contact || !contact.isActive || contact.workspaceId !== workspaceId) {
+            throw new NotFoundError('Contact');
+        }
 
         // Auto-promote contact to CUSTOMER type if not already
         if (contact.type !== ContactType.CUSTOMER) {
@@ -81,14 +95,17 @@ export class ContactsService {
 
         const profile = await this.contactsRepository.createCustomerProfile(contactId, dto);
         await this.prisma.auditLog.create({
-            data: { userId, workspaceId: contact.workspaceId, action: AuditAction.CUSTOMER_PROFILE_CREATED, resource: 'customer_profile', resourceId: profile.id },
+            data: { userId, workspaceId, action: AuditAction.CUSTOMER_PROFILE_CREATED, resource: 'customer_profile', resourceId: profile.id },
         });
         return profile;
     }
 
-    async updateCustomerProfile(contactId: string, userId: string, dto: UpdateCustomerProfileDto) {
+    async updateCustomerProfile(contactId: string, workspaceId: string, userId: string, dto: UpdateCustomerProfileDto) {
         const contact = await this.contactsRepository.findById(contactId);
-        if (!contact || !contact.isActive) throw new NotFoundError('Contact');
+        // Enforce workspace ownership before any mutation
+        if (!contact || !contact.isActive || contact.workspaceId !== workspaceId) {
+            throw new NotFoundError('Contact');
+        }
 
         const existing = await this.contactsRepository.findCustomerProfile(contactId);
         if (!existing) {
@@ -97,14 +114,17 @@ export class ContactsService {
 
         const updated = await this.contactsRepository.updateCustomerProfile(contactId, dto);
         await this.prisma.auditLog.create({
-            data: { userId, workspaceId: contact.workspaceId, action: AuditAction.CUSTOMER_PROFILE_UPDATED, resource: 'customer_profile', resourceId: updated.id },
+            data: { userId, workspaceId, action: AuditAction.CUSTOMER_PROFILE_UPDATED, resource: 'customer_profile', resourceId: updated.id },
         });
         return updated;
     }
 
-    async getCustomerProfile(contactId: string) {
+    async getCustomerProfile(contactId: string, workspaceId: string) {
         const contact = await this.contactsRepository.findById(contactId);
-        if (!contact || !contact.isActive) throw new NotFoundError('Contact');
+        // Enforce workspace ownership — never expose profiles from another workspace
+        if (!contact || !contact.isActive || contact.workspaceId !== workspaceId) {
+            throw new NotFoundError('Contact');
+        }
         return contact.customerProfile || null;
     }
 }

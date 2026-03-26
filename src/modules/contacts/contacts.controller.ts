@@ -17,7 +17,7 @@ export class ContactsController {
 
     async getOne(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const data = await this.service.getContact(req.params.contactId as string);
+            const data = await this.service.getContact(req.params.contactId as string, req.params.workspaceId as string);
             res.status(StatusCodes.OK).json({ success: true, message: 'Contact retrieved successfully', data });
         } catch (error) { next(error); }
     }
@@ -31,14 +31,14 @@ export class ContactsController {
 
     async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const data = await this.service.updateContact(req.params.contactId as string, req.user.userId, req.body);
+            const data = await this.service.updateContact(req.params.contactId as string, req.params.workspaceId as string, req.user.userId, req.body);
             res.status(StatusCodes.OK).json({ success: true, message: 'Contact updated successfully', data });
         } catch (error) { next(error); }
     }
 
     async delete(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            await this.service.deleteContact(req.params.contactId as string, req.user.userId);
+            await this.service.deleteContact(req.params.contactId as string, req.params.workspaceId as string, req.user.userId);
             res.status(StatusCodes.OK).json({ success: true, message: 'Contact deleted successfully' });
         } catch (error) { next(error); }
     }
@@ -47,21 +47,21 @@ export class ContactsController {
 
     async getCustomerProfile(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const data = await this.service.getCustomerProfile(req.params.contactId as string);
+            const data = await this.service.getCustomerProfile(req.params.contactId as string, req.params.workspaceId as string);
             res.status(StatusCodes.OK).json({ success: true, message: 'Customer profile retrieved successfully', data });
         } catch (error) { next(error); }
     }
 
     async createCustomerProfile(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const data = await this.service.createCustomerProfile(req.params.contactId as string, req.user.userId, req.body);
+            const data = await this.service.createCustomerProfile(req.params.contactId as string, req.params.workspaceId as string, req.user.userId, req.body);
             res.status(StatusCodes.CREATED).json({ success: true, message: 'Customer profile created successfully', data });
         } catch (error) { next(error); }
     }
 
     async updateCustomerProfile(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const data = await this.service.updateCustomerProfile(req.params.contactId as string, req.user.userId, req.body);
+            const data = await this.service.updateCustomerProfile(req.params.contactId as string, req.params.workspaceId as string, req.user.userId, req.body);
             res.status(StatusCodes.OK).json({ success: true, message: 'Customer profile updated successfully', data });
         } catch (error) { next(error); }
     }
