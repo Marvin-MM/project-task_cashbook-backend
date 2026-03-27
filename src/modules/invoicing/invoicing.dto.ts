@@ -51,6 +51,7 @@ export const updateInvoiceSchema = z.object({
     notes: z.string().max(2000).nullable().optional(),
     footer: z.string().max(2000).nullable().optional(),
     items: z.array(invoiceItemSchema).min(1).optional(),
+    cashbookId: z.string().uuid().optional(),
 });
 
 export const invoiceQuerySchema = z.object({

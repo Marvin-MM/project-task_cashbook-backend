@@ -49,8 +49,7 @@ export class InvoicingController {
 
     async sendInvoice(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const { cashbookId } = req.body;
-            const data = await this.service.sendInvoice(req.params.invoiceId as string, req.params.workspaceId as string, req.user.userId, cashbookId);
+            const data = await this.service.sendInvoice(req.params.invoiceId as string, req.params.workspaceId as string, req.user.userId);
             res.status(StatusCodes.OK).json({ success: true, message: 'Invoice sent successfully', data });
         } catch (error) { next(error); }
     }

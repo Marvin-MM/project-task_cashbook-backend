@@ -106,7 +106,9 @@ export class InvoicingService {
                     notes: dto.notes || null,
                     footer: dto.footer || null,
                     createdById: userId,
-                },
+                    // Cast to any: cashbookId is a new schema field not yet in the stale Prisma client.
+                    cashbookId: dto.cashbookId,
+                } as any,
             });
 
             // Create invoice items — including the resolved inventoryItemId snapshot
@@ -211,8 +213,11 @@ export class InvoicingService {
                 ...(dto.currency && { currency: dto.currency }),
                 ...(dto.notes !== undefined && { notes: dto.notes }),
                 ...(dto.footer !== undefined && { footer: dto.footer }),
+                // Ignore TypeScript error during migration via any cast when picking fields
+                ...({} as any),
+                ...(dto.cashbookId && { cashbookId: dto.cashbookId }),
                 ...calculatedData,
-            },
+            } as any,
         });
 
         await this.prisma.auditLog.create({
@@ -226,7 +231,7 @@ export class InvoicingService {
     // ─── Send Invoice ──────────────────────────────────────
     // ═══════════════════════════════════════════════════════
 
-    async sendInvoice(invoiceId: string, workspaceId: string, userId: string, cashbookId: string) {
+    async sendInvoice(invoiceId: string, workspaceId: string, userId: string) {
         const invoice = await this.repository.findById(invoiceId);
         if (!invoice || invoice.workspaceId !== workspaceId) {
             throw new NotFoundError('Invoice');
@@ -234,6 +239,11 @@ export class InvoicingService {
 
         if (invoice.status !== InvoiceStatus.DRAFT) {
             throw new AppError('Only DRAFT invoices can be sent', 400, 'INVALID_STATUS');
+        }
+
+        const cashbookId = (invoice as any).cashbookId;
+        if (!cashbookId) {
+            throw new AppError('Invoice is not linked to a cashbook', 400, 'MISSING_CASHBOOK');
         }
 
         const cashbook = await this.prisma.cashbook.findUnique({

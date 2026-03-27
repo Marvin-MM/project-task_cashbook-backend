@@ -93,7 +93,6 @@ router.delete(
 router.post(
     '/:invoiceId/send',
     requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
-    validate(z.object({ cashbookId: z.string().uuid('Cashbook ID is required') })),
     controller.sendInvoice.bind(controller) as any
 );
 

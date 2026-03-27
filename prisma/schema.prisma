@@ -149,6 +149,7 @@ model Cashbook {
   entries     Entry[]
   obligations CashbookObligation[]
   attachments Attachment[]
+  invoices    Invoice[]
 
   @@index([workspaceId])
   @@map("cashbooks")
@@ -831,17 +832,20 @@ model Invoice {
   amountDue       Decimal       @default(0) @map("amount_due") @db.Decimal(20, 4)
   notes           String?
   footer          String?
+  cashbookId      String?       @map("cashbook_id") @db.Uuid
   createdById     String        @map("created_by_id") @db.Uuid
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
 
   workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   customer  Contact       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  cashbook  Cashbook?     @relation(fields: [cashbookId], references: [id], onDelete: SetNull)
   items     InvoiceItem[]
 
   @@unique([workspaceId, invoiceNumber])
   @@index([workspaceId])
   @@index([customerId])
+  @@index([cashbookId])
   @@index([status])
   @@index([issueDate])
   @@index([dueDate])
