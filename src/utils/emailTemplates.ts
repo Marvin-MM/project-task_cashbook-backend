@@ -294,3 +294,147 @@ export function invoiceEmailTemplate(params: {
     </html>`;
 }
 
+/**
+ * Professional payment receipt email.
+ * Sent to the customer when a payment is recorded against an obligation.
+ *
+ * @param customerName   Full name of the customer
+ * @param businessName   Display name of the sending workspace / business
+ * @param receiptNumber  e.g. "RC-ABC1234"
+ * @param obligationName e.g. "Invoice INV-0042"
+ * @param currency       e.g. "UGX"
+ * @param amountPaid     Formatted payment amount string e.g. "500,000.00"
+ * @param paymentDate    Formatted payment date e.g. "25 Mar 2025"
+ * @param remainingBal   Remaining obligation balance e.g. "700,000.00"
+ * @param logoUrl        Optional logo URL — falls back to platform logo
+ */
+export function receiptEmailTemplate(params: {
+    customerName: string;
+    businessName: string;
+    receiptNumber: string;
+    obligationName: string;
+    currency: string;
+    amountPaid: string;
+    paymentDate: string;
+    remainingBal: string;
+    logoUrl?: string | null;
+}): string {
+    const {
+        customerName,
+        businessName,
+        receiptNumber,
+        obligationName,
+        currency,
+        amountPaid,
+        paymentDate,
+        remainingBal,
+        logoUrl
+    } = params;
+    
+    // Use fallback logo if none provided
+    const _logoUrl = logoUrl || 'https://inchange.odixtec.net/reportlogo.svg';
+
+    return `<!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Payment Receipt from ${businessName}</title>
+    </head>
+    <body style="margin: 0; padding: 24px 0; background-color: #f3f4f6; -webkit-font-smoothing: antialiased; word-break: break-word;">
+
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td align="center">
+
+        <table width="600" cellpadding="0" cellspacing="0" border="0" style="max-width: 600px; width: 100%; border-radius: 12px; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+            
+            <!-- Header Band (Dark) -->
+            <tr>
+                <td style="background-color: #111827; padding: 32px 40px; text-align: center;">
+                    <img src="${_logoUrl}" alt="${businessName} Logo" style="max-height: 48px; max-width: 200px; display: block; margin: 0 auto 24px; object-fit: contain;">
+                    <p style="margin: 0 0 8px; color: #9ca3af; font-size: 13px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600;">
+                        Payment Receipt
+                    </p>
+                    <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">
+                        Receipt #${receiptNumber}
+                    </h1>
+                </td>
+            </tr>
+
+            <!-- Content Area (White) -->
+            <tr>
+                <td style="background-color: #ffffff; padding: 40px;">
+                    <p style="margin: 0 0 16px; font-size: 16px; color: #374151;">
+                        Hello <strong>${customerName}</strong>,
+                    </p>
+                    <p style="margin: 0 0 32px; font-size: 16px; color: #4b5563; line-height: 1.6;">
+                        Thank you for your business. We have successfully received a payment of <strong>${currency} ${amountPaid}</strong> from you on <strong>${paymentDate}</strong>.
+                    </p>
+
+                    <!-- Amount Box -->
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 32px;">
+                        <tr>
+                            <td style="padding: 24px; text-align: center;">
+                                <p style="margin: 0 0 8px; font-size: 13px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">
+                                    Payment Applied To
+                                </p>
+                                <p style="margin: 0 0 20px; font-size: 22px; color: #0f172a; font-weight: 700;">
+                                    ${obligationName}
+                                </p>
+
+                                <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 16px;">
+                                    <tr>
+                                        <td style="padding: 12px 0; border-top: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; text-align: left; color: #64748b; font-size: 15px;">
+                                            Amount Paid
+                                        </td>
+                                        <td style="padding: 12px 0; border-top: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; text-align: right; color: #16a34a; font-size: 15px; font-weight: 600;">
+                                            ${currency} ${amountPaid}
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 12px 0; text-align: left; color: #64748b; font-size: 15px;">
+                                            Remaining Balance
+                                        </td>
+                                        <td style="padding: 12px 0; text-align: right; color: #0f172a; font-size: 15px; font-weight: 600;">
+                                            ${currency} ${remainingBal}
+                                        </td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <p style="margin: 0 0 32px; font-size: 15px; color: #4b5563; line-height: 1.6;">
+                        A detailed PDF receipt is attached to this email for your records. Please keep it for your financial tracking.
+                    </p>
+
+                    <!-- Sign-off -->
+                    <p style="margin: 0 0 8px; font-size: 16px; color: #374151;">Best regards,</p>
+                    <p style="margin: 0; font-size: 16px; color: #111827; font-weight: 600;">${businessName}</p>
+                </td>
+            </tr>
+
+            <!-- Footer Area (Dark) -->
+            <tr>
+                <td style="background-color: #1f2937; padding: 24px 40px; text-align: center;">
+                    <img src="https://inchange.odixtec.net/reportlogo.svg" alt="Odixtec Logo" style="height: 20px; opacity: 0.7; margin-bottom: 12px;">
+                    <p style="margin: 0; color: #9ca3af; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">
+                        Powered by ODIN Cashbook
+                    </p>
+                    <p style="margin: 12px 0 0; color: #d1d5db; font-size: 11px;">
+                        © ${new Date().getFullYear()} ODIN Cashbook. All rights reserved.
+                    </p>
+                </td>
+            </tr>
+
+        </table>
+        <!-- /Card -->
+
+        </td></tr>
+        </table>
+        <!-- /Wrapper -->
+
+    </body>
+    </html>`;
+}
+

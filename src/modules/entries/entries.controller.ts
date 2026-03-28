@@ -130,4 +130,17 @@ export class EntriesController {
             next(error);
         }
     }
+
+    // ─── Receipts ──────────────────────────────────────
+    async sendReceipt(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            await this.entriesService.sendReceipt(req.params.entryId as string, req.user.userId);
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Receipt sent successfully',
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
 }

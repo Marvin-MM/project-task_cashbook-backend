@@ -74,4 +74,11 @@ router.get(
     entriesController.getAuditTrail.bind(entriesController) as any
 );
 
+// ─── Receipts ──────────────────────────────────────────
+router.post(
+    '/:entryId/receipt/send/cashbook/:cashbookId',
+    requireCashbookMember(CashbookPermission.VIEW_ENTRIES) as any,
+    entriesController.sendReceipt.bind(entriesController) as any
+);
+
 export default router;

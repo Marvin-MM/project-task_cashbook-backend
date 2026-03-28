@@ -24,6 +24,9 @@ import { isDateInPast } from '../../utils/helpers';
 import { CashbookPermission, hasPermission } from '../../core/types/permissions';
 import { ObligationStatus, ObligationType } from '@prisma/client';
 import { InventoryService } from '../inventory/inventory.service';
+import { generateReceiptPdf } from './receipt.generator';
+import { receiptEmailTemplate } from '../../utils/emailTemplates';
+import { sendEmail } from '../../config/email';
 
 @injectable()
 export class EntriesService {
@@ -404,6 +407,14 @@ export class EntriesService {
 
             return newEntry;
         });
+
+        // Background Hook: Send Automatic Receipt if paying an Obligation
+        if (dto.obligationId && dto.type === EntryType.INCOME) {
+            // Unawaited intentionally to preserve API speed and avoid rollback on email failure
+            this.sendReceipt(entry.id, userId).catch(err => {
+                logger.error(`Failed to send background receipt for entry ${entry.id}:`, err);
+            });
+        }
 
         return entry;
     }
@@ -1133,5 +1144,99 @@ export class EntriesService {
                 },
             });
         });
+    }
+
+    // ─── Receipts ──────────────────────────────────────
+    async sendReceipt(entryId: string, userId: string) {
+        const entry = await this.prisma.entry.findUnique({
+            where: { id: entryId },
+            include: {
+                cashbook: { select: { workspaceId: true, currency: true } },
+                contact: { include: { customerProfile: true } },
+                paymentMode: true,
+                obligation: true,
+            }
+        });
+
+        if (!entry) throw new NotFoundError('Entry');
+        if (!entry.obligation) throw new AppError('Entry is not linked to an obligation', 400, 'NO_OBLIGATION');
+        if (!entry.contact || !entry.contact.email) throw new AppError('No contact email available to send receipt', 400, 'NO_EMAIL');
+
+        const workspaceId = entry.cashbook.workspaceId;
+
+        // Fetch Business Data & Settings
+        const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+        const settings = await this.prisma.invoiceSettings.findUnique({ where: { workspaceId } });
+
+        const businessName = workspace?.name || 'Business';
+
+        // Prepare PDF/Email Models
+        const pdfModel = {
+            receiptNumber: entry.id.split('-').pop() || entry.id,
+            paymentDate: entry.entryDate,
+            amountPaid: entry.amount,
+            currency: entry.cashbook.currency,
+            paymentMode: entry.paymentMode,
+            obligation: {
+                title: entry.obligation.title,
+                totalAmount: entry.obligation.totalAmount,
+                outstandingAmount: entry.obligation.outstandingAmount,
+            },
+            customer: {
+                name: entry.contact.name,
+                email: entry.contact.email,
+                phone: entry.contact.phone,
+                company: entry.contact.company,
+                customerProfile: entry.contact.customerProfile,
+            }
+        };
+
+        const pdfBuffer = await generateReceiptPdf(pdfModel, businessName, settings);
+
+        // Send Email
+        const amountStr = entry.amount.toNumber().toLocaleString(undefined, { minimumFractionDigits: 2 });
+        const remainingStr = entry.obligation.outstandingAmount.toNumber().toLocaleString(undefined, { minimumFractionDigits: 2 });
+        const paymentDateStr = new Date(entry.entryDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+        const html = receiptEmailTemplate({
+            customerName: entry.contact.name,
+            businessName,
+            receiptNumber: pdfModel.receiptNumber,
+            obligationName: entry.obligation.title,
+            currency: entry.cashbook.currency,
+            amountPaid: amountStr,
+            paymentDate: paymentDateStr,
+            remainingBal: remainingStr,
+            logoUrl: settings?.logoUrl || null,
+        });
+
+        await sendEmail({
+            to: entry.contact.email,
+            subject: `Payment Receipt - ${entry.obligation.title}`,
+            html,
+            attachments: [{
+                filename: `Receipt_${pdfModel.receiptNumber}.pdf`,
+                content: pdfBuffer,
+                contentType: 'application/pdf',
+            }]
+        });
+
+        // Log Transparency
+        await this.prisma.auditLog.create({
+            data: {
+                userId,
+                workspaceId,
+                action: 'RECEIPT_SENT' as any,
+                resource: 'entry',
+                resourceId: entry.id,
+                details: {
+                    sentTo: entry.contact.email,
+                    amount: entry.amount.toString(),
+                    remainingBalance: entry.obligation.outstandingAmount.toString(),
+                } as any,
+            }
+        });
+
+        return { success: true };
     }
 }
