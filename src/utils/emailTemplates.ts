@@ -422,7 +422,7 @@ export function receiptEmailTemplate(params: {
                         Powered by ODIN Cashbook
                     </p>
                     <p style="margin: 12px 0 0; color: #d1d5db; font-size: 11px;">
-                        © ${new Date().getFullYear()} ODIN Cashbook. All rights reserved.
+                        © ${new Date().getFullYear()}  ${config.APP_NAME}. All rights reserved.
                     </p>
                 </td>
             </tr>

@@ -93,15 +93,30 @@ export async function generateReceiptPdf(
                 doc.fontSize(8).fillColor('#6B7280').text(settings.defaultFooter, MARGIN, rootFooterY - 15, { align: 'center', width: CONTENT_WIDTH });
             }
             try {
-                // Try rendering the platform logo in the footer (requires the fallback buffer)
                 let platformLogo = targetLogo === FALLBACK_LOGO_URL ? logoBuffer : null;
                 if (!platformLogo) { platformLogo = await fetchUrlBuffer(FALLBACK_LOGO_URL).catch(() => null); }
+                
+                const appName = process.env.APP_NAME || 'ODIN Cashbook';
+                const text = `Powered by ${appName}`;
+                
+                doc.fontSize(8).fillColor('#9CA3AF');
+                const textWidth = doc.widthOfString(text);
+                
                 if (platformLogo) {
-                    doc.image(platformLogo, (PAGE_WIDTH - 60) / 2, rootFooterY + 5, { width: 60 });
+                    const logoW = 14; 
+                    const spacing = 6;
+                    const totalW = logoW + spacing + textWidth;
+                    const startX = (PAGE_WIDTH - totalW) / 2;
+                    
+                    doc.image(platformLogo, startX, rootFooterY + 20, { height: 10 });
+                    doc.text(text, startX + logoW + spacing, rootFooterY + 22);
+                } else {
+                    doc.text(text, MARGIN, rootFooterY + 22, { align: 'center', width: CONTENT_WIDTH });
                 }
-            } catch { /* ignore */ }
-            doc.fontSize(8).fillColor('#9CA3AF')
-                .text('Powered by ODIN Cashbook', MARGIN, rootFooterY + 25, { align: 'center', width: CONTENT_WIDTH });
+            } catch { 
+                const appName = process.env.APP_NAME || 'ODIN Cashbook';
+                doc.fontSize(8).fillColor('#9CA3AF').text(`Powered by ${appName}`, MARGIN, rootFooterY + 22, { align: 'center', width: CONTENT_WIDTH });
+            }
 
             doc.end();
         } catch (err) {
@@ -153,7 +168,6 @@ function renderClassic(
         doc.fillColor('#111827').font('Helvetica').text(receipt.paymentMode.name, 350, 195);
     }
 
-    // Payment Details Box
     doc.rect(MARGIN, 240, CONTENT_WIDTH, 140).fill(lightGrey);
     doc.fontSize(14).fillColor(dark).font('Helvetica-Bold')
         .text('Payment Summary', MARGIN + 20, 260);
@@ -172,6 +186,15 @@ function renderClassic(
         .text('Amount Paid:', MARGIN + 20, 340)
         .fillColor('#16A34A').font('Helvetica-Bold')
         .text(`${receipt.currency} ${formatDecimal(receipt.amountPaid)}`, MARGIN + 120, 340);
+        
+    doc.fillColor('#6B7280').font('Helvetica')
+        .text('Remaining Balance:', MARGIN + 20, 365)
+        .fillColor(dark).font('Helvetica-Bold')
+        .text(`${receipt.currency} ${formatDecimal(receipt.obligation.outstandingAmount)}`, MARGIN + 120, 365);
+        
+    if (Number(receipt.obligation.outstandingAmount) <= 0) {
+        renderPaidBadge(doc, PAGE_WIDTH - MARGIN - 130, 270);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -219,12 +242,22 @@ function renderModern(
 
     // Amount Box
     y += 80;
-    doc.rect(MARGIN, y, CONTENT_WIDTH, 100).fill('#F9FAFB');
+    doc.rect(MARGIN, y, CONTENT_WIDTH, 140).fill('#F9FAFB');
     doc.fontSize(12).fillColor(dark).font('Helvetica-Bold').text('Applied To:', MARGIN + 20, y + 25);
     doc.font('Helvetica').text(receipt.obligation.title, MARGIN + 120, y + 25);
     
-    doc.fontSize(16).fillColor('#16A34A').font('Helvetica-Bold').text('Amount Received:', MARGIN + 20, y + 60);
-    doc.fontSize(20).text(`${receipt.currency} ${formatDecimal(receipt.amountPaid)}`, MARGIN + 180, y + 56);
+    doc.fontSize(12).fillColor('#6B7280').font('Helvetica-Bold').text('Original:', MARGIN + 20, y + 55);
+    doc.font('Helvetica').text(`${receipt.currency} ${formatDecimal(receipt.obligation.totalAmount)}`, MARGIN + 120, y + 55);
+    
+    doc.fontSize(16).fillColor('#16A34A').font('Helvetica-Bold').text('Amount Received:', MARGIN + 20, y + 85);
+    doc.fontSize(20).text(`${receipt.currency} ${formatDecimal(receipt.amountPaid)}`, MARGIN + 180, y + 81);
+    
+    doc.fontSize(12).fillColor('#6B7280').font('Helvetica-Bold').text('Remaining:', MARGIN + 20, y + 115);
+    doc.fillColor(dark).font('Helvetica-Bold').text(`${receipt.currency} ${formatDecimal(receipt.obligation.outstandingAmount)}`, MARGIN + 120, y + 115);
+    
+    if (Number(receipt.obligation.outstandingAmount) <= 0) {
+        renderPaidBadge(doc, PAGE_WIDTH - MARGIN - 130, y + 25);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -272,13 +305,33 @@ function renderContemporary(
     doc.fillColor('#16A34A').text(`${receipt.currency} ${formatDecimal(receipt.amountPaid)}`, 0, boxY + 70, { align: 'right', width: PAGE_WIDTH - MARGIN });
 
     doc.moveTo(MARGIN, boxY + 100).lineTo(PAGE_WIDTH - MARGIN, boxY + 100).lineWidth(0.5).strokeColor('#E5E7EB').stroke();
-    doc.fontSize(11).fillColor('#6B7280').font('Times-Roman').text('Remaining Balance', MARGIN, boxY + 120);
+    doc.fontSize(12).fillColor('#6B7280').font('Times-Bold').text('Remaining Balance', MARGIN, boxY + 120);
     doc.fillColor(dark).text(`${receipt.currency} ${formatDecimal(receipt.obligation.outstandingAmount)}`, 0, boxY + 120, { align: 'right', width: PAGE_WIDTH - MARGIN });
+    
+    if (Number(receipt.obligation.outstandingAmount) <= 0) {
+        renderPaidBadge(doc, PAGE_WIDTH - MARGIN - 130, 200);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
+
+function renderPaidBadge(doc: InstanceType<typeof PDFDocument>, x: number, y: number) {
+    doc.save()
+       .translate(x, y)
+       .rotate(-15);
+       
+    doc.roundedRect(0, 0, 110, 36, 6)
+       .lineWidth(3)
+       .strokeColor('#16A34A')
+       .stroke();
+       
+    doc.fontSize(14).fillColor('#16A34A').font('Helvetica-Bold')
+       .text('PAID IN FULL', 0, 11, { align: 'center', width: 110 });
+       
+    doc.restore();
+}
 
 function formatDecimal(value: any): string {
     if (value === null || value === undefined) return '0.00';
