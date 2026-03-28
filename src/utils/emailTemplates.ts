@@ -351,11 +351,11 @@ export function receiptEmailTemplate(params: {
             <!-- Header Band (Dark) -->
             <tr>
                 <td style="background-color: #111827; padding: 32px 40px; text-align: center;">
-                    <img src="${_logoUrl}" alt="${businessName} Logo" style="max-height: 48px; max-width: 200px; display: block; margin: 0 auto 24px; object-fit: contain;">
+                    <img src="${_logoUrl}" alt="${businessName} Logo" style="max-height: 44px; max-width: 180px; display: block; margin: 0 auto 24px; object-fit: contain;">
                     <p style="margin: 0 0 8px; color: #9ca3af; font-size: 13px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600;">
                         Payment Receipt
                     </p>
-                    <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">
+                    <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 700;">
                         Receipt #${receiptNumber}
                     </h1>
                 </td>
@@ -416,10 +416,10 @@ export function receiptEmailTemplate(params: {
 
             <!-- Footer Area (Dark) -->
             <tr>
-                <td style="background-color: #1f2937; padding: 24px 40px; text-align: center;">
+                <td style="background-color: #1f2937; padding: 22px 36px; text-align: center;">
                     <img src="https://inchange.odixtec.net/reportlogo.svg" alt="Odixtec Logo" style="height: 20px; opacity: 0.7; margin-bottom: 12px;">
                     <p style="margin: 0; color: #9ca3af; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">
-                        Powered by ODIN Cashbook
+                        Powered by ${config.APP_NAME}
                     </p>
                     <p style="margin: 12px 0 0; color: #d1d5db; font-size: 11px;">
                         © ${new Date().getFullYear()}  ${config.APP_NAME}. All rights reserved.
