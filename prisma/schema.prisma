@@ -65,7 +65,7 @@ model LoginHistory {
   userId    String   @map("user_id") @db.Uuid
   ipAddress String?  @map("ip_address")
   userAgent String?  @map("user_agent")
-  status    String // SUCCESS, FAILED, SUSPICIOUS
+  status    String 
   reason    String?
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -219,8 +219,8 @@ model EntryAudit {
   id        String   @id @default(uuid()) @db.Uuid
   entryId   String   @map("entry_id") @db.Uuid
   userId    String   @map("user_id") @db.Uuid
-  action    String // CREATED, UPDATED, DELETED
-  changes   Json? // JSON diff of what changed
+  action    String 
+  changes   Json? 
   oldValues Json?    @map("old_values")
   newValues Json?    @map("new_values")
   createdAt DateTime @default(now()) @map("created_at")
@@ -413,7 +413,7 @@ model Attachment {
 
   @@index([cashbookId])
   @@index([entryId])
-  @@index([isDeleted]) // Recommended for faster filtering
+  @@index([isDeleted]) 
   @@map("attachments")
 }
 
@@ -664,8 +664,8 @@ model InventoryItem {
   stock            InventoryStock?
   transactions     InventoryTransaction[]
   lots             InventoryLot[]
-  productsServices ProductService[]       // catalog products backed by this item
-  invoiceItems     InvoiceItem[]          // invoice line items that referenced this item
+  productsServices ProductService[]       
+  invoiceItems     InvoiceItem[]          
 
   @@unique([workspaceId, sku])
   @@index([workspaceId])
@@ -713,8 +713,6 @@ model InventoryTransaction {
 
 // ─── Lot-based costing (FIFO / LIFO) ─────────────────────
 
-// One "lot" is created for each stock-in event for FIFO/LIFO items.
-// Tracks how many units remain from that purchase at its original unit cost.
 model InventoryLot {
   id                String   @id @default(uuid()) @db.Uuid
   workspaceId       String   @map("workspace_id") @db.Uuid
@@ -761,7 +759,7 @@ model Tax {
   id             String   @id @default(uuid()) @db.Uuid
   workspaceId    String   @map("workspace_id") @db.Uuid
   name           String
-  rate           Decimal  @db.Decimal(10, 4) // e.g. 18.0000 for 18%
+  rate           Decimal  @db.Decimal(10, 4) 
   isCompound     Boolean  @default(false) @map("is_compound")
   isRecoverable  Boolean  @default(true) @map("is_recoverable")
   isActive       Boolean  @default(true) @map("is_active")
@@ -787,7 +785,6 @@ model ProductService {
   isSellable      Boolean            @default(true) @map("is_sellable")
   isBuyable       Boolean            @default(false) @map("is_buyable")
   taxId           String?            @map("tax_id") @db.Uuid
-  // For PRODUCT type: link to the physical inventory item that tracks stock
   inventoryItemId String?            @map("inventory_item_id") @db.Uuid
   isActive        Boolean            @default(true) @map("is_active")
   createdAt       DateTime           @default(now()) @map("created_at")
@@ -856,16 +853,13 @@ model InvoiceItem {
   id               String  @id @default(uuid()) @db.Uuid
   invoiceId        String  @map("invoice_id") @db.Uuid
   productServiceId String? @map("product_service_id") @db.Uuid
-  // Direct link to the inventory item at the time of invoicing (snapshot id).
-  // Populated automatically from productService.inventoryItemId when present.
-  // Can also be set explicitly on free-text line items that represent physical goods.
   inventoryItemId  String? @map("inventory_item_id") @db.Uuid
-  name             String  // snapshot of product/service name at time of invoicing
+  name             String  
   description      String?
   quantity         Decimal @db.Decimal(20, 4)
   unitPrice        Decimal @map("unit_price") @db.Decimal(20, 4)
   taxId            String? @map("tax_id") @db.Uuid
-  taxRate          Decimal @default(0) @map("tax_rate") @db.Decimal(10, 4) // snapshot
+  taxRate          Decimal @default(0) @map("tax_rate") @db.Decimal(10, 4) 
   taxAmount        Decimal @default(0) @map("tax_amount") @db.Decimal(20, 4)
   total            Decimal @default(0) @db.Decimal(20, 4)
 
