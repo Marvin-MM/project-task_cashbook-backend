@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit';
 import { Decimal } from '@prisma/client/runtime/library';
 import https from 'https';
 import http from 'http';
+import sharp from 'sharp';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 /**
@@ -129,7 +130,14 @@ async function resolveLogo(settings: PdfSettings | null): Promise<Buffer | null>
     for (const url of candidates) {
         try {
             const buf = await fetchUrlBuffer(url);
-            if (isPngOrJpeg(buf)) return buf;
+            if (isPngOrJpeg(buf)) {
+                // Prevent PDFKit RGB conversion memory spikes: strictly downscale 
+                // huge images to maximum 250px before embedding into the PDF document.
+                return await sharp(buf)
+                    .resize({ width: 250, withoutEnlargement: true })
+                    .png({ quality: 80 })
+                    .toBuffer();
+            }
             // Non-raster response (HTML error page, SVG body, etc.) — skip
         } catch {
             // Network error / timeout / non-2xx — try next candidate

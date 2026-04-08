@@ -37,15 +37,15 @@ export interface EmailOptions {
  */
 export async function sendEmail(options: EmailOptions): Promise<void> {
     try {
+        // Prevent massive Base64 serialization OOM spikes by bypassing the Queue for attachments.
+        if (options.attachments && options.attachments.length > 0) {
+            return await sendEmailDirect(options);
+        }
+
         await emailQueue.add('send-email', {
             to: options.to,
             subject: options.subject,
             html: options.html,
-            attachments: options.attachments?.map((att) => ({
-                filename: att.filename,
-                content: att.content.toString('base64'),
-                contentType: att.contentType,
-            })),
         });
 
         logger.info('Email queued successfully', { to: options.to, subject: options.subject });

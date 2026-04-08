@@ -14,6 +14,10 @@ import {
     InvoiceQueryDto,
     UpdateInvoiceSettingsDto,
 } from './invoicing.dto';
+import sharp from 'sharp';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { r2Client } from '../../config/cloudflare';
+import { config } from '../../config';
 
 // ─── Internal type for calculated line items ───────────────────────────────────
 interface CalculatedItem {
@@ -581,6 +585,39 @@ export class InvoicingService {
             where: { workspaceId },
             create: { workspaceId, ...dto },
             update: dto,
+        });
+
+        await this.prisma.auditLog.create({
+            data: { userId, workspaceId, action: AuditAction.INVOICE_SETTINGS_UPDATED, resource: 'invoice_settings', resourceId: settings.id },
+        });
+
+        return settings;
+    }
+
+    async uploadLogo(workspaceId: string, userId: string, file: Express.Multer.File) {
+        // 1. Process image via Sharp: Resize if huge, compress layout, convert explicitly to PNG
+        const processedBuffer = await sharp(file.buffer)
+            .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
+            .png({ quality: 85, compressionLevel: 9 })
+            .toBuffer();
+
+        // 2. Ship to Cloudflare R2
+        const fileName = `logos/${workspaceId}-${Date.now()}.png`;
+
+        await r2Client.send(new PutObjectCommand({
+            Bucket: config.CF_R2_BUCKET_NAME,
+            Key: fileName,
+            Body: processedBuffer,
+            ContentType: 'image/png',
+        }));
+
+        const logoUrl = `${config.CF_R2_PUBLIC_URL}/${fileName}`;
+
+        // 3. Reflect onto Database
+        const settings = await this.prisma.invoiceSettings.upsert({
+            where: { workspaceId },
+            create: { workspaceId, logoUrl },
+            update: { logoUrl },
         });
 
         await this.prisma.auditLog.create({

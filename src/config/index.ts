@@ -49,6 +49,12 @@ const envSchema = z.object({
     SUPER_ADMIN_EMAIL: z.string().email().default('admin@cashbook.com'),
 
     GOOGLE_CLIENT_ID: z.string().default(''),
+
+    CF_R2_ACCOUNT_ID: z.string().min(1, 'CF_R2_ACCOUNT_ID is required').default('dummy_account_id'),
+    CF_R2_ACCESS_KEY_ID: z.string().min(1, 'CF_R2_ACCESS_KEY_ID is required').default('dummy_key_id'),
+    CF_R2_SECRET_ACCESS_KEY: z.string().min(1, 'CF_R2_SECRET_ACCESS_KEY is required').default('dummy_secret'),
+    CF_R2_BUCKET_NAME: z.string().min(1, 'CF_R2_BUCKET_NAME is required').default('inchange-assets'),
+    CF_R2_PUBLIC_URL: z.string().url().default('https://pub-dummy.r2.dev'),
 });
 
 const parsed = envSchema.safeParse(process.env);

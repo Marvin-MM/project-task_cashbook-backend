@@ -12,6 +12,7 @@ import {
     updateInvoiceSettingsSchema,
 } from './invoicing.dto';
 import { z } from 'zod';
+import { uploadImageMemory } from '../../middlewares/uploadImage';
 
 const router = Router({ mergeParams: true });
 const controller = container.resolve(InvoicingController);
@@ -51,6 +52,13 @@ router.patch(
     requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
     validate(updateInvoiceSettingsSchema),
     controller.updateSettings.bind(controller) as any
+);
+
+router.post(
+    '/settings/current/logo',
+    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    uploadImageMemory.single('file') as any,
+    controller.uploadLogo.bind(controller) as any
 );
 
 // ─── Invoice CRUD ──────────────────────────────────────

@@ -99,4 +99,16 @@ export class InvoicingController {
             res.status(StatusCodes.OK).json({ success: true, message: 'Invoice settings updated successfully', data });
         } catch (error) { next(error); }
     }
+
+    async uploadLogo(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const file = req.file;
+            if (!file) {
+                res.status(StatusCodes.BAD_REQUEST).json({ success: false, message: 'No file uploaded' });
+                return;
+            }
+            const data = await this.service.uploadLogo(req.params.workspaceId as string, req.user.userId, file);
+            res.status(StatusCodes.OK).json({ success: true, message: 'Logo uploaded successfully', data });
+        } catch (error) { next(error); }
+    }
 }
