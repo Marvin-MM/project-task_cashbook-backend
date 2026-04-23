@@ -14,6 +14,7 @@ const inventoryLineItem = z.object({
 
 export const createObligationSchema = z.object({
     type: z.nativeEnum(ObligationType).refine((val) => val !== undefined, { message: 'Invalid obligation type' }),
+    contactId: z.string().uuid('Invalid contact ID').optional().nullable(),
     title: z.string().min(1, 'Title is required').max(200, 'Title is too long'),
     description: z.string().max(1000, 'Description is too long').optional(),
     totalAmount: decimalString,

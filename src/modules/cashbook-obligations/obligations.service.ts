@@ -96,6 +96,15 @@ export class ObligationsService {
             throw new NotFoundError('Cashbook');
         }
 
+        if (dto.contactId) {
+            const contact = await this.prisma.contact.findFirst({
+                where: { id: dto.contactId, workspaceId: cashbook.workspaceId }
+            });
+            if (!contact) {
+                throw new AppError('Contact not found or does not belong to this workspace', 404, 'NOT_FOUND');
+            }
+        }
+
         const amount = new Decimal(dto.totalAmount);
 
         const obligation = await this.prisma.$transaction(async (tx) => {
@@ -110,6 +119,7 @@ export class ObligationsService {
                     outstandingAmount: amount, // Initialize to total amount
                     status: ObligationStatus.OPEN,
                     dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+                    contactId: dto.contactId || null,
                 }
             });
 

@@ -28,7 +28,7 @@ export class CatalogService {
 
     async getTax(taxId: string, workspaceId: string) {
         const tax = await this.repository.findTaxById(taxId);
-        if (!tax || tax.workspaceId !== workspaceId) throw new NotFoundError('Tax');
+        if (!tax || tax.workspaceId !== workspaceId || !tax.isActive) throw new NotFoundError('Tax');
         return tax;
     }
 
@@ -94,7 +94,7 @@ export class CatalogService {
             take: limit,
             type: query.type,
             search: query.search,
-            isActive: query.isActive !== undefined ? query.isActive === 'true' : undefined,
+            isActive: query.isActive !== undefined ? query.isActive === 'true' : true,
         });
 
         const totalPages = Math.ceil(total / limit);
@@ -110,7 +110,7 @@ export class CatalogService {
 
     async getProductService(id: string, workspaceId: string) {
         const item = await this.repository.findProductServiceById(id);
-        if (!item || item.workspaceId !== workspaceId) throw new NotFoundError('Product/Service');
+        if (!item || item.workspaceId !== workspaceId || !item.isActive) throw new NotFoundError('Product/Service');
         return item;
     }
 
