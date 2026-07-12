@@ -7,6 +7,7 @@ import { getPrismaClient } from './config/database';
 import { getRedisClient } from './config/redis';
 import { ensureBucket } from './config/minio';
 import { startWorkers, stopWorkers } from './workers';
+import { startDeadlineScheduler } from './jobs/deadlineScheduler';
 
 const PORT = config.PORT;
 
@@ -35,8 +36,10 @@ async function bootstrap() {
 
         // Start BullMQ workers
         let workers: ReturnType<typeof startWorkers> | null = null;
+        let schedulerInterval: NodeJS.Timeout | null = null;
         try {
             workers = startWorkers();
+            schedulerInterval = startDeadlineScheduler();
         } catch (workerError) {
             logger.warn('⚠️  Failed to start workers, background jobs will not process', { error: workerError });
         }
@@ -68,7 +71,8 @@ async function bootstrap() {
                     logger.error('Error disconnecting Redis', { error: err });
                 }
 
-                // Stop BullMQ workers
+                // Stop BullMQ workers and scheduler
+                if (schedulerInterval) clearInterval(schedulerInterval);
                 if (workers) {
                     try {
                         await stopWorkers(workers);

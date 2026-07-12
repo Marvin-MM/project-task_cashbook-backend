@@ -36,6 +36,14 @@ model User {
   auditLogs            AuditLog[]
   financialAuditLogs   FinancialAuditLog[]
   sentInvites          PendingInvite[]     @relation("InviteSender")
+  projectsCreated      Project[]           @relation("ProjectCreator")
+  projectMemberships   ProjectMember[]
+  tasksCreated         Task[]              @relation("TaskCreator")
+  taskAssignments      TaskAssignment[]    @relation("TaskAssignee")
+  taskAssigned         TaskAssignment[]    @relation("TaskAssigner")
+  timeEntries          TimeEntry[]
+  workSessions         WorkSession[]
+  notifications        Notification[]
 
   @@unique([provider, providerId])
   @@map("users")
@@ -105,6 +113,11 @@ model Workspace {
   productsServices   ProductService[]
   invoices           Invoice[]
   invoiceSettings    InvoiceSettings?
+  projects           Project[]
+  tasks              Task[]
+  workSessions       WorkSession[]
+  timeEntries        TimeEntry[]
+  notifications      Notification[]
 
   @@index([ownerId])
   @@index([type])
@@ -888,5 +901,209 @@ model InvoiceSettings {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@map("invoice_settings")
+}
+
+// ─── Projects ───────────────────────────────────────────
+
+enum ProjectStatus {
+  ACTIVE
+  COMPLETED
+  ARCHIVED
+}
+
+enum ProjectRole {
+  PROJECT_MANAGER
+  CONTRIBUTOR
+  VIEWER
+}
+
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String        @map("workspace_id") @db.Uuid
+  name        String
+  description String?
+  status      ProjectStatus @default(ACTIVE)
+  startDate   DateTime?     @map("start_date")
+  endDate     DateTime?     @map("end_date")
+  createdById String        @map("created_by_id") @db.Uuid
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  workspace   Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy   User            @relation("ProjectCreator", fields: [createdById], references: [id])
+  members     ProjectMember[]
+  tasks       Task[]
+  timeEntries TimeEntry[]
+
+  @@index([workspaceId])
+  @@index([status])
+  @@index([createdById])
+  @@map("projects")
+}
+
+model ProjectMember {
+  id        String      @id @default(uuid()) @db.Uuid
+  projectId String      @map("project_id") @db.Uuid
+  userId    String      @map("user_id") @db.Uuid
+  role      ProjectRole @default(CONTRIBUTOR)
+  addedAt   DateTime    @default(now()) @map("added_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("project_members")
+}
+
+// ─── Tasks ──────────────────────────────────────────────
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model Task {
+  id                   String       @id @default(uuid()) @db.Uuid
+  workspaceId          String       @map("workspace_id") @db.Uuid
+  projectId            String?      @map("project_id") @db.Uuid
+  title                String
+  description          String?
+  status               TaskStatus   @default(TODO)
+  priority             TaskPriority @default(MEDIUM)
+  dueDate              DateTime?    @map("due_date")
+  estimatedTimeMinutes Int?         @map("estimated_time_minutes")
+  createdById          String       @map("created_by_id") @db.Uuid
+  createdAt            DateTime     @default(now()) @map("created_at")
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  createdBy   User             @relation("TaskCreator", fields: [createdById], references: [id])
+  assignments TaskAssignment[]
+  timeEntries TimeEntry[]
+  notifications Notification[]
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([status])
+  @@index([priority])
+  @@index([dueDate])
+  @@index([createdById])
+  @@map("tasks")
+}
+
+model TaskAssignment {
+  id         String   @id @default(uuid()) @db.Uuid
+  taskId     String   @map("task_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  assignedBy String   @map("assigned_by") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation("TaskAssignee", fields: [userId], references: [id], onDelete: Cascade)
+  assigner User @relation("TaskAssigner", fields: [assignedBy], references: [id])
+
+  @@unique([taskId, userId])
+  @@index([taskId])
+  @@index([userId])
+  @@map("task_assignments")
+}
+
+// ─── Time Tracking ──────────────────────────────────────
+
+enum TimeEntrySource {
+  MANUAL
+  TIMER
+}
+
+model TimeEntry {
+  id              String          @id @default(uuid()) @db.Uuid
+  userId          String          @map("user_id") @db.Uuid
+  workspaceId     String          @map("workspace_id") @db.Uuid
+  taskId          String?         @map("task_id") @db.Uuid
+  projectId       String?         @map("project_id") @db.Uuid
+  startTime       DateTime        @map("start_time")
+  endTime         DateTime?       @map("end_time")
+  durationMinutes Int?            @map("duration_minutes")
+  source          TimeEntrySource @default(MANUAL)
+  description     String?
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task      Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([taskId])
+  @@index([projectId])
+  @@index([startTime])
+  @@index([endTime])
+  @@map("time_entries")
+}
+
+model WorkSession {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  workspaceId  String    @map("workspace_id") @db.Uuid
+  clockIn      DateTime  @map("clock_in")
+  clockOut     DateTime? @map("clock_out")
+  totalMinutes Int?      @map("total_minutes")
+  description  String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([clockIn])
+  @@index([clockOut])
+  @@map("work_sessions")
+}
+
+// ─── Notifications ──────────────────────────────────────
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_DUE_SOON
+  TASK_OVERDUE
+}
+
+model Notification {
+  id          String           @id @default(uuid()) @db.Uuid
+  userId      String           @map("user_id") @db.Uuid
+  workspaceId String           @map("workspace_id") @db.Uuid
+  type        NotificationType
+  title       String
+  body        String
+  taskId      String?          @map("task_id") @db.Uuid
+  isRead      Boolean          @default(false) @map("is_read")
+  readAt      DateTime?        @map("read_at")
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task      Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("notifications")
 }
 

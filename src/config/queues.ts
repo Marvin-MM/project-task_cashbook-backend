@@ -44,3 +44,16 @@ export const reportsQueue = new Queue('reports', {
         removeOnFail: { count: 1000 },
     },
 });
+
+export const notificationsQueue = new Queue('notifications', {
+    connection: bullmqConnection,
+    defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+            type: 'exponential',
+            delay: 2000,
+        },
+        removeOnComplete: { count: 2000 },
+        removeOnFail: { count: 5000 },
+    },
+});

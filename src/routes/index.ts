@@ -21,6 +21,10 @@ import accountTransactionsRoutes from '../modules/account-transactions/account-t
 import inventoryRoutes from '../modules/inventory/inventory.routes';
 import catalogRoutes from '../modules/catalog/catalog.routes';
 import invoicingRoutes from '../modules/invoicing/invoicing.routes';
+import projectsRoutes from '../modules/projects/projects.routes';
+import tasksRoutes from '../modules/tasks/tasks.routes';
+import timeTrackingRoutes from '../modules/time-tracking/time-tracking.routes';
+import notificationsRoutes from '../modules/notifications/notifications.routes';
 
 const router = Router();
 
@@ -36,6 +40,10 @@ router.use('/workspaces/:workspaceId/accounts/:accountId/transactions', accountT
 router.use('/workspaces/:workspaceId/inventory', inventoryRoutes);
 router.use('/workspaces/:workspaceId/catalog', catalogRoutes);
 router.use('/workspaces/:workspaceId/invoices', invoicingRoutes);
+router.use('/workspaces/:workspaceId/projects', projectsRoutes);
+router.use('/workspaces/:workspaceId/tasks', tasksRoutes);
+router.use('/workspaces/:workspaceId/time-tracking', timeTrackingRoutes);
+router.use('/workspaces/:workspaceId/notifications', notificationsRoutes);
 router.use('/cashbooks', cashbooksRoutes);
 router.use('/cashbooks/:cashbookId/obligations', obligationsRouter);
 router.use('/entries', entriesRoutes);
