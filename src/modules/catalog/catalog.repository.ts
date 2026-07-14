@@ -20,6 +20,30 @@ export class CatalogRepository {
 
     // ─── Product/Service ───────────────────────────────
 
+    /** Nested inventory snapshot for invoice/catalog UX (rent rates, mode). */
+    private readonly inventoryInclude = {
+        inventoryItem: {
+            select: {
+                id: true,
+                name: true,
+                sku: true,
+                unit: true,
+                currency: true,
+                commercialMode: true,
+                defaultRentalRate: true,
+                defaultRentalPeriodUnit: true,
+                isActive: true,
+                stock: {
+                    select: {
+                        quantityOnHand: true,
+                        quantityRentedOut: true,
+                    },
+                },
+            },
+        },
+        tax: true,
+    } as const;
+
     async findProductsServicesByWorkspace(
         workspaceId: string,
         options: {
@@ -46,7 +70,7 @@ export class CatalogRepository {
                 skip: options.skip,
                 take: options.take,
                 orderBy: { name: 'asc' },
-                include: { tax: true },
+                include: this.inventoryInclude,
             }),
             this.prisma.productService.count({ where }),
         ]);
@@ -56,7 +80,7 @@ export class CatalogRepository {
     async findProductServiceById(id: string) {
         return this.prisma.productService.findUnique({
             where: { id },
-            include: { tax: true },
+            include: this.inventoryInclude,
         });
     }
 }

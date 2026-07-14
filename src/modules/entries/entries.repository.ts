@@ -16,6 +16,7 @@ export class EntriesRepository {
                 },
                 attachments: true,
                 accountTransactions: {
+                    where: { voidedAt: null },
                     select: {
                         account: {
                             select: {
@@ -84,6 +85,7 @@ export class EntriesRepository {
                     },
                     _count: { select: { attachments: true } },
                     accountTransactions: {
+                        where: { voidedAt: null },
                         select: {
                             account: {
                                 select: {

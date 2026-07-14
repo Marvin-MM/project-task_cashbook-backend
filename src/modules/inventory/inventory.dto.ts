@@ -7,11 +7,21 @@ const decimalString = z.string().regex(
 
 // ─── Inventory Item Schemas ────────────────────────────
 
+const currencyCode = z
+    .string()
+    .trim()
+    .length(3, 'Currency must be a 3-letter code')
+    .transform((c) => c.toUpperCase());
+
 export const createInventoryItemSchema = z.object({
     name: z.string().min(1, 'Name is required').max(200),
     sku: z.string().max(100).optional(),
     unit: z.string().min(1, 'Unit is required').max(50),
     category: z.string().max(100).optional(),
+    currency: currencyCode.default('UGX'),
+    commercialMode: z.enum(['SELL_ONLY', 'RENT_ONLY', 'SELL_AND_RENT']).default('SELL_ONLY'),
+    defaultRentalRate: decimalString.optional(),
+    defaultRentalPeriodUnit: z.enum(['DAY', 'WEEK', 'MONTH']).optional(),
     lowStockThreshold: z.coerce.number().int().min(0).optional(),
     costMethod: z.enum(['WEIGHTED_AVERAGE', 'FIFO', 'LIFO']).default('WEIGHTED_AVERAGE'),
     allowNegativeStock: z.boolean().default(false),
@@ -22,6 +32,10 @@ export const updateInventoryItemSchema = z.object({
     sku: z.string().max(100).nullable().optional(),
     unit: z.string().min(1).max(50).optional(),
     category: z.string().max(100).nullable().optional(),
+    currency: currencyCode.optional(),
+    commercialMode: z.enum(['SELL_ONLY', 'RENT_ONLY', 'SELL_AND_RENT']).optional(),
+    defaultRentalRate: decimalString.nullable().optional(),
+    defaultRentalPeriodUnit: z.enum(['DAY', 'WEEK', 'MONTH']).nullable().optional(),
     lowStockThreshold: z.coerce.number().int().min(0).nullable().optional(),
     allowNegativeStock: z.boolean().optional(),
     isActive: z.boolean().optional(),
@@ -33,13 +47,37 @@ export const inventoryItemQuerySchema = z.object({
     category: z.string().optional(),
     isActive: z.enum(['true', 'false']).optional(),
     search: z.string().optional(),
+    currency: currencyCode.optional(),
+    commercialMode: z.enum(['SELL_ONLY', 'RENT_ONLY', 'SELL_AND_RENT']).optional(),
+});
+
+export const returnRentalSchema = z.object({
+    lineReturns: z
+        .array(
+            z.object({
+                lineId: z.string().uuid(),
+                quantity: z.coerce.number().int().min(1),
+            }),
+        )
+        .optional(),
+    notes: z.string().max(1000).optional(),
+});
+
+export const rentalQuerySchema = z.object({
+    page: z.coerce.number().min(1).default(1),
+    limit: z.coerce.number().min(1).max(100).default(20),
+    status: z.enum(['DRAFT', 'ACTIVE', 'RETURNED', 'OVERDUE', 'CANCELLED']).optional(),
+    itemId: z.string().uuid().optional(),
 });
 
 // ─── Inventory Transaction Schemas ─────────────────────
 
 const STOCK_IN_TYPES = ['PURCHASE', 'TRANSFER_IN', 'RETURN_IN', 'ADJUSTMENT'] as const;
 const STOCK_OUT_TYPES = ['SALE', 'TRANSFER_OUT', 'RETURN_OUT', 'ADJUSTMENT'] as const;
-const ALL_TRANSACTION_TYPES = ['PURCHASE', 'SALE', 'ADJUSTMENT', 'TRANSFER_IN', 'TRANSFER_OUT', 'RETURN_IN', 'RETURN_OUT'] as const;
+const ALL_TRANSACTION_TYPES = [
+    'PURCHASE', 'SALE', 'ADJUSTMENT', 'TRANSFER_IN', 'TRANSFER_OUT',
+    'RETURN_IN', 'RETURN_OUT', 'RENTAL_OUT', 'RENTAL_IN', 'RENTAL_LOSS',
+] as const;
 
 // Stock direction helpers (mirrors the service constants)
 const STOCK_IN_TRANSACTION_TYPES = ['PURCHASE', 'TRANSFER_IN', 'RETURN_IN'] as const;
@@ -118,11 +156,26 @@ export const cogsReportQuerySchema = z.object({
     endDate: z.string().datetime().optional(),
 });
 
-export const analyticsQuerySchema = z.object({
-    startDate: z.string().datetime().optional(),
-    endDate: z.string().datetime().optional(),
-    interval: z.enum(['DAILY', 'WEEKLY', 'MONTHLY']).default('DAILY'),
-});
+export const analyticsQuerySchema = z
+    .object({
+        startDate: z.string().datetime().optional(),
+        endDate: z.string().datetime().optional(),
+        /** Preferred: DAILY | WEEKLY | MONTHLY */
+        interval: z.enum(['DAILY', 'WEEKLY', 'MONTHLY']).optional(),
+        /** Alias used by some clients (daily/weekly/monthly) */
+        period: z.enum(['daily', 'weekly', 'monthly', 'DAILY', 'WEEKLY', 'MONTHLY']).optional(),
+    })
+    .transform((q) => {
+        const raw = (q.interval || q.period || 'DAILY').toString().toUpperCase();
+        const interval = (['DAILY', 'WEEKLY', 'MONTHLY'].includes(raw)
+            ? raw
+            : 'DAILY') as 'DAILY' | 'WEEKLY' | 'MONTHLY';
+        return {
+            startDate: q.startDate,
+            endDate: q.endDate,
+            interval,
+        };
+    });
 
 // ─── Params schemas ────────────────────────────────────
 
@@ -140,3 +193,5 @@ export type InventoryTransactionQueryDto = z.infer<typeof inventoryTransactionQu
 export type InventoryLineItemDto = z.infer<typeof inventoryLineItemSchema>;
 export type CogsReportQueryDto = z.infer<typeof cogsReportQuerySchema>;
 export type AnalyticsQueryDto = z.infer<typeof analyticsQuerySchema>;
+export type ReturnRentalDto = z.infer<typeof returnRentalSchema>;
+export type RentalQueryDto = z.infer<typeof rentalQuerySchema>;

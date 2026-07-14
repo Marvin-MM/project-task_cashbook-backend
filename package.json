@@ -10,7 +10,10 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:prod": "prisma migrate deploy",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "test:finance": "tsx src/core/finance/money.selftest.ts",
+    "repair:balances": "tsx scripts/repair-financial-balances.ts",
+    "repair:balances:apply": "tsx scripts/repair-financial-balances.ts --apply"
   },
   "keywords": [],
   "author": "",

@@ -105,20 +105,18 @@ export class ReportsService {
             })
         );
 
-        // Calculate summary
-        let totalIncome = 0;
-        let totalExpense = 0;
+        // Calculate summary with Decimal (charge-aware activity totals)
+        const { incomeExpenseDeltas, toDecimal } = await import('../../core/finance');
+        let totalIncome = toDecimal(0);
+        let totalExpense = toDecimal(0);
 
         for (const entry of entries) {
-            const amount = Number(entry.amount);
-            if (entry.type === 'INCOME') {
-                totalIncome += amount;
-            } else {
-                totalExpense += amount;
-            }
+            const deltas = incomeExpenseDeltas(entry.type, entry.amount, entry.chargeAmount);
+            totalIncome = totalIncome.add(deltas.totalIncomeDelta);
+            totalExpense = totalExpense.add(deltas.totalExpenseDelta);
         }
 
-        const net = totalIncome - totalExpense;
+        const net = totalIncome.sub(totalExpense);
 
         // Log report generation
         await this.prisma.auditLog.create({
@@ -141,10 +139,11 @@ export class ReportsService {
             cashbook: { id: cashbook.id, name: cashbook.name, currency: cashbook.currency },
             period: { startDate: query.startDate, endDate: query.endDate },
             summary: {
-                totalIncome: totalIncome.toString(),
-                totalExpense: totalExpense.toString(),
-                net: net.toString(),
+                totalIncome: totalIncome.toFixed(4),
+                totalExpense: totalExpense.toFixed(4),
+                net: net.toFixed(4),
                 entriesCount: entries.length,
+                note: 'Totals use charge-aware activity rules. Direct wallet transactions and transfers are not included.',
             },
             entries: entries.map((e: any) => ({
                 id: e.id,

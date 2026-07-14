@@ -87,13 +87,15 @@ model LoginHistory {
 // ─── Workspace ─────────────────────────────────────────
 
 model Workspace {
-  id        String        @id @default(uuid()) @db.Uuid
-  name      String
-  type      WorkspaceType
-  ownerId   String        @map("owner_id") @db.Uuid
-  isActive  Boolean       @default(true) @map("is_active")
-  createdAt DateTime      @default(now()) @map("created_at")
-  updatedAt DateTime      @updatedAt @map("updated_at")
+  id              String        @id @default(uuid()) @db.Uuid
+  name            String
+  type            WorkspaceType
+  ownerId         String        @map("owner_id") @db.Uuid
+  /// Suggested currency for new books/items/invoices (not a hard lock).
+  defaultCurrency String        @default("UGX") @map("default_currency")
+  isActive        Boolean       @default(true) @map("is_active")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
 
   owner              User                 @relation("WorkspaceOwner", fields: [ownerId], references: [id])
   members            WorkspaceMember[]
@@ -109,6 +111,7 @@ model Workspace {
   accounts           Account[]
   accountCategories  AccountCategory[]
   inventoryItems     InventoryItem[]
+  inventoryRentals   InventoryRental[]
   taxes              Tax[]
   productsServices   ProductService[]
   invoices           Invoice[]
@@ -364,6 +367,7 @@ model Contact {
   customerProfile CustomerProfile?
   obligations     CashbookObligation[]
   invoices        Invoice[]
+  inventoryRentals InventoryRental[]
 
   @@index([workspaceId])
   @@index([type])
@@ -570,9 +574,11 @@ model Account {
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  workspace    Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  accountType  AccountType          @relation(fields: [accountTypeId], references: [id])
-  transactions AccountTransaction[]
+  workspace       Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  accountType     AccountType          @relation(fields: [accountTypeId], references: [id])
+  transactions    AccountTransaction[]
+  transfersFrom   AccountTransfer[]    @relation("TransferFrom")
+  transfersTo     AccountTransfer[]    @relation("TransferTo")
 
   @@index([workspaceId])
   @@index([accountTypeId])
@@ -605,6 +611,8 @@ model AccountTransaction {
   chargeAmount      Decimal?              @map("charge_amount") @db.Decimal(20, 4)
   description       String
   accountCategoryId String?               @map("account_category_id") @db.Uuid
+  /// When set, this row is retained for audit but must not affect wallet balance.
+  voidedAt          DateTime?             @map("voided_at")
   createdAt         DateTime              @default(now()) @map("created_at")
 
   account         Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
@@ -615,7 +623,34 @@ model AccountTransaction {
   @@index([accountId])
   @@index([sourceId])
   @@index([workspaceId])
+  @@index([voidedAt])
   @@map("account_transactions")
+}
+
+// ─── Wallet transfers (not income/expense) ─────────────
+
+model AccountTransfer {
+  id            String    @id @default(uuid()) @db.Uuid
+  workspaceId   String    @map("workspace_id") @db.Uuid
+  fromAccountId String    @map("from_account_id") @db.Uuid
+  toAccountId   String    @map("to_account_id") @db.Uuid
+  amount        Decimal   @db.Decimal(20, 4)
+  feeAmount     Decimal?  @map("fee_amount") @db.Decimal(20, 4)
+  description   String
+  transferredAt DateTime  @map("transferred_at")
+  createdById   String    @map("created_by_id") @db.Uuid
+  voidedAt      DateTime? @map("voided_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  fromAccount Account @relation("TransferFrom", fields: [fromAccountId], references: [id], onDelete: Restrict)
+  toAccount   Account @relation("TransferTo", fields: [toAccountId], references: [id], onDelete: Restrict)
+
+  @@index([workspaceId])
+  @@index([fromAccountId])
+  @@index([toAccountId])
+  @@index([transferredAt])
+  @@index([voidedAt])
+  @@map("account_transfers")
 }
 
 enum AccountClassification {
@@ -649,6 +684,9 @@ enum InventoryTransactionType {
   TRANSFER_OUT
   RETURN_IN
   RETURN_OUT
+  RENTAL_OUT
+  RENTAL_IN
+  RENTAL_LOSS
 }
 
 enum InventoryReferenceType {
@@ -657,40 +695,122 @@ enum InventoryReferenceType {
   OBLIGATION
   INVOICE
   MANUAL
+  RENTAL
+}
+
+enum InventoryCommercialMode {
+  SELL_ONLY
+  RENT_ONLY
+  SELL_AND_RENT
+}
+
+enum RentalPeriodUnit {
+  DAY
+  WEEK
+  MONTH
+}
+
+enum InventoryRentalStatus {
+  DRAFT
+  ACTIVE
+  RETURNED
+  OVERDUE
+  CANCELLED
+}
+
+enum InvoiceLineType {
+  SALE
+  RENTAL
 }
 
 model InventoryItem {
-  id                 String              @id @default(uuid()) @db.Uuid
-  workspaceId        String              @map("workspace_id") @db.Uuid
-  name               String
-  sku                String?
-  unit               String
-  category           String?
-  lowStockThreshold  Int?                @map("low_stock_threshold")
-  costMethod         InventoryCostMethod @default(WEIGHTED_AVERAGE) @map("cost_method")
-  allowNegativeStock Boolean             @default(false) @map("allow_negative_stock")
-  isActive           Boolean             @default(true) @map("is_active")
-  createdAt          DateTime            @default(now()) @map("created_at")
-  updatedAt          DateTime            @updatedAt @map("updated_at")
+  id                     String                  @id @default(uuid()) @db.Uuid
+  workspaceId            String                  @map("workspace_id") @db.Uuid
+  name                   String
+  sku                    String?
+  unit                   String
+  category               String?
+  /// ISO currency for costs/prices (no FX; must match cashbook/invoice when linked).
+  currency               String                  @default("UGX")
+  commercialMode         InventoryCommercialMode @default(SELL_ONLY) @map("commercial_mode")
+  defaultRentalRate      Decimal?                @map("default_rental_rate") @db.Decimal(20, 4)
+  defaultRentalPeriodUnit RentalPeriodUnit?      @map("default_rental_period_unit")
+  lowStockThreshold      Int?                    @map("low_stock_threshold")
+  costMethod             InventoryCostMethod     @default(WEIGHTED_AVERAGE) @map("cost_method")
+  allowNegativeStock     Boolean                 @default(false) @map("allow_negative_stock")
+  isActive               Boolean                 @default(true) @map("is_active")
+  createdAt              DateTime                @default(now()) @map("created_at")
+  updatedAt              DateTime                @updatedAt @map("updated_at")
 
   workspace        Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   stock            InventoryStock?
   transactions     InventoryTransaction[]
   lots             InventoryLot[]
-  productsServices ProductService[]       
-  invoiceItems     InvoiceItem[]          
+  productsServices ProductService[]
+  invoiceItems     InvoiceItem[]
+  rentalLines      InventoryRentalLine[]
 
   @@unique([workspaceId, sku])
   @@index([workspaceId])
   @@index([isActive])
+  @@index([currency])
   @@map("inventory_items")
 }
 
+model InventoryRental {
+  id            String                @id @default(uuid()) @db.Uuid
+  workspaceId   String                @map("workspace_id") @db.Uuid
+  customerId    String                @map("customer_id") @db.Uuid
+  invoiceId     String?               @map("invoice_id") @db.Uuid
+  status        InventoryRentalStatus @default(DRAFT)
+  currency      String                @default("UGX")
+  startDate     DateTime              @map("start_date")
+  endDate       DateTime?             @map("end_date")
+  depositAmount Decimal?              @map("deposit_amount") @db.Decimal(20, 4)
+  notes         String?
+  returnedAt    DateTime?             @map("returned_at")
+  createdById   String                @map("created_by_id") @db.Uuid
+  createdAt     DateTime              @default(now()) @map("created_at")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+
+  workspace Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customer  Contact               @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  invoice   Invoice?              @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  lines     InventoryRentalLine[]
+
+  @@index([workspaceId])
+  @@index([customerId])
+  @@index([invoiceId])
+  @@index([status])
+  @@map("inventory_rentals")
+}
+
+model InventoryRentalLine {
+  id             String           @id @default(uuid()) @db.Uuid
+  rentalId       String           @map("rental_id") @db.Uuid
+  inventoryItemId String          @map("inventory_item_id") @db.Uuid
+  quantity       Int
+  unitRate       Decimal          @map("unit_rate") @db.Decimal(20, 4)
+  periodUnit     RentalPeriodUnit @map("period_unit")
+  periodCount    Int              @default(1) @map("period_count")
+  lineTotal      Decimal          @map("line_total") @db.Decimal(20, 4)
+  quantityReturned Int            @default(0) @map("quantity_returned")
+
+  rental InventoryRental @relation(fields: [rentalId], references: [id], onDelete: Cascade)
+  item   InventoryItem   @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+
+  @@index([rentalId])
+  @@index([inventoryItemId])
+  @@map("inventory_rental_lines")
+}
+
 model InventoryStock {
-  id             String  @id @default(uuid()) @db.Uuid
-  itemId         String  @unique @map("item_id") @db.Uuid
-  quantityOnHand Int     @default(0) @map("quantity_on_hand")
-  averageCost    Decimal @default(0) @map("average_cost") @db.Decimal(20, 4)
+  id               String  @id @default(uuid()) @db.Uuid
+  itemId           String  @unique @map("item_id") @db.Uuid
+  quantityOnHand   Int     @default(0) @map("quantity_on_hand")
+  /// Units currently out on active rentals (not permanently sold).
+  quantityRentedOut Int    @default(0) @map("quantity_rented_out")
+  averageCost      Decimal @default(0) @map("average_cost") @db.Decimal(20, 4)
 
   item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
 
@@ -794,6 +914,7 @@ model ProductService {
   name            String
   description     String?
   price           Decimal            @default(0) @db.Decimal(20, 4)
+  currency        String             @default("UGX")
   type            ProductServiceType
   isSellable      Boolean            @default(true) @map("is_sellable")
   isBuyable       Boolean            @default(false) @map("is_buyable")
@@ -811,6 +932,7 @@ model ProductService {
   @@index([workspaceId])
   @@index([type])
   @@index([inventoryItemId])
+  @@index([currency])
   @@map("products_services")
 }
 
@@ -849,8 +971,9 @@ model Invoice {
 
   workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   customer  Contact       @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  cashbook  Cashbook?     @relation(fields: [cashbookId], references: [id], onDelete: SetNull)
+  cashbook  Cashbook?         @relation(fields: [cashbookId], references: [id], onDelete: SetNull)
   items     InvoiceItem[]
+  rentals   InventoryRental[]
 
   @@unique([workspaceId, invoiceNumber])
   @@index([workspaceId])
@@ -863,20 +986,25 @@ model Invoice {
 }
 
 model InvoiceItem {
-  id               String  @id @default(uuid()) @db.Uuid
-  invoiceId        String  @map("invoice_id") @db.Uuid
-  productServiceId String? @map("product_service_id") @db.Uuid
-  inventoryItemId  String? @map("inventory_item_id") @db.Uuid
-  name             String  
+  id               String          @id @default(uuid()) @db.Uuid
+  invoiceId        String          @map("invoice_id") @db.Uuid
+  productServiceId String?         @map("product_service_id") @db.Uuid
+  inventoryItemId  String?         @map("inventory_item_id") @db.Uuid
+  lineType         InvoiceLineType @default(SALE) @map("line_type")
+  name             String
   description      String?
-  quantity         Decimal @db.Decimal(20, 4)
-  unitPrice        Decimal @map("unit_price") @db.Decimal(20, 4)
-  taxId            String? @map("tax_id") @db.Uuid
-  taxRate          Decimal @default(0) @map("tax_rate") @db.Decimal(10, 4) 
-  taxAmount        Decimal @default(0) @map("tax_amount") @db.Decimal(20, 4)
-  total            Decimal @default(0) @db.Decimal(20, 4)
+  quantity         Decimal         @db.Decimal(20, 4)
+  unitPrice        Decimal         @map("unit_price") @db.Decimal(20, 4)
+  taxId            String?         @map("tax_id") @db.Uuid
+  taxRate          Decimal         @default(0) @map("tax_rate") @db.Decimal(10, 4)
+  taxAmount        Decimal         @default(0) @map("tax_amount") @db.Decimal(20, 4)
+  total            Decimal         @default(0) @db.Decimal(20, 4)
+  rentalStart      DateTime?       @map("rental_start")
+  rentalEnd        DateTime?       @map("rental_end")
+  rentalPeriodUnit RentalPeriodUnit? @map("rental_period_unit")
+  rentalPeriodCount Int?           @map("rental_period_count")
 
-  invoice        Invoice        @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoice        Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   productService ProductService? @relation(fields: [productServiceId], references: [id], onDelete: SetNull)
   inventoryItem  InventoryItem?  @relation(fields: [inventoryItemId], references: [id], onDelete: SetNull)
   tax            Tax?            @relation(fields: [taxId], references: [id], onDelete: SetNull)

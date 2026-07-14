@@ -5,7 +5,12 @@ import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
 import { requireWorkspaceMember } from '../../middlewares/authorize';
 import { WorkspaceRole } from '../../core/types';
-import { createAccountSchema, updateAccountSchema, archiveAccountSchema } from './accounts.dto';
+import {
+    createAccountSchema,
+    updateAccountSchema,
+    archiveAccountSchema,
+    createAccountTransferSchema,
+} from './accounts.dto';
 
 const router = Router({ mergeParams: true });
 const controller = container.resolve(AccountsController);
@@ -27,11 +32,26 @@ router.get(
     controller.getNetWorth.bind(controller) as any
 );
 
+// Wallet transfer (must be before /:id routes)
+router.post(
+    '/transfers',
+    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    validate(createAccountTransferSchema),
+    controller.transfer.bind(controller) as any
+);
+
 // Get single account
 router.get(
     '/:id',
     requireWorkspaceMember() as any,
     controller.getById.bind(controller) as any
+);
+
+// Recalculate wallet balance from ledger + transfers
+router.post(
+    '/:id/recalculate',
+    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    controller.recalculateBalance.bind(controller) as any
 );
 
 // Create account

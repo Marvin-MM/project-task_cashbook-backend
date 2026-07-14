@@ -97,4 +97,38 @@ export class AccountsController {
             next(error);
         }
     }
+
+    async transfer(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.transferBetweenAccounts(
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.CREATED).json({
+                success: true,
+                message: 'Transfer completed successfully',
+                data,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    async recalculateBalance(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.recalculateAccountBalance(
+                req.params.id as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Account balance recalculated successfully',
+                data,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
 }

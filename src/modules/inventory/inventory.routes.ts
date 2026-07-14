@@ -14,7 +14,10 @@ import {
     cogsReportQuerySchema,
     itemIdParamSchema,
     analyticsQuerySchema,
+    returnRentalSchema,
+    rentalQuerySchema,
 } from './inventory.dto';
+import { z } from 'zod';
 
 const router = Router({ mergeParams: true });
 const controller = container.resolve(InventoryController);
@@ -38,6 +41,14 @@ router.get(
     requireWorkspaceMember() as any,
     validate(itemIdParamSchema, 'params'),
     controller.getItem.bind(controller) as any
+);
+
+// Item-level profit/loss analytics from stock movements
+router.get(
+    '/items/:itemId/analytics',
+    requireWorkspaceMember() as any,
+    validate(itemIdParamSchema, 'params'),
+    controller.getItemAnalytics.bind(controller) as any
 );
 
 // Create inventory item
@@ -140,6 +151,25 @@ router.get(
     requireWorkspaceMember() as any,
     validate(analyticsQuerySchema, 'query'),
     controller.getAnalyticsTrends.bind(controller) as any
+);
+
+// ─── Rentals (invoice-driven lifecycle) ────────────────
+
+router.get(
+    '/rentals',
+    requireWorkspaceMember() as any,
+    validate(rentalQuerySchema, 'query'),
+    controller.listRentals.bind(controller) as any
+);
+
+router.post(
+    '/rentals/:rentalId/return',
+    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    validateMultiple({
+        params: z.object({ rentalId: z.string().uuid() }).passthrough(),
+        body: returnRentalSchema,
+    }),
+    controller.returnRental.bind(controller) as any
 );
 
 export default router;

@@ -27,6 +27,12 @@ import { InventoryService } from '../inventory/inventory.service';
 import { generateReceiptPdf } from './receipt.generator';
 import { receiptEmailTemplate } from '../../utils/emailTemplates';
 import { sendEmail } from '../../config/email';
+import {
+    cashbookIncrementPayload,
+    effectiveCashAmount,
+    obligationStatusFromAmounts,
+    walletBalanceDelta,
+} from '../../core/finance';
 
 @injectable()
 export class EntriesService {
@@ -231,97 +237,94 @@ export class EntriesService {
                 },
             });
 
-            // Update cashbook atomically. totalIncome/totalExpense ALWAYS update. Balance ONLY updates if not linked to an account.
+            // Update cashbook: totals always; balance only if not wallet-linked
             const balanceBefore = lockedCashbook.balance;
-            const isIncome = dto.type === EntryType.INCOME;
             const chargeAmount = dto.chargeAmount ? new Decimal(dto.chargeAmount) : new Decimal(0);
-            const effectiveAmount = isIncome ? amount.sub(chargeAmount) : amount.add(chargeAmount);
+            const hasWalletLink = Boolean(dto.accountId);
 
-            let balanceAfter = balanceBefore;
+            const cashbookPayload = cashbookIncrementPayload(
+                dto.type,
+                amount,
+                chargeAmount,
+                hasWalletLink,
+                'apply',
+            );
 
             await tx.cashbook.update({
                 where: { id: cashbookId },
-                data: {
-                    balance: !dto.accountId ? (isIncome ? { increment: effectiveAmount } : { decrement: effectiveAmount }) : undefined,
-                    totalIncome: isIncome ? { increment: amount } : undefined,
-                    totalExpense: isIncome
-                        ? (chargeAmount.greaterThan(0) ? { increment: chargeAmount } : undefined)
-                        : { increment: amount.add(chargeAmount) },
-                },
+                data: cashbookPayload,
             });
 
-            if (!dto.accountId) {
-                balanceAfter = isIncome
-                    ? balanceBefore.add(effectiveAmount)
-                    : balanceBefore.sub(effectiveAmount);
-            }
+            const balanceAfter = hasWalletLink
+                ? balanceBefore
+                : balanceBefore.add(walletBalanceDelta(dto.type, amount, chargeAmount));
 
             if (dto.accountId) {
-                // 1. Lock the account row to prevent race conditions
                 await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${dto.accountId}::uuid FOR UPDATE`;
 
-                // 2. Fetch the latest balance after lock
                 const lockedAccount = await tx.account.findUniqueOrThrow({
                     where: { id: dto.accountId }
                 });
 
-                // 3. Prevent Negative Balance if allowNegative is false
-                if (!lockedAccount.allowNegative && !isIncome) {
-                    const newAccountBalance = lockedAccount.balance.sub(effectiveAmount);
+                const walletDelta = walletBalanceDelta(dto.type, amount, chargeAmount);
+                if (!lockedAccount.allowNegative && walletDelta.lessThan(0)) {
+                    const newAccountBalance = lockedAccount.balance.add(walletDelta);
                     if (newAccountBalance.lessThan(0)) {
                         throw new AppError(`Transaction exceeds account balance. Current balance is ${lockedAccount.balance.toString()}`, 400, 'INSUFFICIENT_FUNDS');
                     }
                 }
 
-                // 4. Update the account balance
                 await tx.account.update({
                     where: { id: dto.accountId },
-                    data: {
-                        balance: isIncome ? { increment: effectiveAmount } : { decrement: effectiveAmount }
-                    }
+                    data: { balance: { increment: walletDelta } }
                 });
 
-                // 5. Create the ledger link
-                await tx.accountTransaction.create({
-                    data: {
-                        workspaceId: cashbook.workspaceId,
-                        accountId: dto.accountId,
-                        sourceType: TransactionSourceType.CASHBOOK_ENTRY,
-                        sourceId: newEntry.id,
-                        type: dto.type as any,
-                        amount,
-                        chargeAmount: chargeAmount.greaterThan(0) ? chargeAmount : null,
-                        description: newEntry.description,
-                    }
+                await this.upsertCashbookAccountTransaction(tx, {
+                    workspaceId: cashbook.workspaceId,
+                    accountId: dto.accountId,
+                    sourceId: newEntry.id,
+                    type: dto.type,
+                    amount,
+                    chargeAmount: chargeAmount.greaterThan(0) ? chargeAmount : null,
+                    description: newEntry.description,
                 });
             }
 
             if (dto.obligationId) {
-                // 1. Lock Obligation Row
+                // Block inventory on payment entries if obligation already stocked goods
+                if (dto.inventoryItems && dto.inventoryItems.length > 0) {
+                    const existingOblInv = await tx.inventoryTransaction.count({
+                        where: {
+                            referenceType: InventoryReferenceType.OBLIGATION,
+                            referenceId: dto.obligationId,
+                        },
+                    });
+                    if (existingOblInv > 0) {
+                        throw new AppError(
+                            'This obligation already has inventory stock movements. Do not attach inventoryItems on the payment entry (avoids double stock-in).',
+                            400,
+                            'INVENTORY_DOUBLE_APPLY',
+                        );
+                    }
+                }
+
                 await tx.$queryRaw`SELECT id FROM cashbook_obligations WHERE id = ${dto.obligationId}::uuid FOR UPDATE`;
 
-                // 2. Refresh values
                 const lockedObligation = await tx.cashbookObligation.findUniqueOrThrow({
                     where: { id: dto.obligationId }
                 });
 
-                // 3. Double-check after lock
                 if (amount.greaterThan(lockedObligation.outstandingAmount)) {
                     throw new AppError(`Concurrent payment exceeded outstanding balance`, 400, 'OVERPAYMENT');
                 }
 
                 const newOutstanding = lockedObligation.outstandingAmount.sub(amount);
+                const newStatus = obligationStatusFromAmounts(
+                    lockedObligation.totalAmount,
+                    newOutstanding,
+                    lockedObligation.status,
+                ) as ObligationStatus;
 
-                let newStatus = lockedObligation.status;
-                if (newOutstanding.equals(0)) {
-                    newStatus = ObligationStatus.PAID;
-                } else if (newOutstanding.greaterThan(0) && newOutstanding.lessThan(lockedObligation.totalAmount)) {
-                    newStatus = ObligationStatus.PARTIAL;
-                } else if (newOutstanding.equals(lockedObligation.totalAmount)) {
-                    newStatus = ObligationStatus.OPEN;
-                }
-
-                // 4. Implement deduction natively
                 await tx.cashbookObligation.update({
                     where: { id: dto.obligationId },
                     data: {
@@ -330,7 +333,6 @@ export class EntriesService {
                     }
                 });
 
-                // 5. Audit logs explicitly for the obligation state change
                 await tx.auditLog.create({
                     data: {
                         userId,
@@ -347,13 +349,14 @@ export class EntriesService {
                             statusAfter: newStatus
                         } as any
                     }
-                })
+                });
 
-                // 6. Sync invoice if obligation references one
-                if (lockedObligation.referenceType === 'INVOICE' && lockedObligation.referenceId) {
-                    const { InvoicingService } = await import('../invoicing/invoicing.service');
-                    await InvoicingService.syncInvoicePayment(tx, lockedObligation.referenceId, newOutstanding);
-                }
+                const { InvoicingService } = await import('../invoicing/invoicing.service');
+                await InvoicingService.syncInvoiceFromObligation(tx, {
+                    referenceType: lockedObligation.referenceType,
+                    referenceId: lockedObligation.referenceId,
+                    outstandingAmount: newOutstanding,
+                });
             }
 
             // Create entry audit
@@ -402,6 +405,7 @@ export class EntriesService {
                     dto.inventoryItems,
                     userId,
                     dto.description,
+                    cashbook.currency,
                 );
             }
 
@@ -424,6 +428,30 @@ export class EntriesService {
         const entry = await this.entriesRepository.findById(entryId);
         if (!entry || entry.isDeleted) {
             throw new NotFoundError('Entry');
+        }
+
+        // Soft immutability: reconciled entries cannot change money-affecting fields
+        const financialFieldsTouched =
+            dto.type !== undefined ||
+            dto.amount !== undefined ||
+            dto.chargeAmount !== undefined ||
+            dto.accountId !== undefined ||
+            dto.obligationId !== undefined ||
+            dto.entryDate !== undefined ||
+            dto.inventoryItems !== undefined;
+
+        if (entry.isReconciled && financialFieldsTouched) {
+            throw new AppError(
+                'This entry is reconciled and cannot be modified. Unreconcile it first, or post a correcting entry.',
+                400,
+                'ENTRY_RECONCILED',
+            );
+        }
+
+        if (dto.expectedVersion !== undefined && dto.expectedVersion !== entry.version) {
+            throw new ConflictError(
+                `Entry was modified by another request (expected version ${dto.expectedVersion}, current ${entry.version})`,
+            );
         }
 
         const cashbook = await this.prisma.cashbook.findUnique({
@@ -450,9 +478,13 @@ export class EntriesService {
         const newValues: Record<string, any> = {};
         const changes: Record<string, { from: any; to: any }> = {};
 
-        // Find existing account transaction, if any
+        // Find existing non-voided account transaction, if any
         const existingTx = await this.prisma.accountTransaction.findFirst({
-            where: { sourceId: entryId, sourceType: TransactionSourceType.CASHBOOK_ENTRY }
+            where: {
+                sourceId: entryId,
+                sourceType: TransactionSourceType.CASHBOOK_ENTRY,
+                voidedAt: null,
+            }
         });
         const hasAccountChanged = dto.accountId !== undefined && dto.accountId !== (existingTx?.accountId || null);
 
@@ -484,39 +516,29 @@ export class EntriesService {
         }
 
         const updated = await this.prisma.$transaction(async (tx) => {
-            // Read cashbook inside transaction for accurate balanceBefore (Issue 7)
             const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
                 where: { id: entry.cashbookId },
             });
 
-            // Figure out the new target account upfront
-            const targetAccountId = dto.accountId !== undefined ? dto.accountId : existingTx?.accountId;
+            const targetAccountId = dto.accountId !== undefined ? dto.accountId : existingTx?.accountId || null;
 
-            // Reverse old entry effect on balance
             const wasIncome = entry.type === EntryType.INCOME;
             const oldAmount = entry.amount;
             const oldChargeAmount = entry.chargeAmount || new Decimal(0);
-            const oldEffectiveAmount = wasIncome ? oldAmount.sub(oldChargeAmount) : oldAmount.add(oldChargeAmount);
+            const oldEffectiveAmount = effectiveCashAmount(entry.type, oldAmount, oldChargeAmount);
             const balanceBefore = lockedCashbook.balance;
-            let balanceAfter = balanceBefore;
 
-            // ALWAYS update totalIncome/totalExpense for the old entry. ONLY reverse from cashbook balance if old entry was NOT linked to an account
+            // Reverse old cashbook effect
             await tx.cashbook.update({
                 where: { id: entry.cashbookId },
-                data: {
-                    balance: !existingTx ? (wasIncome ? { decrement: oldEffectiveAmount } : { increment: oldEffectiveAmount }) : undefined,
-                    totalIncome: wasIncome ? { decrement: oldAmount } : undefined,
-                    totalExpense: wasIncome
-                        ? (oldChargeAmount.greaterThan(0) ? { decrement: oldChargeAmount } : undefined)
-                        : { decrement: oldAmount.add(oldChargeAmount) },
-                },
+                data: cashbookIncrementPayload(
+                    entry.type,
+                    oldAmount,
+                    oldChargeAmount,
+                    Boolean(existingTx),
+                    'reverse',
+                ),
             });
-
-            if (!existingTx) {
-                balanceAfter = wasIncome
-                    ? balanceBefore.sub(oldEffectiveAmount)
-                    : balanceBefore.add(oldEffectiveAmount);
-            }
 
             // Apply new amount
             const newType = dto.type || entry.type;
@@ -525,54 +547,53 @@ export class EntriesService {
             const newChargeAmount = dto.chargeAmount !== undefined
                 ? (dto.chargeAmount ? new Decimal(dto.chargeAmount) : new Decimal(0))
                 : (entry.chargeAmount || new Decimal(0));
-            const newEffectiveAmount = isIncome ? newAmount.sub(newChargeAmount) : newAmount.add(newChargeAmount);
+            const newEffectiveAmount = effectiveCashAmount(newType, newAmount, newChargeAmount);
 
-            // ALWAYS update totalIncome/totalExpense for the new entry. ONLY apply to cashbook balance if new entry is NOT linked to an account
             await tx.cashbook.update({
                 where: { id: entry.cashbookId },
-                data: {
-                    balance: !targetAccountId ? (isIncome ? { increment: newEffectiveAmount } : { decrement: newEffectiveAmount }) : undefined,
-                    totalIncome: isIncome ? { increment: newAmount } : undefined,
-                    totalExpense: isIncome
-                        ? (newChargeAmount.greaterThan(0) ? { increment: newChargeAmount } : undefined)
-                        : { increment: newAmount.add(newChargeAmount) },
-                },
+                data: cashbookIncrementPayload(
+                    newType,
+                    newAmount,
+                    newChargeAmount,
+                    Boolean(targetAccountId),
+                    'apply',
+                ),
             });
 
+            // Cashbook balance audit: only unlinked entries move it
+            let balanceAfter = balanceBefore;
+            if (!existingTx) {
+                balanceAfter = balanceAfter.sub(walletBalanceDelta(entry.type, oldAmount, oldChargeAmount));
+            }
             if (!targetAccountId) {
-                balanceAfter = isIncome
-                    ? balanceAfter.add(newEffectiveAmount)
-                    : balanceAfter.sub(newEffectiveAmount);
+                balanceAfter = balanceAfter.add(walletBalanceDelta(newType, newAmount, newChargeAmount));
             }
 
             // Deal with Accounts
             if (existingTx || dto.accountId) {
-                const needsReversal = existingTx && (hasAccountChanged || oldAmount.toString() !== newAmount.toString() || wasIncome !== isIncome);
+                const moneyChanged =
+                    hasAccountChanged ||
+                    oldAmount.toString() !== newAmount.toString() ||
+                    wasIncome !== isIncome ||
+                    oldChargeAmount.toString() !== newChargeAmount.toString();
 
-                if (needsReversal) {
-                    // Lock Old Account
+                if (existingTx && (moneyChanged || dto.accountId === null)) {
                     await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${existingTx.accountId}::uuid FOR UPDATE`;
-                    // Reverse balance on old account
+                    const oldWalletDelta = walletBalanceDelta(entry.type, oldAmount, oldChargeAmount);
                     await tx.account.update({
                         where: { id: existingTx.accountId },
-                        data: {
-                            balance: wasIncome ? { decrement: oldEffectiveAmount } : { increment: oldEffectiveAmount }
-                        }
+                        data: { balance: { increment: oldWalletDelta.negated() } },
                     });
                 }
 
                 if (targetAccountId) {
-                    const needsApply = hasAccountChanged || oldAmount.toString() !== newAmount.toString() || wasIncome !== isIncome;
-
-                    if (needsApply || !existingTx) {
-                        // Check archive status (Issue 5 — block all balance changes on archived accounts)
+                    if (moneyChanged || !existingTx) {
                         const targetAccount = await tx.account.findUniqueOrThrow({ where: { id: targetAccountId } });
                         if (targetAccount.archivedAt) {
                             throw new AppError('Cannot modify entries linked to an archived account', 400, 'ACCOUNT_ARCHIVED');
                         }
 
-                        // Currency mismatch check (Issue 4)
-                        if (hasAccountChanged && targetAccount.currency !== lockedCashbook.currency) {
+                        if ((hasAccountChanged || !existingTx) && targetAccount.currency !== lockedCashbook.currency) {
                             throw new AppError(
                                 `Account currency (${targetAccount.currency}) does not match cashbook currency (${lockedCashbook.currency})`,
                                 400,
@@ -580,62 +601,57 @@ export class EntriesService {
                             );
                         }
 
-                        // Lock Target Account
                         await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${targetAccountId}::uuid FOR UPDATE`;
                         const lockedTarget = await tx.account.findUniqueOrThrow({ where: { id: targetAccountId } });
 
-                        // Negative Balance Check
-                        if (!lockedTarget.allowNegative && !isIncome) {
-                            const provisional = lockedTarget.balance.sub(newEffectiveAmount);
+                        const newWalletDelta = walletBalanceDelta(newType, newAmount, newChargeAmount);
+                        if (!lockedTarget.allowNegative && newWalletDelta.lessThan(0)) {
+                            const provisional = lockedTarget.balance.add(newWalletDelta);
                             if (provisional.lessThan(0)) {
                                 throw new AppError(`Transaction exceeds account balance.`, 400, 'INSUFFICIENT_FUNDS');
                             }
                         }
 
-                        // Apply new balance
                         await tx.account.update({
                             where: { id: targetAccountId },
-                            data: {
-                                balance: isIncome ? { increment: newEffectiveAmount } : { decrement: newEffectiveAmount }
-                            }
+                            data: { balance: { increment: newWalletDelta } },
                         });
                     }
 
-                    if (existingTx) {
-                        // Update existing AccountTransaction
+                    if (existingTx && dto.accountId !== null) {
                         await tx.accountTransaction.update({
                             where: { id: existingTx.id },
                             data: {
-                                ...(hasAccountChanged && { accountId: targetAccountId as string | undefined }),
+                                ...(hasAccountChanged && { accountId: targetAccountId as string }),
                                 amount: newAmount,
                                 chargeAmount: newChargeAmount.greaterThan(0) ? newChargeAmount : null,
                                 type: newType as any,
                                 description: dto.description || existingTx.description
                             }
                         });
-                    } else {
-                        // Create new one
-                        await tx.accountTransaction.create({
-                            data: {
-                                workspaceId: cashbook.workspaceId,
-                                accountId: targetAccountId,
-                                sourceType: TransactionSourceType.CASHBOOK_ENTRY,
-                                sourceId: entryId,
-                                type: newType as any,
-                                amount: newAmount,
-                                chargeAmount: newChargeAmount.greaterThan(0) ? newChargeAmount : null,
-                                description: dto.description || entry.description
-                            }
+                    } else if (!existingTx) {
+                        await this.upsertCashbookAccountTransaction(tx, {
+                            workspaceId: cashbook.workspaceId,
+                            accountId: targetAccountId,
+                            sourceId: entryId,
+                            type: newType,
+                            amount: newAmount,
+                            chargeAmount: newChargeAmount.greaterThan(0) ? newChargeAmount : null,
+                            description: dto.description || entry.description,
                         });
                     }
                 } else if (existingTx && dto.accountId === null) {
-                    // They removed the account entirely
-                    await tx.accountTransaction.delete({ where: { id: existingTx.id } });
+                    // Unlink wallet: void AT (keep audit history)
+                    await tx.accountTransaction.update({
+                        where: { id: existingTx.id },
+                        data: { voidedAt: new Date() },
+                    });
                 }
             }
 
             // Deal with Obligations (independent of account logic)
             if (entry.obligationId || dto.obligationId) {
+                const { InvoicingService } = await import('../invoicing/invoicing.service');
                 const targetObligId = dto.obligationId !== undefined ? dto.obligationId : entry.obligationId;
 
                 // If moving away from an obligation, reverse it
@@ -644,32 +660,33 @@ export class EntriesService {
                     const oldOblig = await tx.cashbookObligation.findUniqueOrThrow({ where: { id: entry.obligationId } });
 
                     const newOutstanding = oldOblig.outstandingAmount.add(oldAmount);
-                    // Cap to totalAmount to prevent exceeding bounds
                     const cappedOutstanding = newOutstanding.greaterThan(oldOblig.totalAmount)
                         ? oldOblig.totalAmount
                         : newOutstanding;
-                    let newStatus = oldOblig.status;
-                    if (cappedOutstanding.equals(oldOblig.totalAmount)) {
-                        newStatus = ObligationStatus.OPEN;
-                    } else if (cappedOutstanding.greaterThan(0) && cappedOutstanding.lessThan(oldOblig.totalAmount)) {
-                        newStatus = ObligationStatus.PARTIAL;
-                    }
+                    const newStatus = obligationStatusFromAmounts(
+                        oldOblig.totalAmount,
+                        cappedOutstanding,
+                        oldOblig.status,
+                    ) as ObligationStatus;
 
                     await tx.cashbookObligation.update({
                         where: { id: entry.obligationId },
                         data: { outstandingAmount: cappedOutstanding, status: newStatus }
                     });
+
+                    await InvoicingService.syncInvoiceFromObligation(tx, {
+                        referenceType: oldOblig.referenceType,
+                        referenceId: oldOblig.referenceId,
+                        outstandingAmount: cappedOutstanding,
+                    });
                 } else if (targetObligId) {
-                    // Lock target obligation
                     await tx.$queryRaw`SELECT id FROM cashbook_obligations WHERE id = ${targetObligId}::uuid FOR UPDATE`;
                     const lockedTarget = await tx.cashbookObligation.findUniqueOrThrow({ where: { id: targetObligId } });
 
-                    // Pre-validation for new or changed obligation assignment
                     const changedObligation = entry.obligationId && entry.obligationId !== targetObligId;
                     const isNewAssignment = !entry.obligationId || changedObligation;
 
                     if (isNewAssignment) {
-                        // Validate the target obligation
                         if (lockedTarget.cashbookId !== entry.cashbookId) {
                             throw new AppError('Obligation does not belong to this cashbook', 400, 'INVALID_OBLIGATION');
                         }
@@ -684,28 +701,31 @@ export class EntriesService {
                     }
 
                     if (changedObligation) {
-                        // Reverse old one
                         await tx.$queryRaw`SELECT id FROM cashbook_obligations WHERE id = ${entry.obligationId}::uuid FOR UPDATE`;
                         const oldOblig = await tx.cashbookObligation.findUniqueOrThrow({ where: { id: entry.obligationId as string } });
                         const revOutstanding = oldOblig.outstandingAmount.add(oldAmount);
-                        // Cap to totalAmount
                         const cappedRevOutstanding = revOutstanding.greaterThan(oldOblig.totalAmount)
                             ? oldOblig.totalAmount
                             : revOutstanding;
-                        let revStatus = oldOblig.status;
-                        if (cappedRevOutstanding.equals(oldOblig.totalAmount)) revStatus = ObligationStatus.OPEN;
-                        else if (cappedRevOutstanding.greaterThan(0) && cappedRevOutstanding.lessThan(oldOblig.totalAmount)) revStatus = ObligationStatus.PARTIAL;
+                        const revStatus = obligationStatusFromAmounts(
+                            oldOblig.totalAmount,
+                            cappedRevOutstanding,
+                            oldOblig.status,
+                        ) as ObligationStatus;
 
                         await tx.cashbookObligation.update({
                             where: { id: entry.obligationId as string },
                             data: { outstandingAmount: cappedRevOutstanding, status: revStatus }
                         });
+
+                        await InvoicingService.syncInvoiceFromObligation(tx, {
+                            referenceType: oldOblig.referenceType,
+                            referenceId: oldOblig.referenceId,
+                            outstandingAmount: cappedRevOutstanding,
+                        });
                     }
 
-                    // Calculate adjustment to target
-                    // If target was the original, we add back the old amount, then subtract the new. 
-                    // Effectively: net change = oldAmount - newAmount
-                    // If target is new, we just subtract newAmount (since old was handled above or didn't exist)
+                    // Same obligation: net change = oldAmount - newAmount; new obligation: subtract newAmount
                     const adjustment = !changedObligation && entry.obligationId ? oldAmount.sub(newAmount) : newAmount.negated();
 
                     const provisionalOutstanding = lockedTarget.outstandingAmount.add(adjustment);
@@ -714,7 +734,6 @@ export class EntriesService {
                         throw new AppError(`Update would overpay the obligation`, 400, 'OVERPAYMENT');
                     }
 
-                    // Check directions
                     if (lockedTarget.type === ObligationType.RECEIVABLE && newType !== EntryType.INCOME) {
                         throw new AppError('Receivables must be settled with INCOME entries', 400, 'DIRECTION_MISMATCH');
                     }
@@ -722,14 +741,11 @@ export class EntriesService {
                         throw new AppError('Payables must be settled with EXPENSE entries', 400, 'DIRECTION_MISMATCH');
                     }
 
-                    let newStatus = lockedTarget.status;
-                    if (provisionalOutstanding.equals(0)) {
-                        newStatus = ObligationStatus.PAID;
-                    } else if (provisionalOutstanding.greaterThan(0) && provisionalOutstanding.lessThan(lockedTarget.totalAmount)) {
-                        newStatus = ObligationStatus.PARTIAL;
-                    } else if (provisionalOutstanding.equals(lockedTarget.totalAmount)) {
-                        newStatus = ObligationStatus.OPEN;
-                    }
+                    const newStatus = obligationStatusFromAmounts(
+                        lockedTarget.totalAmount,
+                        provisionalOutstanding,
+                        lockedTarget.status,
+                    ) as ObligationStatus;
 
                     await tx.cashbookObligation.update({
                         where: { id: targetObligId },
@@ -739,7 +755,12 @@ export class EntriesService {
                         }
                     });
 
-                    // Audit for obligation state change
+                    await InvoicingService.syncInvoiceFromObligation(tx, {
+                        referenceType: lockedTarget.referenceType,
+                        referenceId: lockedTarget.referenceId,
+                        outstandingAmount: provisionalOutstanding,
+                    });
+
                     await tx.auditLog.create({
                         data: {
                             userId,
@@ -834,6 +855,7 @@ export class EntriesService {
                         dto.inventoryItems,
                         userId,
                         dto.description || entry.description,
+                        cashbook.currency,
                     );
                 }
             }
@@ -971,6 +993,14 @@ export class EntriesService {
 
     // ─── Internal: Perform Deletion ────────────────────
     private async performDeletion(entry: any, userId: string, reason: string) {
+        if (entry.isReconciled) {
+            throw new AppError(
+                'This entry is reconciled and cannot be deleted. Unreconcile it first.',
+                400,
+                'ENTRY_RECONCILED',
+            );
+        }
+
         const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: entry.cashbookId },
         });
@@ -986,50 +1016,48 @@ export class EntriesService {
             });
 
             const balanceBefore = lockedCashbook.balance;
-            const wasIncome = entry.type === EntryType.INCOME;
             const amount = entry.amount;
             const chargeAmount = entry.chargeAmount || new Decimal(0);
-            const effectiveAmount = wasIncome ? amount.sub(chargeAmount) : amount.add(chargeAmount);
 
-            // Check if there's a linked account FIRST
+            // Check if there's a linked non-voided account FIRST
             const existingTx = await tx.accountTransaction.findFirst({
-                where: { sourceId: entry.id, sourceType: TransactionSourceType.CASHBOOK_ENTRY }
+                where: {
+                    sourceId: entry.id,
+                    sourceType: TransactionSourceType.CASHBOOK_ENTRY,
+                    voidedAt: null,
+                }
             });
 
             let balanceAfter = balanceBefore;
 
-            // ALWAYS modify totalIncome/totalExpense. Only reverse from cashbook balance if the entry was NOT linked to an account
+            // Reverse cashbook activity (+ balance if unlinked)
             await tx.cashbook.update({
                 where: { id: entry.cashbookId },
-                data: {
-                    balance: !existingTx ? (wasIncome ? { decrement: effectiveAmount } : { increment: effectiveAmount }) : undefined,
-                    totalIncome: wasIncome ? { decrement: amount } : undefined,
-                    totalExpense: wasIncome
-                        ? (chargeAmount.greaterThan(0) ? { decrement: chargeAmount } : undefined)
-                        : { decrement: amount.add(chargeAmount) },
-                },
+                data: cashbookIncrementPayload(
+                    entry.type,
+                    amount,
+                    chargeAmount,
+                    Boolean(existingTx),
+                    'reverse',
+                ),
             });
 
             if (!existingTx) {
-                balanceAfter = wasIncome
-                    ? balanceBefore.sub(effectiveAmount)
-                    : balanceBefore.add(effectiveAmount);
+                balanceAfter = balanceBefore.sub(walletBalanceDelta(entry.type, amount, chargeAmount));
             }
 
             if (existingTx) {
-                // Reverse Account balance
-                // Lock account
                 await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${existingTx.accountId}::uuid FOR UPDATE`;
+                const oldWalletDelta = walletBalanceDelta(entry.type, amount, chargeAmount);
                 await tx.account.update({
                     where: { id: existingTx.accountId },
-                    data: {
-                        balance: wasIncome ? { decrement: effectiveAmount } : { increment: effectiveAmount }
-                    }
+                    data: { balance: { increment: oldWalletDelta.negated() } },
                 });
 
-                // Delete transaction
-                await tx.accountTransaction.delete({
-                    where: { id: existingTx.id }
+                // Void wallet ledger row (retain audit history)
+                await tx.accountTransaction.update({
+                    where: { id: existingTx.id },
+                    data: { voidedAt: new Date() },
                 });
             }
 
@@ -1038,16 +1066,14 @@ export class EntriesService {
                 const lockedObligation = await tx.cashbookObligation.findUniqueOrThrow({ where: { id: entry.obligationId } });
 
                 const newOutstanding = lockedObligation.outstandingAmount.add(amount);
-                // Cap to totalAmount to prevent exceeding bounds
                 const cappedOutstanding = newOutstanding.greaterThan(lockedObligation.totalAmount)
                     ? lockedObligation.totalAmount
                     : newOutstanding;
-                let newStatus = lockedObligation.status;
-                if (cappedOutstanding.equals(lockedObligation.totalAmount)) {
-                    newStatus = ObligationStatus.OPEN;
-                } else if (cappedOutstanding.greaterThan(0) && cappedOutstanding.lessThan(lockedObligation.totalAmount)) {
-                    newStatus = ObligationStatus.PARTIAL;
-                }
+                const newStatus = obligationStatusFromAmounts(
+                    lockedObligation.totalAmount,
+                    cappedOutstanding,
+                    lockedObligation.status,
+                ) as ObligationStatus;
 
                 await tx.cashbookObligation.update({
                     where: { id: entry.obligationId },
@@ -1071,7 +1097,14 @@ export class EntriesService {
                             newOutstanding: cappedOutstanding
                         } as any
                     }
-                })
+                });
+
+                const { InvoicingService } = await import('../invoicing/invoicing.service');
+                await InvoicingService.syncInvoiceFromObligation(tx, {
+                    referenceType: lockedObligation.referenceType,
+                    referenceId: lockedObligation.referenceId,
+                    outstandingAmount: cappedOutstanding,
+                });
             }
 
             // ─── Inventory Integration (reverse on delete) ────────
@@ -1143,6 +1176,57 @@ export class EntriesService {
                     },
                 },
             });
+        });
+    }
+
+    /**
+     * Create or revive a cashbook-linked AccountTransaction.
+     * Revives a previously voided row for the same (sourceId, accountId) to honor the unique constraint.
+     */
+    private async upsertCashbookAccountTransaction(
+        tx: any,
+        data: {
+            workspaceId: string;
+            accountId: string;
+            sourceId: string;
+            type: string;
+            amount: Decimal;
+            chargeAmount: Decimal | null;
+            description: string;
+        },
+    ) {
+        const existingAny = await tx.accountTransaction.findFirst({
+            where: {
+                sourceId: data.sourceId,
+                accountId: data.accountId,
+                sourceType: TransactionSourceType.CASHBOOK_ENTRY,
+            },
+        });
+
+        if (existingAny) {
+            return tx.accountTransaction.update({
+                where: { id: existingAny.id },
+                data: {
+                    voidedAt: null,
+                    type: data.type as any,
+                    amount: data.amount,
+                    chargeAmount: data.chargeAmount,
+                    description: data.description,
+                },
+            });
+        }
+
+        return tx.accountTransaction.create({
+            data: {
+                workspaceId: data.workspaceId,
+                accountId: data.accountId,
+                sourceType: TransactionSourceType.CASHBOOK_ENTRY,
+                sourceId: data.sourceId,
+                type: data.type as any,
+                amount: data.amount,
+                chargeAmount: data.chargeAmount,
+                description: data.description,
+            },
         });
     }
 

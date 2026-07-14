@@ -89,7 +89,7 @@ export class ObligationsService {
     async createObligation(cashbookId: string, userId: string, dto: CreateObligationDto) {
         const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: cashbookId },
-            select: { workspaceId: true, isActive: true }
+            select: { workspaceId: true, isActive: true, currency: true }
         });
 
         if (!cashbook || !cashbook.isActive) {
@@ -149,6 +149,7 @@ export class ObligationsService {
                     dto.inventoryItems,
                     userId,
                     dto.description || dto.title,
+                    cashbook.currency,
                 );
             }
 

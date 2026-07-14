@@ -123,34 +123,83 @@ export class CatalogService {
             }
         }
 
-        // Validate inventoryItemId if provided (only meaningful for PRODUCT type)
+        const { assertSameCurrency, normalizeCurrency } = await import('../../core/finance');
+        let productCurrency = normalizeCurrency(dto.currency || 'UGX');
+        let resolvedType = dto.type as ProductServiceType;
+
+        // Link inventory for sellable goods (PRODUCT) or rent-only assets (SERVICE)
         if (dto.inventoryItemId) {
-            if (dto.type !== 'PRODUCT') {
-                throw new AppError('inventoryItemId can only be set on PRODUCT type items', 400, 'INVALID_INVENTORY_LINK');
-            }
             const invItem = await this.prisma.inventoryItem.findUnique({
                 where: { id: dto.inventoryItemId },
-                select: { id: true, workspaceId: true, isActive: true },
+                select: {
+                    id: true,
+                    workspaceId: true,
+                    isActive: true,
+                    currency: true,
+                    name: true,
+                    commercialMode: true,
+                    defaultRentalRate: true,
+                },
             });
             if (!invItem || invItem.workspaceId !== workspaceId || !invItem.isActive) {
                 throw new AppError('Inventory item not found or inactive', 404, 'INVALID_INVENTORY_ITEM');
             }
+            assertSameCurrency(invItem.currency, productCurrency, `catalog vs inventory "${invItem.name}"`);
+            productCurrency = normalizeCurrency(invItem.currency);
+
+            // Rent-only inventory is catalogued as a SERVICE (rental offering), never PRODUCT
+            if (invItem.commercialMode === 'RENT_ONLY') {
+                if (resolvedType === 'PRODUCT') {
+                    resolvedType = 'SERVICE';
+                }
+                if (resolvedType !== 'SERVICE') {
+                    throw new AppError(
+                        `Inventory item "${invItem.name}" is rent-only and must be catalogued as a SERVICE`,
+                        400,
+                        'RENT_ONLY_REQUIRES_SERVICE',
+                    );
+                }
+            } else if (resolvedType === 'SERVICE') {
+                // Non-rent-only inventory belongs on PRODUCT (sellable goods)
+                throw new AppError(
+                    `Inventory item "${invItem.name}" is sellable and must be linked to a PRODUCT, not a SERVICE`,
+                    400,
+                    'SELLABLE_REQUIRES_PRODUCT',
+                );
+            } else if (resolvedType !== 'PRODUCT') {
+                throw new AppError('inventoryItemId can only be set on PRODUCT (or SERVICE for rent-only items)', 400, 'INVALID_INVENTORY_LINK');
+            }
         }
 
-        // inventoryItemId is now in the Prisma client after db push + generate
         const item = await this.prisma.productService.create({
             data: {
                 workspaceId,
                 name: dto.name,
                 description: dto.description || null,
                 price: dto.price,
-                type: dto.type as ProductServiceType,
+                currency: productCurrency,
+                type: resolvedType,
                 isSellable: dto.isSellable ?? true,
                 isBuyable: dto.isBuyable ?? false,
                 taxId: dto.taxId || null,
                 inventoryItemId: dto.inventoryItemId || null,
             },
-            include: { tax: true },
+            include: {
+                tax: true,
+                inventoryItem: {
+                    select: {
+                        id: true,
+                        name: true,
+                        sku: true,
+                        unit: true,
+                        currency: true,
+                        commercialMode: true,
+                        defaultRentalRate: true,
+                        defaultRentalPeriodUnit: true,
+                        isActive: true,
+                    },
+                },
+            },
         });
 
         await this.prisma.auditLog.create({
@@ -172,18 +221,45 @@ export class CatalogService {
             }
         }
 
-        // Validate inventoryItemId if being set (only valid on PRODUCT type)
-        const effectiveType = dto.type || (item as any).type;
-        if (dto.inventoryItemId) {
-            if (effectiveType !== 'PRODUCT') {
-                throw new AppError('inventoryItemId can only be set on PRODUCT type items', 400, 'INVALID_INVENTORY_LINK');
-            }
+        const { assertSameCurrency, normalizeCurrency } = await import('../../core/finance');
+        let effectiveType = (dto.type || (item as any).type) as ProductServiceType;
+        let nextCurrency = dto.currency !== undefined
+            ? normalizeCurrency(dto.currency)
+            : normalizeCurrency((item as any).currency || 'UGX');
+
+        const linkedInventoryId =
+            dto.inventoryItemId !== undefined
+                ? dto.inventoryItemId
+                : (item as any).inventoryItemId;
+
+        if (linkedInventoryId) {
             const invItem = await this.prisma.inventoryItem.findUnique({
-                where: { id: dto.inventoryItemId },
-                select: { id: true, workspaceId: true, isActive: true },
+                where: { id: linkedInventoryId },
+                select: {
+                    id: true,
+                    workspaceId: true,
+                    isActive: true,
+                    currency: true,
+                    name: true,
+                    commercialMode: true,
+                },
             });
             if (!invItem || invItem.workspaceId !== workspaceId || !invItem.isActive) {
                 throw new AppError('Inventory item not found or inactive', 404, 'INVALID_INVENTORY_ITEM');
+            }
+            assertSameCurrency(invItem.currency, nextCurrency, `catalog vs inventory "${invItem.name}"`);
+            nextCurrency = normalizeCurrency(invItem.currency);
+
+            if (invItem.commercialMode === 'RENT_ONLY') {
+                effectiveType = 'SERVICE';
+            } else if (effectiveType === 'SERVICE') {
+                throw new AppError(
+                    `Inventory item "${invItem.name}" is sellable and must be linked to a PRODUCT, not a SERVICE`,
+                    400,
+                    'SELLABLE_REQUIRES_PRODUCT',
+                );
+            } else {
+                effectiveType = 'PRODUCT';
             }
         }
 
@@ -191,10 +267,26 @@ export class CatalogService {
             where: { id },
             data: {
                 ...dto,
-                type: dto.type ? (dto.type as ProductServiceType) : undefined,
+                currency: dto.currency !== undefined || dto.inventoryItemId !== undefined ? nextCurrency : undefined,
+                type: effectiveType,
                 inventoryItemId: dto.inventoryItemId !== undefined ? (dto.inventoryItemId || null) : undefined,
             },
-            include: { tax: true },
+            include: {
+                tax: true,
+                inventoryItem: {
+                    select: {
+                        id: true,
+                        name: true,
+                        sku: true,
+                        unit: true,
+                        currency: true,
+                        commercialMode: true,
+                        defaultRentalRate: true,
+                        defaultRentalPeriodUnit: true,
+                        isActive: true,
+                    },
+                },
+            },
         });
 
         await this.prisma.auditLog.create({

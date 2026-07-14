@@ -12,11 +12,16 @@ const invoiceItemSchema = z.object({
     // Explicit inventory item link — use this on free-text lines that represent physical goods
     // (not needed when productServiceId resolves to a product with inventoryItemId set)
     inventoryItemId: z.string().uuid().optional(),
+    lineType: z.enum(['SALE', 'RENTAL']).default('SALE'),
     name: z.string().min(1, 'Item name is required').max(200),
     description: z.string().max(1000).optional(),
     quantity: decimalString,
     unitPrice: decimalString,
     taxId: z.string().uuid().optional(),
+    rentalStart: z.string().datetime().optional(),
+    rentalEnd: z.string().datetime().optional(),
+    rentalPeriodUnit: z.enum(['DAY', 'WEEK', 'MONTH']).optional(),
+    rentalPeriodCount: z.coerce.number().int().min(1).optional(),
 }).refine(
     (data) => {
         const qty = parseFloat(data.quantity);
@@ -24,6 +29,12 @@ const invoiceItemSchema = z.object({
         return true;
     },
     { message: 'Quantity must be greater than zero', path: ['quantity'] }
+).refine(
+    (data) => {
+        if (data.lineType !== 'RENTAL') return true;
+        return Boolean(data.rentalStart && data.rentalPeriodUnit);
+    },
+    { message: 'Rental lines require rentalStart and rentalPeriodUnit', path: ['rentalStart'] }
 );
 
 // ─── Invoice Schemas ───────────────────────────────────

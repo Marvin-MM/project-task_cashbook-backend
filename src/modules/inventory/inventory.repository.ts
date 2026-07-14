@@ -24,6 +24,8 @@ export class InventoryRepository {
             category?: string;
             isActive?: boolean;
             search?: string;
+            currency?: string;
+            commercialMode?: string;
         }
     ) {
         const where: any = { workspaceId };
@@ -34,6 +36,14 @@ export class InventoryRepository {
 
         if (options.isActive !== undefined) {
             where.isActive = options.isActive;
+        }
+
+        if (options.currency) {
+            where.currency = options.currency.toUpperCase();
+        }
+
+        if (options.commercialMode) {
+            where.commercialMode = options.commercialMode;
         }
 
         if (options.search) {

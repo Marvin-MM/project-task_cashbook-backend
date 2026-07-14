@@ -14,6 +14,7 @@ import {
     InvoiceQueryDto,
     UpdateInvoiceSettingsDto,
 } from './invoicing.dto';
+import { assertSameCurrency, normalizeCurrency } from '../../core/finance';
 import sharp from 'sharp';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { r2Client } from '../../config/cloudflare';
@@ -23,6 +24,7 @@ import { config } from '../../config';
 interface CalculatedItem {
     productServiceId?: string;
     inventoryItemId?: string;  // resolved from productService.inventoryItemId or item-level override
+    lineType: 'SALE' | 'RENTAL';
     name: string;
     description?: string;
     quantity: Decimal;
@@ -31,6 +33,10 @@ interface CalculatedItem {
     taxRate: Decimal;
     taxAmount: Decimal;
     total: Decimal;
+    rentalStart?: Date | null;
+    rentalEnd?: Date | null;
+    rentalPeriodUnit?: 'DAY' | 'WEEK' | 'MONTH' | null;
+    rentalPeriodCount?: number | null;
 }
 
 @injectable()
@@ -61,11 +67,15 @@ export class InvoicingService {
         // Validate cashbook
         const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: dto.cashbookId },
-            select: { id: true, workspaceId: true, isActive: true },
+            select: { id: true, workspaceId: true, isActive: true, currency: true },
         });
         if (!cashbook || cashbook.workspaceId !== workspaceId || !cashbook.isActive) {
             throw new NotFoundError('Cashbook');
         }
+
+        const invoiceCurrency = normalizeCurrency(dto.currency || cashbook.currency || 'UGX');
+        // Invoice must match linked cashbook currency (payments land in that book)
+        assertSameCurrency(cashbook.currency, invoiceCurrency, 'invoice vs cashbook');
 
         // Generate invoice number if not provided
         const invoiceNumber = dto.invoiceNumber || await this.repository.getNextInvoiceNumber(workspaceId);
@@ -85,7 +95,7 @@ export class InvoicingService {
 
         // Server-side calculations (resolves inventoryItemId via product service link)
         const { items, subtotal, taxAmount, discountAmount, totalAmount, amountDue } =
-            await this.calculateInvoiceTotals(workspaceId, dto.items, dto.discountAmount);
+            await this.calculateInvoiceTotals(workspaceId, dto.items, dto.discountAmount, invoiceCurrency);
 
         if (totalAmount.lessThan(0)) {
             throw new AppError('Invoice total cannot be negative', 400, 'NEGATIVE_TOTAL');
@@ -100,7 +110,7 @@ export class InvoicingService {
                     status: InvoiceStatus.DRAFT,
                     issueDate: new Date(dto.issueDate),
                     dueDate: new Date(dto.dueDate),
-                    currency: dto.currency || 'UGX',
+                    currency: invoiceCurrency,
                     subtotal,
                     discountAmount,
                     taxAmount,
@@ -110,17 +120,17 @@ export class InvoicingService {
                     notes: dto.notes || null,
                     footer: dto.footer || null,
                     createdById: userId,
-                    // Cast to any: cashbookId is a new schema field not yet in the stale Prisma client.
                     cashbookId: dto.cashbookId,
                 } as any,
             });
 
-            // Create invoice items — including the resolved inventoryItemId snapshot
+            // Create invoice items — including line type, rental fields, inventory snapshot
             await tx.invoiceItem.createMany({
                 data: items.map(item => ({
                     invoiceId: inv.id,
                     productServiceId: item.productServiceId || null,
                     inventoryItemId: item.inventoryItemId || null,
+                    lineType: item.lineType as any,
                     name: item.name,
                     description: item.description || null,
                     quantity: item.quantity,
@@ -129,6 +139,10 @@ export class InvoicingService {
                     taxRate: item.taxRate,
                     taxAmount: item.taxAmount,
                     total: item.total,
+                    rentalStart: item.rentalStart || null,
+                    rentalEnd: item.rentalEnd || null,
+                    rentalPeriodUnit: (item.rentalPeriodUnit as any) || null,
+                    rentalPeriodCount: item.rentalPeriodCount ?? null,
                 })),
             });
 
@@ -176,10 +190,25 @@ export class InvoicingService {
             if (dup) throw new AppError('Invoice number already exists', 409, 'DUPLICATE_INVOICE_NUMBER');
         }
 
+        const nextCurrency = normalizeCurrency(dto.currency || existing.currency || 'UGX');
+        if (dto.cashbookId || dto.currency) {
+            const cashbookId = dto.cashbookId || (existing as any).cashbookId;
+            if (cashbookId) {
+                const cashbook = await this.prisma.cashbook.findUnique({
+                    where: { id: cashbookId },
+                    select: { id: true, workspaceId: true, isActive: true, currency: true },
+                });
+                if (!cashbook || cashbook.workspaceId !== workspaceId || !cashbook.isActive) {
+                    throw new NotFoundError('Cashbook');
+                }
+                assertSameCurrency(cashbook.currency, nextCurrency, 'invoice vs cashbook');
+            }
+        }
+
         let calculatedData: any = {};
         if (dto.items) {
             const { items, subtotal, taxAmount, discountAmount, totalAmount, amountDue } =
-                await this.calculateInvoiceTotals(workspaceId, dto.items, dto.discountAmount);
+                await this.calculateInvoiceTotals(workspaceId, dto.items, dto.discountAmount, nextCurrency);
 
             if (totalAmount.lessThan(0)) {
                 throw new AppError('Invoice total cannot be negative', 400, 'NEGATIVE_TOTAL');
@@ -194,6 +223,7 @@ export class InvoicingService {
                         invoiceId,
                         productServiceId: item.productServiceId || null,
                         inventoryItemId: item.inventoryItemId || null,
+                        lineType: item.lineType as any,
                         name: item.name,
                         description: item.description || null,
                         quantity: item.quantity,
@@ -202,6 +232,10 @@ export class InvoicingService {
                         taxRate: item.taxRate,
                         taxAmount: item.taxAmount,
                         total: item.total,
+                        rentalStart: item.rentalStart || null,
+                        rentalEnd: item.rentalEnd || null,
+                        rentalPeriodUnit: (item.rentalPeriodUnit as any) || null,
+                        rentalPeriodCount: item.rentalPeriodCount ?? null,
                     })),
                 });
             });
@@ -214,11 +248,9 @@ export class InvoicingService {
                 ...(dto.invoiceNumber && { invoiceNumber: dto.invoiceNumber }),
                 ...(dto.issueDate && { issueDate: new Date(dto.issueDate) }),
                 ...(dto.dueDate && { dueDate: new Date(dto.dueDate) }),
-                ...(dto.currency && { currency: dto.currency }),
+                ...(dto.currency && { currency: nextCurrency }),
                 ...(dto.notes !== undefined && { notes: dto.notes }),
                 ...(dto.footer !== undefined && { footer: dto.footer }),
-                // Ignore TypeScript error during migration via any cast when picking fields
-                ...({} as any),
                 ...(dto.cashbookId && { cashbookId: dto.cashbookId }),
                 ...calculatedData,
             } as any,
@@ -252,11 +284,12 @@ export class InvoicingService {
 
         const cashbook = await this.prisma.cashbook.findUnique({
             where: { id: cashbookId },
-            select: { id: true, workspaceId: true, isActive: true },
+            select: { id: true, workspaceId: true, isActive: true, currency: true },
         });
         if (!cashbook || cashbook.workspaceId !== workspaceId || !cashbook.isActive) {
             throw new NotFoundError('Cashbook');
         }
+        assertSameCurrency(cashbook.currency, invoice.currency, 'invoice vs cashbook on send');
 
         await this.prisma.$transaction(async (tx) => {
             // 1. Mark invoice as SENT
@@ -283,14 +316,68 @@ export class InvoicingService {
                 },
             });
 
-            // 3. Stock-out for every invoice line item that has a resolved inventoryItemId.
-            //    We use the proper processStockOut path to ensure:
-            //      - SELECT FOR UPDATE locking (no concurrent stock race)
-            //      - Correct FIFO/LIFO/WAC COGS resolution
-            //      - LotConsumption audit trail for FIFO/LIFO items
-            //      - Negative-stock guard respects item's allowNegativeStock flag
+            // 3. Stock movements: SALE → permanent COGS stock-out; RENTAL → RENTAL_OUT + InventoryRental
+            const rentalLines = invoice.items.filter(
+                (li: any) => li.lineType === 'RENTAL' && li.inventoryItemId,
+            );
+            if (rentalLines.length > 0) {
+                const earliestStart = rentalLines.reduce((min: Date, li: any) => {
+                    const d = li.rentalStart ? new Date(li.rentalStart) : new Date();
+                    return d < min ? d : min;
+                }, new Date(rentalLines[0].rentalStart || Date.now()));
+                const latestEnd = rentalLines.reduce((max: Date | null, li: any) => {
+                    if (!li.rentalEnd) return max;
+                    const d = new Date(li.rentalEnd);
+                    return !max || d > max ? d : max;
+                }, null as Date | null);
+
+                const rental = await tx.inventoryRental.create({
+                    data: {
+                        workspaceId,
+                        customerId: invoice.customerId,
+                        invoiceId,
+                        status: 'ACTIVE' as any,
+                        currency: invoice.currency,
+                        startDate: earliestStart,
+                        endDate: latestEnd,
+                        createdById: userId,
+                        notes: `Rental for invoice ${invoice.invoiceNumber}`,
+                    },
+                });
+
+                for (const lineItem of rentalLines) {
+                    const qty = Math.round(Number(lineItem.quantity));
+                    if (qty <= 0) continue;
+
+                    const periodCount = lineItem.rentalPeriodCount ?? 1;
+                    await tx.inventoryRentalLine.create({
+                        data: {
+                            rentalId: rental.id,
+                            inventoryItemId: lineItem.inventoryItemId!,
+                            quantity: qty,
+                            unitRate: lineItem.unitPrice,
+                            periodUnit: (lineItem.rentalPeriodUnit || 'DAY') as any,
+                            periodCount,
+                            lineTotal: lineItem.total,
+                        },
+                    });
+
+                    await this.inventoryService.processRentalOutForInvoice(
+                        tx,
+                        workspaceId,
+                        invoiceId,
+                        lineItem.inventoryItemId!,
+                        qty,
+                        userId,
+                        `Rental out for invoice ${invoice.invoiceNumber}`,
+                        new Decimal(lineItem.unitPrice),
+                    );
+                }
+            }
+
             for (const lineItem of invoice.items) {
-                if (!lineItem.inventoryItemId) continue; // service or free-text item — skip
+                if (!lineItem.inventoryItemId) continue;
+                if ((lineItem as any).lineType === 'RENTAL') continue; // handled above
 
                 const qty = Math.round(Number(lineItem.quantity));
                 if (qty <= 0) continue;
@@ -304,8 +391,8 @@ export class InvoicingService {
                     InventoryReferenceType.INVOICE,
                     invoiceId,
                     `Stock-out for invoice ${invoice.invoiceNumber}`,
-                    tx,                          // run inside same transaction
-                    new Decimal(lineItem.unitPrice), // selling price for margin reporting
+                    tx,
+                    new Decimal(lineItem.unitPrice),
                 );
             }
 
@@ -632,31 +719,50 @@ export class InvoicingService {
     // ═══════════════════════════════════════════════════════
 
     /**
-     * Called after an Entry payment is applied to an obligation that references an invoice.
+     * Called after an Entry payment is applied/reversed on an obligation that references an invoice.
      * Updates the invoice's amount_paid, amount_due, and status.
      * Must run inside the caller's Prisma transaction.
      */
     static async syncInvoicePayment(tx: any, obligationReferenceId: string, newOutstanding: Decimal) {
+        const { invoiceStatusFromOutstanding } = await import('../../core/finance');
+
         const invoice = await tx.invoice.findUnique({ where: { id: obligationReferenceId } });
         if (!invoice) return;
 
         const totalAmount = new Decimal(invoice.totalAmount);
         const amountPaid = totalAmount.sub(newOutstanding);
-        const amountDue = newOutstanding;
+        const amountDue = newOutstanding.lessThan(0) ? new Decimal(0) : newOutstanding;
 
-        let newStatus: InvoiceStatus;
-        if (amountDue.lessThanOrEqualTo(0)) {
-            newStatus = InvoiceStatus.PAID;
-        } else if (amountPaid.greaterThan(0)) {
-            newStatus = InvoiceStatus.PARTIALLY_PAID;
-        } else {
-            newStatus = invoice.status;
-        }
+        const newStatus = invoiceStatusFromOutstanding(
+            totalAmount,
+            amountDue,
+            invoice.status,
+        ) as InvoiceStatus;
 
         await tx.invoice.update({
             where: { id: obligationReferenceId },
-            data: { amountPaid, amountDue, status: newStatus },
+            data: {
+                amountPaid: amountPaid.lessThan(0) ? totalAmount : amountPaid,
+                amountDue,
+                status: newStatus,
+            },
         });
+    }
+
+    /**
+     * Sync invoice paid/due/status from a (possibly invoice-linked) obligation.
+     * Safe no-op when the obligation is not linked to an invoice.
+     */
+    static async syncInvoiceFromObligation(
+        tx: any,
+        obligation: { referenceType?: string | null; referenceId?: string | null; outstandingAmount: Decimal },
+    ) {
+        if (obligation.referenceType !== 'INVOICE' || !obligation.referenceId) return;
+        await InvoicingService.syncInvoicePayment(
+            tx,
+            obligation.referenceId,
+            new Decimal(obligation.outstandingAmount),
+        );
     }
 
     // ═══════════════════════════════════════════════════════
@@ -669,19 +775,28 @@ export class InvoicingService {
      * Also auto-resolves inventoryItemId from the linked ProductService so that
      * sendInvoice can reliably determine which physical stock item to decrement
      * without any fragile name-matching.
+     *
+     * Enforces hard currency match (no FX) for products and inventory items.
+     * Validates commercial mode for SALE vs RENTAL lines.
      */
     private async calculateInvoiceTotals(
         workspaceId: string,
         items: Array<{
             productServiceId?: string;
-            inventoryItemId?: string;  // can also be provided explicitly on free-text goods lines
+            inventoryItemId?: string;
+            lineType?: 'SALE' | 'RENTAL';
             name: string;
             description?: string;
             quantity: string;
             unitPrice: string;
             taxId?: string;
+            rentalStart?: string;
+            rentalEnd?: string;
+            rentalPeriodUnit?: 'DAY' | 'WEEK' | 'MONTH';
+            rentalPeriodCount?: number;
         }>,
         discountAmountStr?: string,
+        invoiceCurrency = 'UGX',
     ): Promise<{
         items: CalculatedItem[];
         subtotal: Decimal;
@@ -690,14 +805,18 @@ export class InvoicingService {
         totalAmount: Decimal;
         amountDue: Decimal;
     }> {
+        const currency = normalizeCurrency(invoiceCurrency);
         let subtotal = new Decimal(0);
         const discountAmount = discountAmountStr ? new Decimal(discountAmountStr) : new Decimal(0);
         const calculatedItems: CalculatedItem[] = [];
 
         for (const item of items) {
+            const lineType = item.lineType || 'SALE';
             const qty = new Decimal(item.quantity);
             const price = new Decimal(item.unitPrice);
-            const lineTotal = qty.mul(price);
+            const periodCount = lineType === 'RENTAL' ? (item.rentalPeriodCount ?? 1) : 1;
+            // Rental line total = rate × qty × periods; sale = rate × qty
+            const lineTotal = qty.mul(price).mul(periodCount);
 
             let taxRate = new Decimal(0);
             let taxAmount = new Decimal(0);
@@ -708,32 +827,104 @@ export class InvoicingService {
                 if (tax && tax.workspaceId === workspaceId && tax.isActive) {
                     taxRate = new Decimal(tax.rate);
                     taxId = tax.id;
-                    // Compound taxes deferred to second pass
                     taxAmount = tax.isCompound ? new Decimal(0) : lineTotal.mul(taxRate).div(100);
                 }
             }
 
             // ── Resolve inventoryItemId ───────────────────────────────
-            // Priority: 1) explicit override on the line item
-            //           2) productService.inventoryItemId
-            //           3) null (service or free-text item — no stock affected)
             let resolvedInventoryItemId: string | undefined = item.inventoryItemId;
+            let productCurrency: string | null = null;
 
-            if (!resolvedInventoryItemId && item.productServiceId) {
+            if (item.productServiceId) {
                 const ps = await this.prisma.productService.findUnique({
                     where: { id: item.productServiceId },
-                    select: { inventoryItemId: true, workspaceId: true },
+                    select: {
+                        inventoryItemId: true,
+                        workspaceId: true,
+                        currency: true,
+                        isActive: true,
+                        name: true,
+                    },
                 });
-                if (ps && ps.workspaceId === workspaceId && ps.inventoryItemId) {
+                if (!ps || ps.workspaceId !== workspaceId || !ps.isActive) {
+                    throw new AppError(
+                        `Product/service not found for line "${item.name}"`,
+                        400,
+                        'INVALID_PRODUCT',
+                    );
+                }
+                assertSameCurrency(currency, ps.currency, `product "${ps.name}"`);
+                productCurrency = ps.currency;
+                if (!resolvedInventoryItemId && ps.inventoryItemId) {
                     resolvedInventoryItemId = ps.inventoryItemId;
                 }
             }
+
+            if (resolvedInventoryItemId) {
+                const inv = await this.prisma.inventoryItem.findUnique({
+                    where: { id: resolvedInventoryItemId },
+                    select: {
+                        id: true,
+                        workspaceId: true,
+                        isActive: true,
+                        currency: true,
+                        commercialMode: true,
+                        name: true,
+                        stock: { select: { quantityOnHand: true, quantityRentedOut: true } },
+                    },
+                });
+                if (!inv || inv.workspaceId !== workspaceId || !inv.isActive) {
+                    throw new AppError(
+                        `Inventory item not found for line "${item.name}"`,
+                        404,
+                        'INVALID_INVENTORY_ITEM',
+                    );
+                }
+                assertSameCurrency(currency, inv.currency, `inventory item "${inv.name}"`);
+
+                if (lineType === 'SALE') {
+                    if (inv.commercialMode === 'RENT_ONLY') {
+                        throw new AppError(
+                            `Item "${inv.name}" is rent-only and cannot be sold on invoices`,
+                            400,
+                            'ITEM_NOT_SELLABLE',
+                        );
+                    }
+                } else {
+                    if (inv.commercialMode === 'SELL_ONLY') {
+                        throw new AppError(
+                            `Item "${inv.name}" is sell-only and cannot be rented`,
+                            400,
+                            'ITEM_NOT_RENTABLE',
+                        );
+                    }
+                    const onHand = inv.stock?.quantityOnHand ?? 0;
+                    const qtyInt = Math.round(Number(item.quantity));
+                    if (qtyInt > onHand) {
+                        throw new AppError(
+                            `Insufficient rentable stock for "${inv.name}". Available: ${onHand}, requested: ${qtyInt}`,
+                            400,
+                            'INSUFFICIENT_RENTABLE_STOCK',
+                        );
+                    }
+                }
+            } else if (lineType === 'RENTAL') {
+                throw new AppError(
+                    `Rental line "${item.name}" must be linked to an inventory item`,
+                    400,
+                    'RENTAL_REQUIRES_INVENTORY',
+                );
+            }
+
+            // Silence unused (productCurrency reserved for future mixed-currency reporting)
+            void productCurrency;
 
             subtotal = subtotal.add(lineTotal);
 
             calculatedItems.push({
                 productServiceId: item.productServiceId,
                 inventoryItemId: resolvedInventoryItemId,
+                lineType,
                 name: item.name,
                 description: item.description,
                 quantity: qty,
@@ -742,18 +933,23 @@ export class InvoicingService {
                 taxRate,
                 taxAmount,
                 total: lineTotal.add(taxAmount),
+                rentalStart: item.rentalStart ? new Date(item.rentalStart) : null,
+                rentalEnd: item.rentalEnd ? new Date(item.rentalEnd) : null,
+                rentalPeriodUnit: item.rentalPeriodUnit || null,
+                rentalPeriodCount: lineType === 'RENTAL' ? periodCount : null,
             });
         }
 
-        // Second pass: resolve compound taxes (tax on line total + non-compound taxes)
+        // Second pass: resolve compound taxes
         const nonCompoundTax = calculatedItems.reduce((sum, i) => sum.add(i.taxAmount), new Decimal(0));
-        for (const item of calculatedItems) {
-            if (item.taxId) {
-                const tax = await this.prisma.tax.findUnique({ where: { id: item.taxId } });
+        for (const calcItem of calculatedItems) {
+            if (calcItem.taxId) {
+                const tax = await this.prisma.tax.findUnique({ where: { id: calcItem.taxId } });
                 if (tax && tax.isCompound) {
-                    const base = item.quantity.mul(item.unitPrice).add(nonCompoundTax);
-                    item.taxAmount = base.mul(item.taxRate).div(100);
-                    item.total = item.quantity.mul(item.unitPrice).add(item.taxAmount);
+                    const periodMul = calcItem.lineType === 'RENTAL' ? (calcItem.rentalPeriodCount ?? 1) : 1;
+                    const base = calcItem.quantity.mul(calcItem.unitPrice).mul(periodMul).add(nonCompoundTax);
+                    calcItem.taxAmount = base.mul(calcItem.taxRate).div(100);
+                    calcItem.total = calcItem.quantity.mul(calcItem.unitPrice).mul(periodMul).add(calcItem.taxAmount);
                 }
             }
         }
@@ -789,8 +985,8 @@ export class InvoicingService {
             return;
         }
 
-        // Find every inventory transaction created for this invoice
-        const invTransactions = await tx.inventoryTransaction.findMany({
+        // Reverse SALE stock-outs
+        const saleTxs = await tx.inventoryTransaction.findMany({
             where: {
                 referenceType: InventoryReferenceType.INVOICE,
                 referenceId: invoice.id,
@@ -798,17 +994,16 @@ export class InvoicingService {
             },
         });
 
-        for (const t of invTransactions) {
+        for (const t of saleTxs) {
             const qty = Math.abs(Number(t.quantity));
             if (qty <= 0) continue;
 
-            // RETURN_IN: stock-in at the same unit cost as the original outflow (COGS cost)
             await this.inventoryService.processStockIn(
                 workspaceId,
                 t.itemId,
                 InventoryTransactionType.RETURN_IN,
                 qty,
-                new Decimal(t.unitCost), // restore at the COGS unit cost recorded on the SALE
+                new Decimal(t.unitCost),
                 userId,
                 InventoryReferenceType.INVOICE,
                 invoice.id,
@@ -816,5 +1011,37 @@ export class InvoicingService {
                 tx,
             );
         }
+
+        // Reverse RENTAL_OUT as RENTAL_IN and mark rentals cancelled
+        const rentalOutTxs = await tx.inventoryTransaction.findMany({
+            where: {
+                referenceType: InventoryReferenceType.INVOICE,
+                referenceId: invoice.id,
+                transactionType: InventoryTransactionType.RENTAL_OUT,
+            },
+        });
+
+        for (const t of rentalOutTxs) {
+            const qty = Math.abs(Number(t.quantity));
+            if (qty <= 0) continue;
+
+            await this.inventoryService.processStockIn(
+                workspaceId,
+                t.itemId,
+                InventoryTransactionType.RENTAL_IN,
+                qty,
+                new Decimal(0),
+                userId,
+                InventoryReferenceType.INVOICE,
+                invoice.id,
+                `Rental return for voided invoice ${invoice.invoiceNumber}`,
+                tx,
+            );
+        }
+
+        await tx.inventoryRental.updateMany({
+            where: { invoiceId: invoice.id, status: { in: ['ACTIVE', 'OVERDUE', 'DRAFT'] as any } },
+            data: { status: 'CANCELLED' as any, returnedAt: new Date() },
+        });
     }
 }

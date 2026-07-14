@@ -17,7 +17,8 @@ export class AccountTransactionsRepository {
     }
 
     async findAllByAccount(accountId: string, workspaceId: string, pagination?: { skip: number; take: number }): Promise<[number, AccountTransaction[]]> {
-        const where = { accountId, workspaceId };
+        // Active ledger only (voided rows retained for audit, excluded from default lists)
+        const where = { accountId, workspaceId, voidedAt: null };
 
         const [total, data] = await Promise.all([
             this.prisma.accountTransaction.count({ where }),

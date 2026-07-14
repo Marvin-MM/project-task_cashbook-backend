@@ -292,7 +292,17 @@ export class CashbooksService {
     }
 
     // ─── Balance Recalculation ─────────────────────────
+    /**
+     * Recompute cashbook caches from non-deleted entries (same formulas as the write path):
+     * - totalIncome / totalExpense = full activity (including wallet-linked entries)
+     * - balance = book cash only (entries WITHOUT a non-voided wallet AccountTransaction)
+     *
+     * Wallet detection uses a dedicated lookup of CASHBOOK_ENTRY account_transactions
+     * (not only the Prisma relation include) so links are not missed.
+     */
     async recalculateBalance(cashbookId: string, userId: string) {
+        const { recomputeCashbookFromEntries } = await import('../../core/finance');
+
         const cashbook = await this.cashbooksRepository.findById(cashbookId);
         if (!cashbook || !cashbook.isActive) {
             throw new NotFoundError('Cashbook');
@@ -302,32 +312,53 @@ export class CashbooksService {
         const oldTotalIncome = cashbook.totalIncome;
         const oldTotalExpense = cashbook.totalExpense;
 
-        // Aggregate from source-of-truth (non-deleted entries)
-        const [incomeAgg, expenseAgg] = await Promise.all([
-            this.prisma.entry.aggregate({
-                where: { cashbookId, isDeleted: false, type: 'INCOME' },
-                _sum: { amount: true },
-            }),
-            this.prisma.entry.aggregate({
-                where: { cashbookId, isDeleted: false, type: 'EXPENSE' },
-                _sum: { amount: true },
-            }),
-        ]);
-
-        const totalIncome = incomeAgg._sum.amount ?? 0;
-        const totalExpense = expenseAgg._sum.amount ?? 0;
-        const balance = Number(totalIncome) - Number(totalExpense);
-
-        const updated = await this.prisma.cashbook.update({
-            where: { id: cashbookId },
-            data: {
-                balance,
-                totalIncome,
-                totalExpense,
+        const entries = await this.prisma.entry.findMany({
+            where: { cashbookId, isDeleted: false },
+            select: {
+                id: true,
+                type: true,
+                amount: true,
+                chargeAmount: true,
             },
         });
 
-        // Audit the recalculation
+        const entryIds = entries.map((e) => e.id);
+
+        // Robust wallet-link set: any non-voided CASHBOOK_ENTRY AT for these entries
+        const linkedRows =
+            entryIds.length === 0
+                ? []
+                : await this.prisma.accountTransaction.findMany({
+                    where: {
+                        sourceType: 'CASHBOOK_ENTRY',
+                        voidedAt: null,
+                        sourceId: { in: entryIds },
+                    },
+                    select: { sourceId: true },
+                });
+
+        const walletLinkedIds = new Set(
+            linkedRows.map((r) => r.sourceId).filter((id): id is string => Boolean(id)),
+        );
+
+        const computed = recomputeCashbookFromEntries(
+            entries.map((e) => ({
+                type: e.type,
+                amount: e.amount,
+                chargeAmount: e.chargeAmount,
+                hasWalletLink: walletLinkedIds.has(e.id),
+            })),
+        );
+
+        await this.prisma.cashbook.update({
+            where: { id: cashbookId },
+            data: {
+                balance: computed.balance,
+                totalIncome: computed.totalIncome,
+                totalExpense: computed.totalExpense,
+            },
+        });
+
         await this.prisma.auditLog.create({
             data: {
                 userId,
@@ -340,19 +371,34 @@ export class CashbooksService {
                     oldBalance: oldBalance.toString(),
                     oldTotalIncome: oldTotalIncome.toString(),
                     oldTotalExpense: oldTotalExpense.toString(),
-                    newBalance: balance.toString(),
-                    newTotalIncome: totalIncome.toString(),
-                    newTotalExpense: totalExpense.toString(),
+                    newBalance: computed.balance.toString(),
+                    newTotalIncome: computed.totalIncome.toString(),
+                    newTotalExpense: computed.totalExpense.toString(),
+                    bookIncome: computed.bookIncome.toString(),
+                    bookExpense: computed.bookExpense.toString(),
+                    walletLinkedCount: computed.walletLinkedCount,
+                    unallocatedCount: computed.unallocatedCount,
                 } as any,
             },
         });
 
         return {
             cashbookId,
+            /** Book cash (unallocated only) — never income − expense when wallets are used */
             oldBalance: oldBalance.toString(),
-            newBalance: balance.toString(),
-            totalIncome: totalIncome.toString(),
-            totalExpense: totalExpense.toString(),
+            newBalance: computed.balance.toString(),
+            /** Full cashbook activity (includes wallet-linked entries) */
+            totalIncome: computed.totalIncome.toString(),
+            totalExpense: computed.totalExpense.toString(),
+            /** Activity that moved book cash only */
+            bookIncome: computed.bookIncome.toString(),
+            bookExpense: computed.bookExpense.toString(),
+            walletLinkedCount: computed.walletLinkedCount,
+            unallocatedCount: computed.unallocatedCount,
+            drifted:
+                !oldBalance.equals(computed.balance) ||
+                !oldTotalIncome.equals(computed.totalIncome) ||
+                !oldTotalExpense.equals(computed.totalExpense),
         };
     }
 

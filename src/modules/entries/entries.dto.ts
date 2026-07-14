@@ -35,6 +35,8 @@ export const updateEntrySchema = z.object({
     accountId: z.string().uuid().nullable().optional(),
     obligationId: z.string().uuid().nullable().optional(),
     entryDate: z.string().datetime().optional(),
+    /** Optimistic concurrency: reject if entry.version does not match. */
+    expectedVersion: z.coerce.number().int().positive().optional(),
     inventoryItems: z.array(z.object({
         itemId: z.string().uuid('Invalid inventory item ID'),
         quantity: z.coerce.number().int().min(1, 'Quantity must be at least 1'),

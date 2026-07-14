@@ -192,6 +192,58 @@ export class InventoryController {
         }
     }
 
+    async getItemAnalytics(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.getItemAnalytics(
+                req.params.workspaceId as string,
+                req.params.itemId as string,
+                req.query as any,
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Item analytics retrieved successfully',
+                data,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    async listRentals(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.listRentals(
+                req.params.workspaceId as string,
+                req.query as any,
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Rentals retrieved successfully',
+                data: data.data,
+                pagination: data.pagination,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    async returnRental(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.returnRental(
+                req.params.workspaceId as string,
+                req.params.rentalId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Rental return processed successfully',
+                data,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
     // ─── Analytics ───────────────────────────────────────
 
     async getAnalyticsMetrics(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {

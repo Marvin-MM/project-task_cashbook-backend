@@ -12,9 +12,10 @@ export function errorHandler(
     _next: NextFunction
 ): void {
     if (err instanceof AppError) {
-        const response: ApiResponse = {
+        const response: ApiResponse & { code?: string } = {
             success: false,
             message: err.message,
+            code: err.code,
             ...(err.constructor.name === 'ValidationError' && {
                 errors: (err as any).errors,
             }),

@@ -28,6 +28,19 @@ export const archiveAccountSchema = z.object({
     archive: z.boolean(),
 });
 
+export const createAccountTransferSchema = z.object({
+    fromAccountId: z.string().uuid('Invalid source account ID'),
+    toAccountId: z.string().uuid('Invalid destination account ID'),
+    amount: decimalString,
+    feeAmount: decimalString.optional(),
+    description: z.string().min(1).max(500),
+    transferredAt: z.string().datetime().optional(),
+}).refine((data) => data.fromAccountId !== data.toAccountId, {
+    message: 'Source and destination accounts must be different',
+    path: ['toAccountId'],
+});
+
 export type CreateAccountBody = z.infer<typeof createAccountSchema>;
 export type UpdateAccountBody = z.infer<typeof updateAccountSchema>;
 export type ArchiveAccountBody = z.infer<typeof archiveAccountSchema>;
+export type CreateAccountTransferBody = z.infer<typeof createAccountTransferSchema>;

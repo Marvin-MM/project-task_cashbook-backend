@@ -6,6 +6,7 @@ import { AppError, NotFoundError } from '../../core/errors/AppError';
 import { AuditAction, EntryType } from '../../core/types';
 import { Decimal } from '@prisma/client/runtime/library';
 import { InventoryService } from '../inventory/inventory.service';
+import { walletBalanceDelta } from '../../core/finance';
 
 @injectable()
 export class AccountTransactionsService {
@@ -50,9 +51,8 @@ export class AccountTransactionsService {
         data: CreateAccountTransactionBody
     ) {
         const amount = new Decimal(data.amount);
-        const isIncome = data.type === EntryType.INCOME;
         const chargeAmount = data.chargeAmount ? new Decimal(data.chargeAmount) : new Decimal(0);
-        const effectiveAmount = isIncome ? amount.sub(chargeAmount) : amount.add(chargeAmount);
+        const walletDelta = walletBalanceDelta(data.type, amount, chargeAmount);
 
         return this.prisma.$transaction(async (tx) => {
             // Lock account row for updates
@@ -80,22 +80,19 @@ export class AccountTransactionsService {
             const balanceBefore = account.balance;
 
             // Negative balance guard
-            if (!account.allowNegative && !isIncome) {
-                const newBalance = balanceBefore.sub(effectiveAmount);
+            if (!account.allowNegative && walletDelta.lessThan(0)) {
+                const newBalance = balanceBefore.add(walletDelta);
                 if (newBalance.lessThan(0)) {
                     throw new AppError(`Transaction exceeds account balance. Current balance is ${balanceBefore.toString()}`, 400, 'INSUFFICIENT_FUNDS');
                 }
             }
 
-            // Use increment/decrement for atomic balance update (Issue 8)
             await tx.account.update({
                 where: { id: accountId },
-                data: {
-                    balance: isIncome ? { increment: effectiveAmount } : { decrement: effectiveAmount }
-                }
+                data: { balance: { increment: walletDelta } }
             });
 
-            const balanceAfter = isIncome ? balanceBefore.add(effectiveAmount) : balanceBefore.sub(effectiveAmount);
+            const balanceAfter = balanceBefore.add(walletDelta);
 
             const transaction = await tx.accountTransaction.create({
                 data: {
@@ -121,7 +118,7 @@ export class AccountTransactionsService {
                     details: {
                         previous_balance: balanceBefore.toString(),
                         new_balance: balanceAfter.toString(),
-                        delta: isIncome ? effectiveAmount.toString() : effectiveAmount.negated().toString(),
+                        delta: walletDelta.toString(),
                         type: data.type,
                         amount: amount.toString(),
                         ...(chargeAmount.greaterThan(0) ? { chargeAmount: chargeAmount.toString() } : {})
@@ -160,6 +157,7 @@ export class AccountTransactionsService {
                     data.inventoryItems,
                     userId,
                     data.description,
+                    account.currency,
                 );
             }
 
@@ -198,35 +196,32 @@ export class AccountTransactionsService {
                 }
             }
 
+            if (transaction.voidedAt) {
+                throw new AppError('Cannot update a voided transaction', 400, 'TRANSACTION_VOIDED');
+            }
+
             const balanceBefore = account.balance;
             const oldAmount = transaction.amount;
-            const wasIncome = transaction.type === EntryType.INCOME;
             const oldChargeAmount = transaction.chargeAmount || new Decimal(0);
-            const oldEffectiveAmount = wasIncome ? oldAmount.sub(oldChargeAmount) : oldAmount.add(oldChargeAmount);
+            const oldWalletDelta = walletBalanceDelta(transaction.type, oldAmount, oldChargeAmount);
 
             const newType = data.type || transaction.type;
             const newAmount = data.amount ? new Decimal(data.amount) : transaction.amount;
-            const isIncome = newType === EntryType.INCOME;
             const newChargeAmount = data.chargeAmount !== undefined
                 ? (data.chargeAmount ? new Decimal(data.chargeAmount) : new Decimal(0))
                 : (transaction.chargeAmount || new Decimal(0));
-            const newEffectiveAmount = isIncome ? newAmount.sub(newChargeAmount) : newAmount.add(newChargeAmount);
+            const newWalletDelta = walletBalanceDelta(newType, newAmount, newChargeAmount);
 
-            // Reverse old effect, then apply new (using increment/decrement — Issue 8)
-            // Step 1: Reverse old
+            // Reverse old effect, then apply new
             await tx.account.update({
                 where: { id: accountId },
-                data: {
-                    balance: wasIncome ? { decrement: oldEffectiveAmount } : { increment: oldEffectiveAmount }
-                }
+                data: { balance: { increment: oldWalletDelta.negated() } }
             });
 
-            // Step 2: Apply new
-            const balanceWithoutTx = wasIncome ? balanceBefore.sub(oldEffectiveAmount) : balanceBefore.add(oldEffectiveAmount);
+            const balanceWithoutTx = balanceBefore.sub(oldWalletDelta);
 
-            // Negative balance guard
-            if (!account.allowNegative && !isIncome) {
-                const provisional = balanceWithoutTx.sub(newEffectiveAmount);
+            if (!account.allowNegative && newWalletDelta.lessThan(0)) {
+                const provisional = balanceWithoutTx.add(newWalletDelta);
                 if (provisional.lessThan(0)) {
                     throw new AppError('Transaction exceeds account balance.', 400, 'INSUFFICIENT_FUNDS');
                 }
@@ -234,12 +229,10 @@ export class AccountTransactionsService {
 
             await tx.account.update({
                 where: { id: accountId },
-                data: {
-                    balance: isIncome ? { increment: newEffectiveAmount } : { decrement: newEffectiveAmount }
-                }
+                data: { balance: { increment: newWalletDelta } }
             });
 
-            const balanceAfter = isIncome ? balanceWithoutTx.add(newEffectiveAmount) : balanceWithoutTx.sub(newEffectiveAmount);
+            const balanceAfter = balanceWithoutTx.add(newWalletDelta);
 
             const updatedTransaction = await tx.accountTransaction.update({
                 where: { id },
@@ -305,6 +298,7 @@ export class AccountTransactionsService {
                     data.inventoryItems,
                     userId,
                     data.description || updatedTransaction.description,
+                    account.currency,
                 );
             }
 
@@ -335,29 +329,29 @@ export class AccountTransactionsService {
                 throw new AppError('Linked transactions can only be deleted via cashbook entries.', 403, 'FORBIDDEN');
             }
 
+            if (transaction.voidedAt) {
+                throw new AppError('Transaction is already voided', 400, 'ALREADY_VOIDED');
+            }
+
             const balanceBefore = account.balance;
             const oldAmount = transaction.amount;
-            const wasIncome = transaction.type === EntryType.INCOME;
             const chargeAmount = transaction.chargeAmount || new Decimal(0);
-            const effectiveAmount = wasIncome ? oldAmount.sub(chargeAmount) : oldAmount.add(chargeAmount);
+            const oldWalletDelta = walletBalanceDelta(transaction.type, oldAmount, chargeAmount);
 
-            // Negative balance guard
-            if (!account.allowNegative && wasIncome) {
-                const provisional = balanceBefore.sub(effectiveAmount);
+            // Negative balance guard when reversing an income (cash leaves wallet)
+            if (!account.allowNegative && oldWalletDelta.greaterThan(0)) {
+                const provisional = balanceBefore.sub(oldWalletDelta);
                 if (provisional.lessThan(0)) {
                     throw new AppError('Reversing this transaction would exceed the account balance limit.', 400, 'INSUFFICIENT_FUNDS');
                 }
             }
 
-            // Use increment/decrement for atomic balance update (Issue 8)
             await tx.account.update({
                 where: { id: accountId },
-                data: {
-                    balance: wasIncome ? { decrement: effectiveAmount } : { increment: effectiveAmount }
-                }
+                data: { balance: { increment: oldWalletDelta.negated() } }
             });
 
-            const balanceAfter = wasIncome ? balanceBefore.sub(effectiveAmount) : balanceBefore.add(effectiveAmount);
+            const balanceAfter = balanceBefore.sub(oldWalletDelta);
 
             // ─── Inventory Integration (reverse on delete) ────────
             await this.inventoryService.reverseInventoryForReference(
@@ -366,7 +360,11 @@ export class AccountTransactionsService {
                 id,
             );
 
-            await tx.accountTransaction.delete({ where: { id } });
+            // Void rather than hard-delete to preserve wallet ledger history
+            await tx.accountTransaction.update({
+                where: { id },
+                data: { voidedAt: new Date() },
+            });
 
             // Generic audit log
             await tx.auditLog.create({
