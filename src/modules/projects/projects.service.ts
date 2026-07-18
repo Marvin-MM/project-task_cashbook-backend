@@ -48,6 +48,15 @@ export class ProjectsService {
         return m ? (m.role as ProjectRole) : null;
     }
 
+    /** Project detail visibility: workspace managers or explicit project members. */
+    private async assertCanViewProject(projectId: string, workspaceId: string, userId: string) {
+        if (await this.isWorkspaceManager(workspaceId, userId)) return;
+        const role = await this.getProjectRole(projectId, userId);
+        if (!role) {
+            throw new AuthorizationError('You are not a member of this project');
+        }
+    }
+
     /** Asserts caller can manage project (PROJECT_MANAGER or workspace OWNER/ADMIN). */
     private async assertCanManageProject(projectId: string, workspaceId: string, userId: string) {
         const isWsManager = await this.isWorkspaceManager(workspaceId, userId);
@@ -58,10 +67,32 @@ export class ProjectsService {
         }
     }
 
+    /**
+     * Write access on project-scoped content: not VIEWER.
+     * Workspace managers always allowed.
+     */
+    private async assertCanContributeToProject(projectId: string, workspaceId: string, userId: string) {
+        const isWsManager = await this.isWorkspaceManager(workspaceId, userId);
+        if (isWsManager) return;
+        const role = await this.getProjectRole(projectId, userId);
+        if (!role) {
+            throw new AuthorizationError('You are not a member of this project');
+        }
+        if (role === ProjectRole.VIEWER) {
+            throw new AuthorizationError('Viewers cannot modify this project');
+        }
+    }
+
     // ─── CRUD ────────────────────────────────────────────────
     async getProjects(workspaceId: string, userId: string, query: ProjectQueryDto) {
         await this.assertWorkspaceActive(workspaceId);
-        const { projects, total, page, limit } = await this.repo.findByWorkspaceId(workspaceId, query);
+        // Workspace managers see all projects; members only projects they belong to
+        const isManager = await this.isWorkspaceManager(workspaceId, userId);
+        const { projects, total, page, limit } = await this.repo.findByWorkspaceId(
+            workspaceId,
+            query,
+            isManager ? undefined : userId,
+        );
         const totalPages = Math.ceil(total / limit);
         return {
             data: projects,
@@ -76,12 +107,23 @@ export class ProjectsService {
         };
     }
 
-    async getProject(projectId: string, workspaceId: string) {
-        return this.getProjectInWorkspace(projectId, workspaceId);
+    async getProject(projectId: string, workspaceId: string, userId: string) {
+        const project = await this.getProjectInWorkspace(projectId, workspaceId);
+        await this.assertCanViewProject(projectId, workspaceId, userId);
+        return project;
+    }
+
+    private async assertContactInWorkspace(workspaceId: string, contactId: string | null | undefined) {
+        if (!contactId) return;
+        const c = await this.prisma.contact.findUnique({ where: { id: contactId } });
+        if (!c || c.workspaceId !== workspaceId || !c.isActive) {
+            throw new AppError('Contact not found in this workspace', 404, 'INVALID_CONTACT');
+        }
     }
 
     async createProject(workspaceId: string, userId: string, dto: CreateProjectDto) {
         await this.assertWorkspaceActive(workspaceId);
+        await this.assertContactInWorkspace(workspaceId, dto.contactId);
 
         const project = await this.prisma.$transaction(async (tx) => {
             const newProject = await tx.project.create({
@@ -93,6 +135,9 @@ export class ProjectsService {
                     status: dto.status ?? ProjectStatus.ACTIVE,
                     startDate: dto.startDate ? new Date(dto.startDate) : null,
                     endDate: dto.endDate ? new Date(dto.endDate) : null,
+                    contactId: dto.contactId ?? null,
+                    budgetAmount: dto.budgetAmount ? dto.budgetAmount : null,
+                    currency: (dto.currency || 'UGX').toUpperCase(),
                 },
             });
 
@@ -129,6 +174,9 @@ export class ProjectsService {
         }
 
         await this.assertCanManageProject(projectId, workspaceId, userId);
+        if (dto.contactId !== undefined) {
+            await this.assertContactInWorkspace(workspaceId, dto.contactId);
+        }
 
         const updated = await this.prisma.project.update({
             where: { id: projectId },
@@ -138,6 +186,11 @@ export class ProjectsService {
                 status: dto.status,
                 startDate: dto.startDate !== undefined ? (dto.startDate ? new Date(dto.startDate) : null) : undefined,
                 endDate: dto.endDate !== undefined ? (dto.endDate ? new Date(dto.endDate) : null) : undefined,
+                contactId: dto.contactId !== undefined ? dto.contactId : undefined,
+                budgetAmount: dto.budgetAmount !== undefined
+                    ? (dto.budgetAmount ? dto.budgetAmount : null)
+                    : undefined,
+                currency: dto.currency !== undefined ? dto.currency.toUpperCase() : undefined,
             },
         });
 
@@ -171,6 +224,31 @@ export class ProjectsService {
         return updated;
     }
 
+    async unarchiveProject(projectId: string, workspaceId: string, userId: string) {
+        const project = await this.getProjectInWorkspace(projectId, workspaceId);
+        await this.assertCanManageProject(projectId, workspaceId, userId);
+        if (project.status !== ProjectStatus.ARCHIVED) {
+            throw new AppError('Project is not archived', 400, 'INVALID_OPERATION');
+        }
+
+        const updated = await this.prisma.project.update({
+            where: { id: projectId },
+            data: { status: ProjectStatus.ACTIVE },
+        });
+
+        await this.prisma.auditLog.create({
+            data: {
+                userId,
+                workspaceId,
+                action: AuditAction.PROJECT_UNARCHIVED,
+                resource: 'project',
+                resourceId: projectId,
+            },
+        });
+
+        return updated;
+    }
+
     async deleteProject(projectId: string, workspaceId: string, userId: string) {
         await this.getProjectInWorkspace(projectId, workspaceId);
         const isWsManager = await this.isWorkspaceManager(workspaceId, userId);
@@ -185,8 +263,9 @@ export class ProjectsService {
     }
 
     // ─── Members ─────────────────────────────────────────────
-    async getMembers(projectId: string, workspaceId: string) {
+    async getMembers(projectId: string, workspaceId: string, userId: string) {
         await this.getProjectInWorkspace(projectId, workspaceId);
+        await this.assertCanViewProject(projectId, workspaceId, userId);
         return this.repo.findAllMembers(projectId);
     }
 

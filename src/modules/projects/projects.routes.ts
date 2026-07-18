@@ -57,6 +57,13 @@ router.post(
     controller.archiveProject.bind(controller) as any,
 );
 
+router.post(
+    '/:projectId/unarchive',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('projectId'), 'params'),
+    controller.unarchiveProject.bind(controller) as any,
+);
+
 router.delete(
     '/:projectId',
     requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,

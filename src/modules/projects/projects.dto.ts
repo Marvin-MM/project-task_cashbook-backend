@@ -2,12 +2,31 @@ import { z } from 'zod';
 import { ProjectRole, ProjectStatus } from '@prisma/client';
 
 // ─── Create / Update ──────────────────────────────────
+const projectDatesRefine = (d: { startDate?: string | null; endDate?: string | null }) => {
+    if (d.startDate && d.endDate) {
+        return new Date(d.endDate) >= new Date(d.startDate);
+    }
+    return true;
+};
+
+const decimalString = z
+    .string()
+    .regex(/^\d+(\.\d{1,4})?$/, 'Must be a valid decimal')
+    .optional()
+    .nullable();
+
 export const createProjectSchema = z.object({
     name: z.string().min(1, 'Name is required').max(200),
     description: z.string().max(2000).optional(),
     status: z.nativeEnum(ProjectStatus).optional(),
     startDate: z.string().datetime({ offset: true }).optional().nullable(),
     endDate: z.string().datetime({ offset: true }).optional().nullable(),
+    contactId: z.string().uuid().optional().nullable(),
+    budgetAmount: decimalString,
+    currency: z.string().trim().length(3).transform((c) => c.toUpperCase()).optional(),
+}).refine(projectDatesRefine, {
+    message: 'endDate must be on or after startDate',
+    path: ['endDate'],
 });
 
 export const updateProjectSchema = z.object({
@@ -16,6 +35,12 @@ export const updateProjectSchema = z.object({
     status: z.nativeEnum(ProjectStatus).optional(),
     startDate: z.string().datetime({ offset: true }).optional().nullable(),
     endDate: z.string().datetime({ offset: true }).optional().nullable(),
+    contactId: z.string().uuid().optional().nullable(),
+    budgetAmount: decimalString,
+    currency: z.string().trim().length(3).transform((c) => c.toUpperCase()).optional(),
+}).refine(projectDatesRefine, {
+    message: 'endDate must be on or after startDate',
+    path: ['endDate'],
 });
 
 // ─── Members ──────────────────────────────────────────

@@ -15,6 +15,7 @@ export const createTaskSchema = z.object({
 export const updateTaskSchema = z.object({
     title: z.string().min(1).max(300).optional(),
     description: z.string().max(5000).optional().nullable(),
+    projectId: z.string().uuid('Invalid project ID').optional().nullable(),
     status: z.nativeEnum(TaskStatus).optional(),
     priority: z.nativeEnum(TaskPriority).optional(),
     dueDate: z.string().datetime({ offset: true }).optional().nullable(),
@@ -27,6 +28,23 @@ export const changeTaskStatusSchema = z.object({
 
 export const assignTaskSchema = z.object({
     userIds: z.array(z.string().uuid('Invalid user ID')).min(1, 'At least one user ID is required'),
+});
+
+// ─── Comments ─────────────────────────────────────────
+export const createTaskCommentSchema = z.object({
+    body: z.string().min(1, 'Comment is required').max(5000),
+});
+
+// ─── Checklist ────────────────────────────────────────
+export const createChecklistItemSchema = z.object({
+    title: z.string().min(1).max(500),
+    position: z.coerce.number().int().min(0).optional(),
+});
+
+export const updateChecklistItemSchema = z.object({
+    title: z.string().min(1).max(500).optional(),
+    isDone: z.boolean().optional(),
+    position: z.coerce.number().int().min(0).optional(),
 });
 
 // ─── Query ────────────────────────────────────────────
@@ -49,3 +67,6 @@ export type UpdateTaskDto = z.infer<typeof updateTaskSchema>;
 export type ChangeTaskStatusDto = z.infer<typeof changeTaskStatusSchema>;
 export type AssignTaskDto = z.infer<typeof assignTaskSchema>;
 export type TaskQueryDto = z.infer<typeof taskQuerySchema>;
+export type CreateTaskCommentDto = z.infer<typeof createTaskCommentSchema>;
+export type CreateChecklistItemDto = z.infer<typeof createChecklistItemSchema>;
+export type UpdateChecklistItemDto = z.infer<typeof updateChecklistItemSchema>;

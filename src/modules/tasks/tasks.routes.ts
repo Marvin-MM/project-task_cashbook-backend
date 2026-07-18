@@ -11,6 +11,9 @@ import {
     changeTaskStatusSchema,
     assignTaskSchema,
     taskQuerySchema,
+    createTaskCommentSchema,
+    createChecklistItemSchema,
+    updateChecklistItemSchema,
 } from './tasks.dto';
 
 const router = Router({ mergeParams: true });
@@ -78,6 +81,68 @@ router.delete(
     requireWorkspaceMember() as any,
     validate(uuidParams('taskId', 'userId'), 'params'),
     controller.unassignUser.bind(controller) as any,
+);
+
+// ─── Comments ─────────────────────────────────────────
+router.get(
+    '/:taskId/comments',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('taskId'), 'params'),
+    controller.listComments.bind(controller) as any,
+);
+
+router.post(
+    '/:taskId/comments',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('taskId'), 'params'),
+    validate(createTaskCommentSchema),
+    controller.addComment.bind(controller) as any,
+);
+
+router.delete(
+    '/:taskId/comments/:commentId',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('taskId', 'commentId'), 'params'),
+    controller.deleteComment.bind(controller) as any,
+);
+
+// ─── Checklist ────────────────────────────────────────
+router.get(
+    '/:taskId/checklist',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('taskId'), 'params'),
+    controller.listChecklist.bind(controller) as any,
+);
+
+router.post(
+    '/:taskId/checklist',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('taskId'), 'params'),
+    validate(createChecklistItemSchema),
+    controller.addChecklistItem.bind(controller) as any,
+);
+
+router.patch(
+    '/:taskId/checklist/:itemId',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('taskId', 'itemId'), 'params'),
+    validate(updateChecklistItemSchema),
+    controller.updateChecklistItem.bind(controller) as any,
+);
+
+router.delete(
+    '/:taskId/checklist/:itemId',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('taskId', 'itemId'), 'params'),
+    controller.deleteChecklistItem.bind(controller) as any,
+);
+
+// ─── Activity ─────────────────────────────────────────
+router.get(
+    '/:taskId/activity',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('taskId'), 'params'),
+    controller.getTaskActivity.bind(controller) as any,
 );
 
 export default router;

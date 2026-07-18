@@ -24,6 +24,7 @@ export class ProjectsController {
             const data = await this.service.getProject(
                 req.params.projectId as string,
                 req.params.workspaceId as string,
+                req.user.userId,
             );
             res.status(StatusCodes.OK).json({ success: true, message: 'Project retrieved', data });
         } catch (e) { next(e); }
@@ -63,6 +64,17 @@ export class ProjectsController {
         } catch (e) { next(e); }
     }
 
+    async unarchiveProject(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.unarchiveProject(
+                req.params.projectId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Project unarchived', data });
+        } catch (e) { next(e); }
+    }
+
     async deleteProject(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             await this.service.deleteProject(
@@ -79,6 +91,7 @@ export class ProjectsController {
             const data = await this.service.getMembers(
                 req.params.projectId as string,
                 req.params.workspaceId as string,
+                req.user.userId,
             );
             res.status(StatusCodes.OK).json({ success: true, message: 'Members retrieved', data });
         } catch (e) { next(e); }

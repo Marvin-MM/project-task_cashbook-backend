@@ -12,6 +12,7 @@ export class TimeTrackingController {
         try {
             const data = await this.service.getTimeEntries(
                 req.params.workspaceId as string,
+                req.user.userId,
                 req.query as any,
             );
             res.status(StatusCodes.OK).json({ success: true, message: 'Time entries retrieved', data });
@@ -23,6 +24,7 @@ export class TimeTrackingController {
             const data = await this.service.getTimeEntry(
                 req.params.entryId as string,
                 req.params.workspaceId as string,
+                req.user.userId,
             );
             res.status(StatusCodes.OK).json({ success: true, message: 'Time entry retrieved', data });
         } catch (e) { next(e); }
@@ -62,6 +64,33 @@ export class TimeTrackingController {
         } catch (e) { next(e); }
     }
 
+    async setTimeEntryLock(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.setTimeEntryLock(
+                req.params.entryId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: data.isLocked ? 'Time entry locked' : 'Time entry unlocked',
+                data,
+            });
+        } catch (e) { next(e); }
+    }
+
+    async getTimeSummary(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.getTimeSummary(
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.query as any,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Time summary retrieved', data });
+        } catch (e) { next(e); }
+    }
+
     async startTimer(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             const data = await this.service.startTimer(
@@ -97,6 +126,7 @@ export class TimeTrackingController {
         try {
             const data = await this.service.getWorkSessions(
                 req.params.workspaceId as string,
+                req.user.userId,
                 req.query as any,
             );
             res.status(StatusCodes.OK).json({ success: true, message: 'Work sessions retrieved', data });

@@ -7,7 +7,11 @@ export class TimeTrackingRepository {
     constructor(@inject('PrismaClient') private prisma: PrismaClient) {}
 
     // ─── Time Entries ─────────────────────────────────────────
-    async findTimeEntries(workspaceId: string, opts: TimeEntryQueryDto) {
+    async findTimeEntries(
+        workspaceId: string,
+        opts: TimeEntryQueryDto,
+        visibility?: { userId: string; isWorkspaceManager: boolean },
+    ) {
         // Safe pagination defaults — prevents NaN/undefined reaching Prisma
         const page      = Math.max(1, Number(opts.page)  || 1);
         const limit     = Math.min(100, Math.max(1, Number(opts.limit) || 20));
@@ -19,7 +23,11 @@ export class TimeTrackingRepository {
         const where: any = { workspaceId };
         if (taskId)     where.taskId    = taskId;
         if (projectId)  where.projectId = projectId;
-        if (userId)     where.userId    = userId;
+        if (visibility && !visibility.isWorkspaceManager) {
+            where.userId = visibility.userId;
+        } else if (userId) {
+            where.userId = userId;
+        }
         if (dateFrom || dateTo) {
             where.startTime = {};
             if (dateFrom) where.startTime.gte = new Date(dateFrom);
@@ -75,18 +83,27 @@ export class TimeTrackingRepository {
                 userId,
                 workspaceId,
                 id: excludeId ? { not: excludeId } : undefined,
-                // An existing entry overlaps if it starts before our end AND ends after our start
+                // An existing entry overlaps if it starts before our end and either
+                // is still open or ends after our start.
                 AND: [
                     { startTime: { lt: endTime } },
-                    { endTime:   { gt: startTime } },
-                    { endTime:   { not: null } },
+                    {
+                        OR: [
+                            { endTime: null },
+                            { endTime: { gt: startTime } },
+                        ],
+                    },
                 ],
             },
         });
     }
 
     // ─── Work Sessions ────────────────────────────────────────
-    async findWorkSessions(workspaceId: string, opts: WorkSessionQueryDto) {
+    async findWorkSessions(
+        workspaceId: string,
+        opts: WorkSessionQueryDto,
+        visibility?: { userId: string; isWorkspaceManager: boolean },
+    ) {
         // Safe pagination defaults
         const page  = Math.max(1, Number(opts.page)  || 1);
         const limit = Math.min(100, Math.max(1, Number(opts.limit) || 20));
@@ -95,7 +112,11 @@ export class TimeTrackingRepository {
         const { userId, dateFrom, dateTo } = opts;
 
         const where: any = { workspaceId };
-        if (userId) where.userId = userId;
+        if (visibility && !visibility.isWorkspaceManager) {
+            where.userId = visibility.userId;
+        } else if (userId) {
+            where.userId = userId;
+        }
         if (dateFrom || dateTo) {
             where.clockIn = {};
             if (dateFrom) where.clockIn.gte = new Date(dateFrom);

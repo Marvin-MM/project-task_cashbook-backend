@@ -41,6 +41,8 @@ model User {
   tasksCreated         Task[]              @relation("TaskCreator")
   taskAssignments      TaskAssignment[]    @relation("TaskAssignee")
   taskAssigned         TaskAssignment[]    @relation("TaskAssigner")
+  taskComments         TaskComment[]
+  checklistItemsDone   TaskChecklistItem[] @relation("ChecklistCompleter")
   timeEntries          TimeEntry[]
   workSessions         WorkSession[]
   notifications        Notification[]
@@ -368,6 +370,7 @@ model Contact {
   obligations     CashbookObligation[]
   invoices        Invoice[]
   inventoryRentals InventoryRental[]
+  projects         Project[]
 
   @@index([workspaceId])
   @@index([type])
@@ -1046,19 +1049,25 @@ enum ProjectRole {
 }
 
 model Project {
-  id          String        @id @default(uuid()) @db.Uuid
-  workspaceId String        @map("workspace_id") @db.Uuid
-  name        String
-  description String?
-  status      ProjectStatus @default(ACTIVE)
-  startDate   DateTime?     @map("start_date")
-  endDate     DateTime?     @map("end_date")
-  createdById String        @map("created_by_id") @db.Uuid
-  createdAt   DateTime      @default(now()) @map("created_at")
-  updatedAt   DateTime      @updatedAt @map("updated_at")
+  id           String        @id @default(uuid()) @db.Uuid
+  workspaceId  String        @map("workspace_id") @db.Uuid
+  name         String
+  description  String?
+  status       ProjectStatus @default(ACTIVE)
+  startDate    DateTime?     @map("start_date")
+  endDate      DateTime?     @map("end_date")
+  /// Optional client / customer contact for the project
+  contactId    String?       @map("contact_id") @db.Uuid
+  /// Optional budget in project currency (no FX)
+  budgetAmount Decimal?      @map("budget_amount") @db.Decimal(20, 4)
+  currency     String        @default("UGX")
+  createdById  String        @map("created_by_id") @db.Uuid
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
 
   workspace   Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy   User            @relation("ProjectCreator", fields: [createdById], references: [id])
+  contact     Contact?        @relation(fields: [contactId], references: [id], onDelete: SetNull)
   members     ProjectMember[]
   tasks       Task[]
   timeEntries TimeEntry[]
@@ -1066,6 +1075,7 @@ model Project {
   @@index([workspaceId])
   @@index([status])
   @@index([createdById])
+  @@index([contactId])
   @@map("projects")
 }
 
@@ -1111,6 +1121,8 @@ model Task {
   priority             TaskPriority @default(MEDIUM)
   dueDate              DateTime?    @map("due_date")
   estimatedTimeMinutes Int?         @map("estimated_time_minutes")
+  /// Set when status becomes DONE; cleared if reopened
+  completedAt          DateTime?    @map("completed_at")
   createdById          String       @map("created_by_id") @db.Uuid
   createdAt            DateTime     @default(now()) @map("created_at")
   updatedAt            DateTime     @updatedAt @map("updated_at")
@@ -1118,9 +1130,11 @@ model Task {
   workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project     Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
   createdBy   User             @relation("TaskCreator", fields: [createdById], references: [id])
-  assignments TaskAssignment[]
-  timeEntries TimeEntry[]
+  assignments   TaskAssignment[]
+  timeEntries   TimeEntry[]
   notifications Notification[]
+  comments      TaskComment[]
+  checklist     TaskChecklistItem[]
 
   @@index([workspaceId])
   @@index([projectId])
@@ -1128,6 +1142,7 @@ model Task {
   @@index([priority])
   @@index([dueDate])
   @@index([createdById])
+  @@index([completedAt])
   @@map("tasks")
 }
 
@@ -1148,6 +1163,42 @@ model TaskAssignment {
   @@map("task_assignments")
 }
 
+model TaskComment {
+  id        String   @id @default(uuid()) @db.Uuid
+  taskId    String   @map("task_id") @db.Uuid
+  authorId  String   @map("author_id") @db.Uuid
+  body      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  task   Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([authorId])
+  @@index([createdAt])
+  @@map("task_comments")
+}
+
+model TaskChecklistItem {
+  id          String    @id @default(uuid()) @db.Uuid
+  taskId      String    @map("task_id") @db.Uuid
+  title       String
+  isDone      Boolean   @default(false) @map("is_done")
+  position    Int       @default(0)
+  completedAt DateTime? @map("completed_at")
+  completedBy String?   @map("completed_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  task      Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  completer User? @relation("ChecklistCompleter", fields: [completedBy], references: [id], onDelete: SetNull)
+
+  @@index([taskId])
+  @@index([position])
+  @@map("task_checklist_items")
+}
+
 // ─── Time Tracking ──────────────────────────────────────
 
 enum TimeEntrySource {
@@ -1166,6 +1217,10 @@ model TimeEntry {
   durationMinutes Int?            @map("duration_minutes")
   source          TimeEntrySource @default(MANUAL)
   description     String?
+  /// Whether this time is billable to a client
+  billable        Boolean         @default(true)
+  /// Locked entries cannot be edited by the owner (managers can unlock)
+  isLocked        Boolean         @default(false) @map("is_locked")
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
@@ -1180,6 +1235,8 @@ model TimeEntry {
   @@index([projectId])
   @@index([startTime])
   @@index([endTime])
+  @@index([billable])
+  /// At most one open TIMER per user per workspace (enforced via raw SQL migration too)
   @@map("time_entries")
 }
 

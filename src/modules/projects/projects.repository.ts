@@ -9,7 +9,12 @@ const ALLOWED_SORT_FIELDS = new Set(['name', 'createdAt', 'startDate', 'endDate'
 export class ProjectsRepository {
     constructor(@inject('PrismaClient') private prisma: PrismaClient) {}
 
-    async findByWorkspaceId(workspaceId: string, opts: ProjectQueryDto) {
+    async findByWorkspaceId(
+        workspaceId: string,
+        opts: ProjectQueryDto,
+        /** When set, only return projects where this user is a project member */
+        memberUserId?: string,
+    ) {
         // Apply safe defaults at the repository layer so a partially validated
         // query object never causes NaN skip / undefined take in Prisma.
         const page      = Math.max(1, Number(opts.page)  || 1);
@@ -22,6 +27,9 @@ export class ProjectsRepository {
 
         const where: any = { workspaceId };
         if (status) where.status = status;
+        if (memberUserId) {
+            where.members = { some: { userId: memberUserId } };
+        }
         if (search) {
             where.OR = [
                 { name: { contains: search, mode: 'insensitive' } },
@@ -51,6 +59,7 @@ export class ProjectsRepository {
             where: { id },
             include: {
                 createdBy: { select: { id: true, firstName: true, lastName: true } },
+                contact: { select: { id: true, name: true, email: true, type: true } },
                 members: {
                     include: { user: { select: { id: true, firstName: true, lastName: true, email: true } } },
                 },

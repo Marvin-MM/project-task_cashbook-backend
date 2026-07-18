@@ -13,6 +13,8 @@ import {
     clockOutSchema,
     timeEntryQuerySchema,
     workSessionQuerySchema,
+    lockTimeEntrySchema,
+    timeSummaryQuerySchema,
 } from './time-tracking.dto';
 
 const router = Router({ mergeParams: true });
@@ -43,6 +45,13 @@ router.get(
     controller.getActiveTimer.bind(controller) as any,
 );
 
+router.get(
+    '/summary',
+    requireWorkspaceMember() as any,
+    validate(timeSummaryQuerySchema, 'query'),
+    controller.getTimeSummary.bind(controller) as any,
+);
+
 // Dynamic param routes — UUID guard returns 422 before Prisma is ever called
 router.get(
     '/entries/:entryId',
@@ -64,6 +73,14 @@ router.delete(
     requireWorkspaceMember() as any,
     validate(uuidParams('entryId'), 'params'),
     controller.deleteTimeEntry.bind(controller) as any,
+);
+
+router.post(
+    '/entries/:entryId/lock',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('entryId'), 'params'),
+    validate(lockTimeEntrySchema),
+    controller.setTimeEntryLock.bind(controller) as any,
 );
 
 // ─── Timer ────────────────────────────────────────────

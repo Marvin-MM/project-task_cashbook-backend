@@ -9,15 +9,47 @@ export const createTimeEntrySchema = z.object({
     endTime: z.string().datetime({ offset: true }).optional().nullable(),
     description: z.string().max(1000).optional(),
     source: z.nativeEnum(TimeEntrySource).default(TimeEntrySource.MANUAL),
-}).refine(
-    (d) => d.taskId || d.projectId,
-    { message: 'Either taskId or projectId is required', path: ['taskId'] },
-);
+    billable: z.boolean().optional().default(true),
+}).superRefine((d, ctx) => {
+    if (!d.taskId && !d.projectId) {
+        ctx.addIssue({ code: 'custom', message: 'Either taskId or projectId is required', path: ['taskId'] });
+    }
+    if (d.source === TimeEntrySource.TIMER) {
+        ctx.addIssue({
+            code: 'custom',
+            message: 'Timer entries must be started through the timer endpoint',
+            path: ['source'],
+        });
+    }
+    if (!d.endTime) {
+        ctx.addIssue({
+            code: 'custom',
+            message: 'Manual time entries require an endTime',
+            path: ['endTime'],
+        });
+    }
+});
 
 export const updateTimeEntrySchema = z.object({
     description: z.string().max(1000).optional().nullable(),
     startTime: z.string().datetime({ offset: true }).optional(),
     endTime: z.string().datetime({ offset: true }).optional().nullable(),
+    taskId: z.string().uuid('Invalid task ID').optional().nullable(),
+    projectId: z.string().uuid('Invalid project ID').optional().nullable(),
+    billable: z.boolean().optional(),
+});
+
+export const lockTimeEntrySchema = z.object({
+    isLocked: z.boolean(),
+});
+
+export const timeSummaryQuerySchema = z.object({
+    dateFrom: z.string().datetime({ offset: true }).optional(),
+    dateTo: z.string().datetime({ offset: true }).optional(),
+    groupBy: z.enum(['project', 'user', 'day', 'task']).default('project'),
+    userId: z.string().uuid().optional(),
+    projectId: z.string().uuid().optional(),
+    billableOnly: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
 });
 
 export const startTimerSchema = z.object({
@@ -66,3 +98,5 @@ export type ClockInDto = z.infer<typeof clockInSchema>;
 export type ClockOutDto = z.infer<typeof clockOutSchema>;
 export type TimeEntryQueryDto = z.infer<typeof timeEntryQuerySchema>;
 export type WorkSessionQueryDto = z.infer<typeof workSessionQuerySchema>;
+export type LockTimeEntryDto = z.infer<typeof lockTimeEntrySchema>;
+export type TimeSummaryQueryDto = z.infer<typeof timeSummaryQuerySchema>;
