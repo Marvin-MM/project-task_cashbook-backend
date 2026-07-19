@@ -76,6 +76,22 @@ export const invoiceQuerySchema = z.object({
     sortOrder: z.enum(['asc', 'desc']).default('desc'),
 });
 
+/** Optional body when sending: apply a full or partial payment in the same flow. */
+export const sendInvoiceSchema = z.object({
+    paymentAmount: decimalString.optional(),
+    accountId: z.string().uuid().optional(),
+    paymentDescription: z.string().max(500).optional(),
+    entryDate: z.string().datetime().optional(),
+}).refine(
+    (data) => {
+        if (!data.paymentAmount) return true;
+        return parseFloat(data.paymentAmount) > 0;
+    },
+    { message: 'paymentAmount must be greater than zero', path: ['paymentAmount'] },
+);
+
+export type SendInvoiceDto = z.infer<typeof sendInvoiceSchema>;
+
 // ─── Invoice Settings ──────────────────────────────────
 
 export const updateInvoiceSettingsSchema = z.object({

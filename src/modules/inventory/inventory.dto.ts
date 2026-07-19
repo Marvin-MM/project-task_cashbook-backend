@@ -20,6 +20,7 @@ export const createInventoryItemSchema = z.object({
     category: z.string().max(100).optional(),
     currency: currencyCode.default('UGX'),
     commercialMode: z.enum(['SELL_ONLY', 'RENT_ONLY', 'SELL_AND_RENT']).default('SELL_ONLY'),
+    defaultSellingPrice: decimalString.optional(),
     defaultRentalRate: decimalString.optional(),
     defaultRentalPeriodUnit: z.enum(['DAY', 'WEEK', 'MONTH']).optional(),
     lowStockThreshold: z.coerce.number().int().min(0).optional(),
@@ -34,6 +35,7 @@ export const updateInventoryItemSchema = z.object({
     category: z.string().max(100).nullable().optional(),
     currency: currencyCode.optional(),
     commercialMode: z.enum(['SELL_ONLY', 'RENT_ONLY', 'SELL_AND_RENT']).optional(),
+    defaultSellingPrice: decimalString.nullable().optional(),
     defaultRentalRate: decimalString.nullable().optional(),
     defaultRentalPeriodUnit: z.enum(['DAY', 'WEEK', 'MONTH']).nullable().optional(),
     lowStockThreshold: z.coerce.number().int().min(0).nullable().optional(),
@@ -49,6 +51,8 @@ export const inventoryItemQuerySchema = z.object({
     search: z.string().optional(),
     currency: currencyCode.optional(),
     commercialMode: z.enum(['SELL_ONLY', 'RENT_ONLY', 'SELL_AND_RENT']).optional(),
+    /** When true, only RENT_ONLY and SELL_AND_RENT items. */
+    rentable: z.enum(['true', 'false']).optional(),
 });
 
 export const returnRentalSchema = z.object({

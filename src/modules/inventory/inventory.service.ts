@@ -74,6 +74,9 @@ export class InventoryService {
                     category: dto.category || null,
                     currency: (dto.currency || 'UGX').toUpperCase(),
                     commercialMode: (dto.commercialMode || 'SELL_ONLY') as any,
+                    defaultSellingPrice: dto.defaultSellingPrice
+                        ? new Decimal(dto.defaultSellingPrice)
+                        : null,
                     defaultRentalRate: dto.defaultRentalRate
                         ? new Decimal(dto.defaultRentalRate)
                         : null,
@@ -124,6 +127,7 @@ export class InventoryService {
             search: query.search,
             currency: query.currency,
             commercialMode: query.commercialMode,
+            rentable: query.rentable === 'true' ? true : undefined,
         });
 
         const totalPages = Math.ceil(total / limit);
@@ -174,6 +178,11 @@ export class InventoryService {
                     ...(dto.category !== undefined && { category: dto.category }),
                     ...(dto.currency !== undefined && { currency: dto.currency.toUpperCase() }),
                     ...(dto.commercialMode !== undefined && { commercialMode: dto.commercialMode as any }),
+                    ...(dto.defaultSellingPrice !== undefined && {
+                        defaultSellingPrice: dto.defaultSellingPrice
+                            ? new Decimal(dto.defaultSellingPrice)
+                            : null,
+                    }),
                     ...(dto.defaultRentalRate !== undefined && {
                         defaultRentalRate: dto.defaultRentalRate
                             ? new Decimal(dto.defaultRentalRate)

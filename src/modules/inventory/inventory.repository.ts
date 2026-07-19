@@ -26,6 +26,7 @@ export class InventoryRepository {
             search?: string;
             currency?: string;
             commercialMode?: string;
+            rentable?: boolean;
         }
     ) {
         const where: any = { workspaceId };
@@ -42,7 +43,9 @@ export class InventoryRepository {
             where.currency = options.currency.toUpperCase();
         }
 
-        if (options.commercialMode) {
+        if (options.rentable === true) {
+            where.commercialMode = { in: ['RENT_ONLY', 'SELL_AND_RENT'] };
+        } else if (options.commercialMode) {
             where.commercialMode = options.commercialMode;
         }
 

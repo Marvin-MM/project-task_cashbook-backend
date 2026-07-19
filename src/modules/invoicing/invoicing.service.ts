@@ -13,6 +13,7 @@ import {
     UpdateInvoiceDto,
     InvoiceQueryDto,
     UpdateInvoiceSettingsDto,
+    SendInvoiceDto,
 } from './invoicing.dto';
 import { assertSameCurrency, normalizeCurrency } from '../../core/finance';
 import sharp from 'sharp';
@@ -267,7 +268,12 @@ export class InvoicingService {
     // ─── Send Invoice ──────────────────────────────────────
     // ═══════════════════════════════════════════════════════
 
-    async sendInvoice(invoiceId: string, workspaceId: string, userId: string) {
+    async sendInvoice(
+        invoiceId: string,
+        workspaceId: string,
+        userId: string,
+        payment?: SendInvoiceDto,
+    ) {
         const invoice = await this.repository.findById(invoiceId);
         if (!invoice || invoice.workspaceId !== workspaceId) {
             throw new NotFoundError('Invoice');
@@ -291,6 +297,19 @@ export class InvoicingService {
         }
         assertSameCurrency(cashbook.currency, invoice.currency, 'invoice vs cashbook on send');
 
+        if (payment?.paymentAmount) {
+            const payAmt = new Decimal(payment.paymentAmount);
+            if (payAmt.greaterThan(new Decimal(invoice.amountDue))) {
+                throw new AppError(
+                    `Payment amount exceeds invoice amount due (${invoice.amountDue})`,
+                    400,
+                    'OVERPAYMENT',
+                );
+            }
+        }
+
+        let obligationId: string | null = null;
+
         await this.prisma.$transaction(async (tx) => {
             // 1. Mark invoice as SENT
             await tx.invoice.update({
@@ -299,7 +318,7 @@ export class InvoicingService {
             });
 
             // 2. Create a RECEIVABLE obligation linked back to this invoice
-            await tx.cashbookObligation.create({
+            const obligation = await tx.cashbookObligation.create({
                 data: {
                     workspaceId,
                     cashbookId,
@@ -315,6 +334,7 @@ export class InvoicingService {
                     referenceId: invoiceId,
                 },
             });
+            obligationId = obligation.id;
 
             // 3. Stock movements: SALE → permanent COGS stock-out; RENTAL → RENTAL_OUT + InventoryRental
             const rentalLines = invoice.items.filter(
@@ -469,7 +489,42 @@ export class InvoicingService {
             // Invoice is already SENT and obligation already created.
         }
 
-        return this.repository.findById(invoiceId);
+        // Optional: apply full or partial payment against the new receivable (one-click pay).
+        // Uses EntriesService so obligation + invoice status stay in sync with normal payment flow.
+        let paymentEntry: unknown = null;
+        if (payment?.paymentAmount && obligationId) {
+            try {
+                const { container } = await import('tsyringe');
+                const { EntriesService } = await import('../entries/entries.service');
+                const entriesService = container.resolve(EntriesService);
+                paymentEntry = await entriesService.createEntry(cashbookId, userId, {
+                    type: 'INCOME' as any,
+                    amount: payment.paymentAmount,
+                    description:
+                        payment.paymentDescription ||
+                        `Payment for invoice ${invoice.invoiceNumber}`,
+                    entryDate: payment.entryDate || new Date().toISOString(),
+                    contactId: invoice.customerId,
+                    obligationId,
+                    accountId: payment.accountId,
+                } as any);
+            } catch (payErr: any) {
+                // Send already committed — surface payment failure without undoing send.
+                throw new AppError(
+                    payErr?.message ||
+                        'Invoice was sent but payment failed. Pay the receivable from the cashbook.',
+                    payErr?.statusCode || 400,
+                    payErr?.code || 'INVOICE_PAYMENT_FAILED',
+                );
+            }
+        }
+
+        const sent = await this.repository.findById(invoiceId);
+        return {
+            ...sent,
+            obligationId,
+            paymentApplied: Boolean(paymentEntry),
+        };
     }
 
     // ═══════════════════════════════════════════════════════

@@ -736,6 +736,8 @@ model InventoryItem {
   /// ISO currency for costs/prices (no FX; must match cashbook/invoice when linked).
   currency               String                  @default("UGX")
   commercialMode         InventoryCommercialMode @default(SELL_ONLY) @map("commercial_mode")
+  /// Default list / sell price per unit (money-in prefill, not COGS).
+  defaultSellingPrice    Decimal?                @map("default_selling_price") @db.Decimal(20, 4)
   defaultRentalRate      Decimal?                @map("default_rental_rate") @db.Decimal(20, 4)
   defaultRentalPeriodUnit RentalPeriodUnit?      @map("default_rental_period_unit")
   lowStockThreshold      Int?                    @map("low_stock_threshold")

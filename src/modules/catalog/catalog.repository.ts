@@ -30,6 +30,7 @@ export class CatalogRepository {
                 unit: true,
                 currency: true,
                 commercialMode: true,
+                defaultSellingPrice: true,
                 defaultRentalRate: true,
                 defaultRentalPeriodUnit: true,
                 isActive: true,

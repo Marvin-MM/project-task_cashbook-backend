@@ -10,6 +10,7 @@ import {
     updateInvoiceSchema,
     invoiceQuerySchema,
     updateInvoiceSettingsSchema,
+    sendInvoiceSchema,
 } from './invoicing.dto';
 import { z } from 'zod';
 import { uploadImageMemory } from '../../middlewares/uploadImage';
@@ -101,6 +102,7 @@ router.delete(
 router.post(
     '/:invoiceId/send',
     requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    validate(sendInvoiceSchema),
     controller.sendInvoice.bind(controller) as any
 );
 
