@@ -3,6 +3,7 @@ import { PrismaClient, ProductServiceType } from '@prisma/client';
 import { CatalogRepository } from './catalog.repository';
 import { NotFoundError, AppError } from '../../core/errors/AppError';
 import { AuditAction } from '../../core/types';
+import { assertSameCurrency, normalizeCurrency } from '../../core/finance';
 import {
     CreateTaxDto,
     UpdateTaxDto,
@@ -123,8 +124,12 @@ export class CatalogService {
             }
         }
 
-        const { assertSameCurrency, normalizeCurrency } = await import('../../core/finance');
-        let productCurrency = normalizeCurrency(dto.currency || 'UGX');
+        const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+        if (!workspace || !workspace.isActive) throw new NotFoundError('Workspace');
+        const productCurrency = normalizeCurrency(workspace.defaultCurrency);
+        if (dto.currency) {
+            assertSameCurrency(productCurrency, dto.currency, 'workspace base vs catalog item');
+        }
         let resolvedType = dto.type as ProductServiceType;
 
         // Link inventory for sellable goods (PRODUCT) or rent-only assets (SERVICE)
@@ -144,8 +149,7 @@ export class CatalogService {
             if (!invItem || invItem.workspaceId !== workspaceId || !invItem.isActive) {
                 throw new AppError('Inventory item not found or inactive', 404, 'INVALID_INVENTORY_ITEM');
             }
-            assertSameCurrency(invItem.currency, productCurrency, `catalog vs inventory "${invItem.name}"`);
-            productCurrency = normalizeCurrency(invItem.currency);
+            assertSameCurrency(productCurrency, invItem.currency, `workspace base vs inventory "${invItem.name}"`);
 
             // Rent-only inventory is catalogued as a SERVICE (rental offering), never PRODUCT
             if (invItem.commercialMode === 'RENT_ONLY') {
@@ -222,11 +226,13 @@ export class CatalogService {
             }
         }
 
-        const { assertSameCurrency, normalizeCurrency } = await import('../../core/finance');
         let effectiveType = (dto.type || (item as any).type) as ProductServiceType;
-        let nextCurrency = dto.currency !== undefined
-            ? normalizeCurrency(dto.currency)
-            : normalizeCurrency((item as any).currency || 'UGX');
+        const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+        if (!workspace || !workspace.isActive) throw new NotFoundError('Workspace');
+        const nextCurrency = normalizeCurrency(workspace.defaultCurrency);
+        if (dto.currency) {
+            assertSameCurrency(nextCurrency, dto.currency, 'workspace base vs catalog item');
+        }
 
         const linkedInventoryId =
             dto.inventoryItemId !== undefined
@@ -248,8 +254,7 @@ export class CatalogService {
             if (!invItem || invItem.workspaceId !== workspaceId || !invItem.isActive) {
                 throw new AppError('Inventory item not found or inactive', 404, 'INVALID_INVENTORY_ITEM');
             }
-            assertSameCurrency(invItem.currency, nextCurrency, `catalog vs inventory "${invItem.name}"`);
-            nextCurrency = normalizeCurrency(invItem.currency);
+            assertSameCurrency(nextCurrency, invItem.currency, `workspace base vs inventory "${invItem.name}"`);
 
             if (invItem.commercialMode === 'RENT_ONLY') {
                 effectiveType = 'SERVICE';
@@ -268,7 +273,7 @@ export class CatalogService {
             where: { id },
             data: {
                 ...dto,
-                currency: dto.currency !== undefined || dto.inventoryItemId !== undefined ? nextCurrency : undefined,
+                currency: nextCurrency,
                 type: effectiveType,
                 inventoryItemId: dto.inventoryItemId !== undefined ? (dto.inventoryItemId || null) : undefined,
             },

@@ -53,6 +53,11 @@ export class InvoicingService {
     // ═══════════════════════════════════════════════════════
 
     async createInvoice(workspaceId: string, userId: string, dto: CreateInvoiceDto) {
+        const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+        if (!workspace || !workspace.isActive) {
+            throw new NotFoundError('Workspace');
+        }
+        const workspaceCurrency = normalizeCurrency(workspace.defaultCurrency);
         // Validate customer
         const customer = await this.prisma.contact.findUnique({
             where: { id: dto.customerId },
@@ -74,7 +79,10 @@ export class InvoicingService {
             throw new NotFoundError('Cashbook');
         }
 
-        const invoiceCurrency = normalizeCurrency(dto.currency || cashbook.currency || 'UGX');
+        if (dto.currency) {
+            assertSameCurrency(workspaceCurrency, dto.currency, 'workspace base vs invoice');
+        }
+        const invoiceCurrency = workspaceCurrency;
         // Invoice must match linked cashbook currency (payments land in that book)
         assertSameCurrency(cashbook.currency, invoiceCurrency, 'invoice vs cashbook');
 
@@ -191,8 +199,13 @@ export class InvoicingService {
             if (dup) throw new AppError('Invoice number already exists', 409, 'DUPLICATE_INVOICE_NUMBER');
         }
 
-        const nextCurrency = normalizeCurrency(dto.currency || existing.currency || 'UGX');
-        if (dto.cashbookId || dto.currency) {
+        const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+        if (!workspace || !workspace.isActive) throw new NotFoundError('Workspace');
+        const nextCurrency = normalizeCurrency(workspace.defaultCurrency);
+        if (dto.currency) {
+            assertSameCurrency(nextCurrency, dto.currency, 'workspace base vs invoice');
+        }
+        if (dto.cashbookId || dto.currency || (existing as any).cashbookId) {
             const cashbookId = dto.cashbookId || (existing as any).cashbookId;
             if (cashbookId) {
                 const cashbook = await this.prisma.cashbook.findUnique({
@@ -249,7 +262,7 @@ export class InvoicingService {
                 ...(dto.invoiceNumber && { invoiceNumber: dto.invoiceNumber }),
                 ...(dto.issueDate && { issueDate: new Date(dto.issueDate) }),
                 ...(dto.dueDate && { dueDate: new Date(dto.dueDate) }),
-                ...(dto.currency && { currency: nextCurrency }),
+                currency: nextCurrency,
                 ...(dto.notes !== undefined && { notes: dto.notes }),
                 ...(dto.footer !== undefined && { footer: dto.footer }),
                 ...(dto.cashbookId && { cashbookId: dto.cashbookId }),

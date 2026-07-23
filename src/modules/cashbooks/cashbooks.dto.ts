@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const createCashbookSchema = z.object({
     name: z.string().min(1, 'Cashbook name is required').max(200),
     description: z.string().max(1000).optional(),
-    currency: z.string().length(3, 'Currency must be a 3-letter ISO code').default('USD'),
+    currency: z.string().length(3, 'Currency must be a 3-letter ISO code').optional(),
     allowBackdate: z.boolean().default(false),
 });
 

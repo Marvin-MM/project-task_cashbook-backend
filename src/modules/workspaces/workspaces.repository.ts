@@ -71,6 +71,7 @@ export class WorkspacesRepository {
         name: string;
         type: WorkspaceType;
         ownerId: string;
+        defaultCurrency?: string;
     }) {
         return this.prisma.workspace.create({
             data,
@@ -82,7 +83,7 @@ export class WorkspacesRepository {
         });
     }
 
-    async update(id: string, data: { name?: string }) {
+    async update(id: string, data: { name?: string; defaultCurrency?: string }) {
         return this.prisma.workspace.update({
             where: { id },
             data,

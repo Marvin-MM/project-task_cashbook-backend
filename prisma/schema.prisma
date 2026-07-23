@@ -93,8 +93,12 @@ model Workspace {
   name            String
   type            WorkspaceType
   ownerId         String        @map("owner_id") @db.Uuid
-  /// Suggested currency for new books/items/invoices (not a hard lock).
+  /// Workspace base currency. The app does not perform FX conversion.
   defaultCurrency String        @default("UGX") @map("default_currency")
+  attendanceLocationName String? @map("attendance_location_name")
+  attendanceLatitude     Float?  @map("attendance_latitude")
+  attendanceLongitude    Float?  @map("attendance_longitude")
+  attendanceRadiusMeters Int?    @map("attendance_radius_meters")
   isActive        Boolean       @default(true) @map("is_active")
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
@@ -1243,15 +1247,24 @@ model TimeEntry {
 }
 
 model WorkSession {
-  id           String    @id @default(uuid()) @db.Uuid
-  userId       String    @map("user_id") @db.Uuid
-  workspaceId  String    @map("workspace_id") @db.Uuid
-  clockIn      DateTime  @map("clock_in")
-  clockOut     DateTime? @map("clock_out")
-  totalMinutes Int?      @map("total_minutes")
-  description  String?
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  id                    String    @id @default(uuid()) @db.Uuid
+  userId                String    @map("user_id") @db.Uuid
+  workspaceId           String    @map("workspace_id") @db.Uuid
+  clockIn               DateTime  @map("clock_in")
+  clockOut              DateTime? @map("clock_out")
+  totalMinutes          Int?      @map("total_minutes")
+  description           String?
+  clockInLatitude       Float?    @map("clock_in_latitude")
+  clockInLongitude      Float?    @map("clock_in_longitude")
+  clockInLocationLabel  String?   @map("clock_in_location_label")
+  clockOutLatitude      Float?    @map("clock_out_latitude")
+  clockOutLongitude     Float?    @map("clock_out_longitude")
+  clockOutLocationLabel String?   @map("clock_out_location_label")
+  adjustedById          String?   @map("adjusted_by_id") @db.Uuid
+  adjustedAt            DateTime? @map("adjusted_at")
+  adjustmentReason      String?   @map("adjustment_reason")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1293,4 +1306,3 @@ model Notification {
   @@index([createdAt])
   @@map("notifications")
 }
-

@@ -14,6 +14,7 @@ import {
     CogsReportQueryDto,
     AnalyticsQueryDto,
 } from './inventory.dto';
+import { assertSameCurrency, normalizeCurrency } from '../../core/finance';
 
 // Stock-in transaction types (increase quantityOnHand)
 const STOCK_IN_TYPES: InventoryTransactionType[] = [
@@ -55,6 +56,15 @@ export class InventoryService {
     // ═══════════════════════════════════════════════════════
 
     async createItem(workspaceId: string, userId: string, dto: CreateInventoryItemDto) {
+        const workspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+        if (!workspace || !workspace.isActive) {
+            throw new NotFoundError('Workspace');
+        }
+        const workspaceCurrency = normalizeCurrency(workspace.defaultCurrency);
+        if (dto.currency) {
+            assertSameCurrency(workspaceCurrency, dto.currency, 'workspace base vs inventory item');
+        }
+
         if (dto.sku) {
             const existing = await this.prisma.inventoryItem.findUnique({
                 where: { workspaceId_sku: { workspaceId, sku: dto.sku } },
@@ -72,10 +82,10 @@ export class InventoryService {
                     sku: dto.sku || null,
                     unit: dto.unit,
                     category: dto.category || null,
-                    currency: (dto.currency || 'UGX').toUpperCase(),
+                    currency: workspaceCurrency,
                     commercialMode: (dto.commercialMode || 'SELL_ONLY') as any,
-                    defaultSellingPrice: dto.defaultSellingPrice
-                        ? new Decimal(dto.defaultSellingPrice)
+                    defaultSellingPrice: (dto.sellingPrice || dto.defaultSellingPrice)
+                        ? new Decimal(dto.sellingPrice || dto.defaultSellingPrice!)
                         : null,
                     defaultRentalRate: dto.defaultRentalRate
                         ? new Decimal(dto.defaultRentalRate)
@@ -86,6 +96,35 @@ export class InventoryService {
                     allowNegativeStock: dto.allowNegativeStock,
                 },
             });
+
+            let productServiceId: string | null = null;
+            if (dto.createProductService) {
+                const productServiceType = dto.productServiceType
+                    || (dto.commercialMode === 'RENT_ONLY' ? 'SERVICE' : 'PRODUCT');
+                if (dto.commercialMode !== 'RENT_ONLY' && productServiceType === 'SERVICE') {
+                    throw new AppError('Sellable inventory should be catalogued as a PRODUCT', 400, 'SELLABLE_REQUIRES_PRODUCT');
+                }
+                const price =
+                    dto.productServicePrice
+                    || dto.sellingPrice
+                    || dto.defaultSellingPrice
+                    || dto.defaultRentalRate
+                    || '0';
+                const productService = await tx.productService.create({
+                    data: {
+                        workspaceId,
+                        name: dto.productServiceName || dto.name,
+                        description: dto.productServiceDescription || null,
+                        price: new Decimal(price),
+                        currency: workspaceCurrency,
+                        type: productServiceType as any,
+                        isSellable: true,
+                        isBuyable: false,
+                        inventoryItemId: item.id,
+                    },
+                });
+                productServiceId = productService.id;
+            }
 
             await tx.inventoryStock.create({
                 data: {
@@ -103,13 +142,13 @@ export class InventoryService {
                     action: AuditAction.INVENTORY_ITEM_CREATED as any,
                     resource: 'inventory_item',
                     resourceId: item.id,
-                    details: { name: item.name, sku: item.sku, unit: item.unit } as any,
+                    details: { name: item.name, sku: item.sku, unit: item.unit, productServiceId } as any,
                 },
             });
 
             return tx.inventoryItem.findUnique({
                 where: { id: item.id },
-                include: { stock: true },
+                include: { stock: true, productsServices: true },
             });
         });
     }
@@ -158,6 +197,9 @@ export class InventoryService {
         if (!item || item.workspaceId !== workspaceId) {
             throw new NotFoundError('Inventory Item');
         }
+        if (dto.currency && dto.currency.toUpperCase() !== item.currency) {
+            throw new AppError('Inventory item currency is locked to the workspace base currency', 400, 'BASE_CURRENCY_LOCKED');
+        }
 
         if (dto.sku && dto.sku !== item.sku) {
             const duplicate = await this.prisma.inventoryItem.findUnique({
@@ -176,7 +218,6 @@ export class InventoryService {
                     ...(dto.sku !== undefined && { sku: dto.sku }),
                     ...(dto.unit !== undefined && { unit: dto.unit }),
                     ...(dto.category !== undefined && { category: dto.category }),
-                    ...(dto.currency !== undefined && { currency: dto.currency.toUpperCase() }),
                     ...(dto.commercialMode !== undefined && { commercialMode: dto.commercialMode as any }),
                     ...(dto.defaultSellingPrice !== undefined && {
                         defaultSellingPrice: dto.defaultSellingPrice

@@ -15,6 +15,9 @@ import {
     workSessionQuerySchema,
     lockTimeEntrySchema,
     timeSummaryQuerySchema,
+    attendanceSettingsSchema,
+    createWorkSessionSchema,
+    updateWorkSessionSchema,
 } from './time-tracking.dto';
 
 const router = Router({ mergeParams: true });
@@ -50,6 +53,19 @@ router.get(
     requireWorkspaceMember() as any,
     validate(timeSummaryQuerySchema, 'query'),
     controller.getTimeSummary.bind(controller) as any,
+);
+
+router.get(
+    '/settings',
+    requireWorkspaceMember() as any,
+    controller.getAttendanceSettings.bind(controller) as any,
+);
+
+router.put(
+    '/settings',
+    requireWorkspaceMember() as any,
+    validate(attendanceSettingsSchema),
+    controller.updateAttendanceSettings.bind(controller) as any,
 );
 
 // Dynamic param routes — UUID guard returns 422 before Prisma is ever called
@@ -114,6 +130,13 @@ router.get(
 );
 
 router.post(
+    '/sessions/manual',
+    requireWorkspaceMember() as any,
+    validate(createWorkSessionSchema),
+    controller.createWorkSession.bind(controller) as any,
+);
+
+router.post(
     '/sessions/clock-in',
     requireWorkspaceMember() as any,
     validate(clockInSchema),
@@ -125,6 +148,14 @@ router.post(
     requireWorkspaceMember() as any,
     validate(clockOutSchema),
     controller.clockOut.bind(controller) as any,
+);
+
+router.patch(
+    '/sessions/:sessionId',
+    requireWorkspaceMember() as any,
+    validate(uuidParams('sessionId'), 'params'),
+    validate(updateWorkSessionSchema),
+    controller.updateWorkSession.bind(controller) as any,
 );
 
 export default router;

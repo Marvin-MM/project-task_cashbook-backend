@@ -1,5 +1,5 @@
 import { injectable, inject } from 'tsyringe';
-import { PrismaClient, TimeEntrySource } from '@prisma/client';
+import { PrismaClient, TimeEntrySource, Prisma } from '@prisma/client';
 import { TimeTrackingRepository } from './time-tracking.repository';
 import { NotFoundError, AuthorizationError, AppError, ConflictError } from '../../core/errors/AppError';
 import { AuditAction, WorkspaceRole } from '../../core/types';
@@ -13,11 +13,27 @@ import {
     WorkSessionQueryDto,
     LockTimeEntryDto,
     TimeSummaryQueryDto,
+    AttendanceSettingsDto,
+    CreateWorkSessionDto,
+    UpdateWorkSessionDto,
 } from './time-tracking.dto';
 
 /** Compute duration in whole minutes (server-side only — never from client). */
 function computeMinutes(start: Date, end: Date): number {
     return Math.max(0, Math.floor((end.getTime() - start.getTime()) / 60_000));
+}
+
+function distanceMeters(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }): number {
+    const earthRadiusMeters = 6_371_000;
+    const toRadians = (degrees: number) => degrees * Math.PI / 180;
+    const dLat = toRadians(b.latitude - a.latitude);
+    const dLon = toRadians(b.longitude - a.longitude);
+    const lat1 = toRadians(a.latitude);
+    const lat2 = toRadians(b.latitude);
+    const h =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    return 2 * earthRadiusMeters * Math.asin(Math.sqrt(h));
 }
 
 @injectable()
@@ -46,6 +62,98 @@ export class TimeTrackingService {
             where: { workspaceId_userId: { workspaceId, userId } },
         });
         return m?.role === WorkspaceRole.ADMIN;
+    }
+
+    private async assertWorkspaceManager(workspaceId: string, userId: string) {
+        if (!(await this.isWorkspaceManager(workspaceId, userId))) {
+            throw new AuthorizationError('Only workspace owners or admins can perform this action');
+        }
+    }
+
+    private async assertUserInWorkspace(workspaceId: string, targetUserId: string) {
+        const ws = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+        if (!ws || !ws.isActive) throw new NotFoundError('Workspace');
+        if (ws.ownerId === targetUserId) return;
+        const membership = await this.prisma.workspaceMember.findUnique({
+            where: { workspaceId_userId: { workspaceId, userId: targetUserId } },
+        });
+        if (!membership) {
+            throw new AppError('User is not a member of this workspace', 400, 'USER_NOT_IN_WORKSPACE');
+        }
+    }
+
+    private async getWorkspaceAttendancePolicy(workspaceId: string) {
+        const workspace = await this.prisma.workspace.findUnique({
+            where: { id: workspaceId },
+            select: {
+                id: true,
+                isActive: true,
+                attendanceLocationName: true,
+                attendanceLatitude: true,
+                attendanceLongitude: true,
+                attendanceRadiusMeters: true,
+            },
+        });
+        if (!workspace || !workspace.isActive) throw new NotFoundError('Workspace');
+        return workspace;
+    }
+
+    private enforceAttendanceLocation(
+        policy: Awaited<ReturnType<TimeTrackingService['getWorkspaceAttendancePolicy']>>,
+        actual: { latitude?: number; longitude?: number },
+        action: 'clock in' | 'clock out',
+    ) {
+        if (
+            policy.attendanceLatitude == null ||
+            policy.attendanceLongitude == null ||
+            policy.attendanceRadiusMeters == null
+        ) {
+            return;
+        }
+        if (actual.latitude == null || actual.longitude == null) {
+            throw new AppError(
+                `Location is required to ${action} for this workspace`,
+                400,
+                'ATTENDANCE_LOCATION_REQUIRED',
+            );
+        }
+        const distance = distanceMeters(
+            { latitude: policy.attendanceLatitude, longitude: policy.attendanceLongitude },
+            { latitude: actual.latitude, longitude: actual.longitude },
+        );
+        if (distance > policy.attendanceRadiusMeters) {
+            throw new AppError(
+                `You must be within ${policy.attendanceRadiusMeters} meters of the approved location to ${action}`,
+                400,
+                'OUTSIDE_ATTENDANCE_LOCATION',
+            );
+        }
+    }
+
+    private async assertNoOverlappingWorkSession(
+        userId: string,
+        start: Date,
+        end: Date,
+        excludeId?: string,
+    ) {
+        const overlap = await this.prisma.workSession.findFirst({
+            where: {
+                userId,
+                id: excludeId ? { not: excludeId } : undefined,
+                AND: [
+                    { clockIn: { lt: end } },
+                    {
+                        OR: [
+                            { clockOut: null },
+                            { clockOut: { gt: start } },
+                        ],
+                    },
+                ],
+            },
+        });
+        if (overlap) {
+            throw new ConflictError('This work session overlaps with another session for the user');
+        }
     }
 
     private async assertProjectMemberOrManager(projectId: string, workspaceId: string, userId: string) {
@@ -417,6 +525,66 @@ export class TimeTrackingService {
         });
     }
 
+    // ─── Attendance Settings ─────────────────────────────────
+    async getAttendanceSettings(workspaceId: string, userId: string) {
+        await this.assertWorkspaceMember(workspaceId, userId);
+        return this.getWorkspaceAttendancePolicy(workspaceId);
+    }
+
+    async updateAttendanceSettings(workspaceId: string, userId: string, dto: AttendanceSettingsDto) {
+        await this.assertWorkspaceManager(workspaceId, userId);
+
+        const cleared =
+            dto.attendanceLatitude === null &&
+            dto.attendanceLongitude === null &&
+            dto.attendanceRadiusMeters === null;
+
+        const updated = await this.prisma.workspace.update({
+            where: { id: workspaceId },
+            data: cleared
+                ? {
+                    attendanceLocationName: dto.attendanceLocationName ?? null,
+                    attendanceLatitude: null,
+                    attendanceLongitude: null,
+                    attendanceRadiusMeters: null,
+                }
+                : {
+                    ...(dto.attendanceLocationName !== undefined && {
+                        attendanceLocationName: dto.attendanceLocationName,
+                    }),
+                    ...(dto.attendanceLatitude !== undefined && {
+                        attendanceLatitude: dto.attendanceLatitude,
+                    }),
+                    ...(dto.attendanceLongitude !== undefined && {
+                        attendanceLongitude: dto.attendanceLongitude,
+                    }),
+                    ...(dto.attendanceRadiusMeters !== undefined && {
+                        attendanceRadiusMeters: dto.attendanceRadiusMeters,
+                    }),
+                },
+            select: {
+                id: true,
+                attendanceLocationName: true,
+                attendanceLatitude: true,
+                attendanceLongitude: true,
+                attendanceRadiusMeters: true,
+            },
+        });
+
+        await this.prisma.auditLog.create({
+            data: {
+                userId,
+                workspaceId,
+                action: AuditAction.WORKSPACE_ATTENDANCE_SETTINGS_UPDATED,
+                resource: 'workspace',
+                resourceId: workspaceId,
+                details: updated as any,
+            },
+        });
+
+        return updated;
+    }
+
     // ─── Timer ────────────────────────────────────────────────
     async startTimer(workspaceId: string, userId: string, dto: StartTimerDto) {
         await this.assertWorkspaceMember(workspaceId, userId);
@@ -548,28 +716,57 @@ export class TimeTrackingService {
 
     async clockIn(workspaceId: string, userId: string, dto: ClockInDto) {
         await this.assertWorkspaceMember(workspaceId, userId);
+        const policy = await this.getWorkspaceAttendancePolicy(workspaceId);
+        this.enforceAttendanceLocation(policy, dto, 'clock in');
 
-        // Prevent duplicate sessions with a serializable-safe check
-        const existing = await this.repo.findActiveSession(userId, workspaceId);
-        if (existing) throw new ConflictError('You are already clocked in. Clock out before clocking in again.');
+        const existing = await this.prisma.workSession.findFirst({
+            where: { userId, clockOut: null },
+            include: { workspace: { select: { id: true, name: true } } },
+        });
+        if (existing) {
+            throw new ConflictError(
+                `You are already clocked in${existing.workspaceId !== workspaceId ? ` to ${existing.workspace.name}` : ''}. Clock out before clocking in again.`,
+            );
+        }
 
         const session = await this.prisma.$transaction(async (tx) => {
-            // Double-check inside the transaction to guard against race conditions
             const check = await tx.workSession.findFirst({
-                where: { userId, workspaceId, clockOut: null },
+                where: { userId, clockOut: null },
             });
             if (check) throw new ConflictError('You are already clocked in.');
 
-            const s = await tx.workSession.create({
+            let s;
+            try {
+                s = await tx.workSession.create({
+                    data: {
+                        userId,
+                        workspaceId,
+                        clockIn: new Date(),
+                        description: dto.description ?? null,
+                        clockInLatitude: dto.latitude ?? null,
+                        clockInLongitude: dto.longitude ?? null,
+                        clockInLocationLabel: dto.locationLabel ?? null,
+                    },
+                });
+            } catch (error) {
+                if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+                    throw new ConflictError('You are already clocked in to this workspace.');
+                }
+                throw error;
+            }
+            await tx.auditLog.create({
                 data: {
                     userId,
                     workspaceId,
-                    clockIn: new Date(),
-                    description: dto.description ?? null,
+                    action: AuditAction.WORK_SESSION_CLOCKED_IN,
+                    resource: 'work_session',
+                    resourceId: s.id,
+                    details: {
+                        clockInLatitude: dto.latitude ?? null,
+                        clockInLongitude: dto.longitude ?? null,
+                        locationLabel: dto.locationLabel ?? null,
+                    } as any,
                 },
-            });
-            await tx.auditLog.create({
-                data: { userId, workspaceId, action: AuditAction.WORK_SESSION_CLOCKED_IN, resource: 'work_session', resourceId: s.id },
             });
             return s;
         });
@@ -579,6 +776,8 @@ export class TimeTrackingService {
 
     async clockOut(workspaceId: string, userId: string, dto: ClockOutDto) {
         await this.assertWorkspaceMember(workspaceId, userId);
+        const policy = await this.getWorkspaceAttendancePolicy(workspaceId);
+        this.enforceAttendanceLocation(policy, dto, 'clock out');
 
         const session = await this.repo.findActiveSession(userId, workspaceId);
         if (!session) throw new NotFoundError('Active work session');
@@ -593,12 +792,143 @@ export class TimeTrackingService {
                     clockOut,
                     totalMinutes,
                     description: dto.description ?? session.description,
+                    clockOutLatitude: dto.latitude ?? null,
+                    clockOutLongitude: dto.longitude ?? null,
+                    clockOutLocationLabel: dto.locationLabel ?? null,
                 },
             });
             await tx.auditLog.create({
-                data: { userId, workspaceId, action: AuditAction.WORK_SESSION_CLOCKED_OUT, resource: 'work_session', resourceId: s.id, details: { totalMinutes } as any },
+                data: {
+                    userId,
+                    workspaceId,
+                    action: AuditAction.WORK_SESSION_CLOCKED_OUT,
+                    resource: 'work_session',
+                    resourceId: s.id,
+                    details: {
+                        totalMinutes,
+                        clockOutLatitude: dto.latitude ?? null,
+                        clockOutLongitude: dto.longitude ?? null,
+                        locationLabel: dto.locationLabel ?? null,
+                    } as any,
+                },
             });
             return s;
+        });
+
+        return updated;
+    }
+
+    async createWorkSession(workspaceId: string, userId: string, dto: CreateWorkSessionDto) {
+        await this.assertWorkspaceManager(workspaceId, userId);
+        await this.assertUserInWorkspace(workspaceId, dto.userId);
+
+        const clockIn = new Date(dto.clockIn);
+        const clockOut = new Date(dto.clockOut);
+        if (clockOut <= clockIn) {
+            throw new AppError('clockOut must be after clockIn', 400, 'INVALID_WORK_SESSION_RANGE');
+        }
+        await this.assertNoOverlappingWorkSession(dto.userId, clockIn, clockOut);
+
+        const totalMinutes = computeMinutes(clockIn, clockOut);
+        const created = await this.prisma.$transaction(async (tx) => {
+            const session = await tx.workSession.create({
+                data: {
+                    userId: dto.userId,
+                    workspaceId,
+                    clockIn,
+                    clockOut,
+                    totalMinutes,
+                    description: dto.description ?? null,
+                    clockInLatitude: dto.clockInLatitude ?? null,
+                    clockInLongitude: dto.clockInLongitude ?? null,
+                    clockInLocationLabel: dto.clockInLocationLabel ?? null,
+                    clockOutLatitude: dto.clockOutLatitude ?? null,
+                    clockOutLongitude: dto.clockOutLongitude ?? null,
+                    clockOutLocationLabel: dto.clockOutLocationLabel ?? null,
+                    adjustedById: userId,
+                    adjustedAt: new Date(),
+                    adjustmentReason: dto.adjustmentReason,
+                },
+            });
+            await tx.auditLog.create({
+                data: {
+                    userId,
+                    workspaceId,
+                    action: AuditAction.WORK_SESSION_CREATED,
+                    resource: 'work_session',
+                    resourceId: session.id,
+                    details: {
+                        targetUserId: dto.userId,
+                        totalMinutes,
+                        adjustmentReason: dto.adjustmentReason,
+                    } as any,
+                },
+            });
+            return session;
+        });
+
+        return created;
+    }
+
+    async updateWorkSession(
+        sessionId: string,
+        workspaceId: string,
+        userId: string,
+        dto: UpdateWorkSessionDto,
+    ) {
+        await this.assertWorkspaceManager(workspaceId, userId);
+        const existing = await this.prisma.workSession.findUnique({ where: { id: sessionId } });
+        if (!existing || existing.workspaceId !== workspaceId) throw new NotFoundError('Work session');
+
+        const targetUserId = dto.userId ?? existing.userId;
+        await this.assertUserInWorkspace(workspaceId, targetUserId);
+
+        const clockIn = dto.clockIn ? new Date(dto.clockIn) : existing.clockIn;
+        const clockOut = dto.clockOut ? new Date(dto.clockOut) : existing.clockOut;
+        if (!clockOut) {
+            throw new AppError('Adjusted work sessions must include clockOut', 400, 'INVALID_WORK_SESSION_RANGE');
+        }
+        if (clockOut <= clockIn) {
+            throw new AppError('clockOut must be after clockIn', 400, 'INVALID_WORK_SESSION_RANGE');
+        }
+        await this.assertNoOverlappingWorkSession(targetUserId, clockIn, clockOut, sessionId);
+
+        const totalMinutes = computeMinutes(clockIn, clockOut);
+        const updated = await this.prisma.$transaction(async (tx) => {
+            const session = await tx.workSession.update({
+                where: { id: sessionId },
+                data: {
+                    userId: targetUserId,
+                    clockIn,
+                    clockOut,
+                    totalMinutes,
+                    description: dto.description !== undefined ? dto.description : existing.description,
+                    clockInLatitude: dto.clockInLatitude !== undefined ? dto.clockInLatitude : existing.clockInLatitude,
+                    clockInLongitude: dto.clockInLongitude !== undefined ? dto.clockInLongitude : existing.clockInLongitude,
+                    clockInLocationLabel: dto.clockInLocationLabel !== undefined ? dto.clockInLocationLabel : existing.clockInLocationLabel,
+                    clockOutLatitude: dto.clockOutLatitude !== undefined ? dto.clockOutLatitude : existing.clockOutLatitude,
+                    clockOutLongitude: dto.clockOutLongitude !== undefined ? dto.clockOutLongitude : existing.clockOutLongitude,
+                    clockOutLocationLabel: dto.clockOutLocationLabel !== undefined ? dto.clockOutLocationLabel : existing.clockOutLocationLabel,
+                    adjustedById: userId,
+                    adjustedAt: new Date(),
+                    adjustmentReason: dto.adjustmentReason,
+                },
+            });
+            await tx.auditLog.create({
+                data: {
+                    userId,
+                    workspaceId,
+                    action: AuditAction.WORK_SESSION_UPDATED,
+                    resource: 'work_session',
+                    resourceId: sessionId,
+                    details: {
+                        targetUserId,
+                        totalMinutes,
+                        adjustmentReason: dto.adjustmentReason,
+                    } as any,
+                },
+            });
+            return session;
         });
 
         return updated;

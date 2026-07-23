@@ -3,6 +3,7 @@ import { PrismaClient, ProjectRole, ProjectStatus } from '@prisma/client';
 import { ProjectsRepository } from './projects.repository';
 import { NotFoundError, ConflictError, AuthorizationError, AppError } from '../../core/errors/AppError';
 import { AuditAction, WorkspaceRole } from '../../core/types';
+import { assertSameCurrency, normalizeCurrency } from '../../core/finance';
 import {
     CreateProjectDto,
     UpdateProjectDto,
@@ -122,7 +123,11 @@ export class ProjectsService {
     }
 
     async createProject(workspaceId: string, userId: string, dto: CreateProjectDto) {
-        await this.assertWorkspaceActive(workspaceId);
+        const workspace = await this.assertWorkspaceActive(workspaceId);
+        const workspaceCurrency = normalizeCurrency(workspace.defaultCurrency);
+        if (dto.currency) {
+            assertSameCurrency(workspaceCurrency, dto.currency, 'workspace base vs project');
+        }
         await this.assertContactInWorkspace(workspaceId, dto.contactId);
 
         const project = await this.prisma.$transaction(async (tx) => {
@@ -137,7 +142,7 @@ export class ProjectsService {
                     endDate: dto.endDate ? new Date(dto.endDate) : null,
                     contactId: dto.contactId ?? null,
                     budgetAmount: dto.budgetAmount ? dto.budgetAmount : null,
-                    currency: (dto.currency || 'UGX').toUpperCase(),
+                    currency: workspaceCurrency,
                 },
             });
 
@@ -177,6 +182,11 @@ export class ProjectsService {
         if (dto.contactId !== undefined) {
             await this.assertContactInWorkspace(workspaceId, dto.contactId);
         }
+        const workspace = await this.assertWorkspaceActive(workspaceId);
+        const workspaceCurrency = normalizeCurrency(workspace.defaultCurrency);
+        if (dto.currency && dto.currency.toUpperCase() !== workspaceCurrency) {
+            throw new AppError('Project currency is locked to the workspace base currency', 400, 'BASE_CURRENCY_LOCKED');
+        }
 
         const updated = await this.prisma.project.update({
             where: { id: projectId },
@@ -190,7 +200,7 @@ export class ProjectsService {
                 budgetAmount: dto.budgetAmount !== undefined
                     ? (dto.budgetAmount ? dto.budgetAmount : null)
                     : undefined,
-                currency: dto.currency !== undefined ? dto.currency.toUpperCase() : undefined,
+                currency: dto.currency !== undefined ? workspaceCurrency : undefined,
             },
         });
 

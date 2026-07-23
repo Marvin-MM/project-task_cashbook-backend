@@ -1,5 +1,8 @@
 import { AppError } from '../errors/AppError';
 
+export const EAST_AFRICAN_CURRENCY_CODES = ['UGX', 'KES', 'TZS', 'RWF', 'BIF', 'SSP', 'ETB'] as const;
+export type EastAfricanCurrencyCode = typeof EAST_AFRICAN_CURRENCY_CODES[number];
+
 /** Normalize ISO-like currency codes (UGX, USD, KES). */
 export function normalizeCurrency(code: string | null | undefined, fallback = 'UGX'): string {
     const c = (code || fallback).trim().toUpperCase();
@@ -11,6 +14,18 @@ export function normalizeCurrency(code: string | null | undefined, fallback = 'U
         );
     }
     return c;
+}
+
+export function assertEastAfricanCurrency(code: string | null | undefined): EastAfricanCurrencyCode {
+    const normalized = normalizeCurrency(code);
+    if (!(EAST_AFRICAN_CURRENCY_CODES as readonly string[]).includes(normalized)) {
+        throw new AppError(
+            `Unsupported workspace base currency "${normalized}". Use one of: ${EAST_AFRICAN_CURRENCY_CODES.join(', ')}.`,
+            400,
+            'UNSUPPORTED_BASE_CURRENCY',
+        );
+    }
+    return normalized as EastAfricanCurrencyCode;
 }
 
 /**

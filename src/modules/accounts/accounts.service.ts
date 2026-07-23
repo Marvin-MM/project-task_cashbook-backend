@@ -10,7 +10,7 @@ import {
 import { AppError, NotFoundError } from '../../core/errors/AppError';
 import { AuditAction } from '../../core/types';
 import { Decimal } from '@prisma/client/runtime/library';
-import { recomputeWalletBalance } from '../../core/finance';
+import { assertSameCurrency, normalizeCurrency, recomputeWalletBalance } from '../../core/finance';
 
 @injectable()
 export class AccountsService {
@@ -21,6 +21,15 @@ export class AccountsService {
 
     async createAccount(workspaceId: string, userId: string, data: CreateAccountBody) {
         return this.prisma.$transaction(async (tx) => {
+            const workspace = await tx.workspace.findUnique({ where: { id: workspaceId } });
+            if (!workspace || !workspace.isActive) {
+                throw new NotFoundError('Workspace');
+            }
+            const workspaceCurrency = normalizeCurrency(workspace.defaultCurrency);
+            if (data.currency) {
+                assertSameCurrency(workspaceCurrency, data.currency, 'workspace base vs account');
+            }
+
             // Validate accountType belongs to workspace
             const accountType = await tx.accountType.findUnique({
                 where: { id: data.accountTypeId }
@@ -38,6 +47,7 @@ export class AccountsService {
                 data: {
                     workspaceId,
                     ...accountData,
+                    currency: workspaceCurrency,
                     balance: initialAmount,
                 },
                 include: { accountType: true }

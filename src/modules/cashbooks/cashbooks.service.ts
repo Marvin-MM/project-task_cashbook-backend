@@ -12,6 +12,7 @@ import {
     CashbookRole,
     WorkspaceType,
 } from '../../core/types';
+import { assertSameCurrency, normalizeCurrency } from '../../core/finance';
 import {
     CreateCashbookDto,
     UpdateCashbookDto,
@@ -61,13 +62,17 @@ export class CashbooksService {
         if (!workspace || !workspace.isActive) {
             throw new NotFoundError('Workspace');
         }
+        const workspaceCurrency = normalizeCurrency(workspace.defaultCurrency);
+        if (dto.currency) {
+            assertSameCurrency(workspaceCurrency, dto.currency, 'workspace base vs cashbook');
+        }
 
         const cashbook = await this.prisma.$transaction(async (tx) => {
             const cb = await tx.cashbook.create({
                 data: {
                     name: dto.name,
                     description: dto.description,
-                    currency: dto.currency,
+                    currency: workspaceCurrency,
                     allowBackdate: dto.allowBackdate,
                     workspace: { connect: { id: workspaceId } },
                 },
@@ -92,7 +97,7 @@ export class CashbooksService {
                     action: AuditAction.CASHBOOK_CREATED,
                     resource: 'cashbook',
                     resourceId: cb.id,
-                    details: { name: dto.name, currency: dto.currency } as any,
+                    details: { name: dto.name, currency: workspaceCurrency } as any,
                 },
             });
 
@@ -107,11 +112,13 @@ export class CashbooksService {
         if (!cashbook || !cashbook.isActive) {
             throw new NotFoundError('Cashbook');
         }
+        if (dto.currency && dto.currency.toUpperCase() !== cashbook.currency) {
+            throw new AppError('Cashbook currency is locked to the workspace base currency', 400, 'BASE_CURRENCY_LOCKED');
+        }
 
         const updated = await this.cashbooksRepository.update(cashbookId, {
             ...(dto.name && { name: dto.name }),
             ...(dto.description !== undefined && { description: dto.description }),
-            ...(dto.currency && { currency: dto.currency }),
             ...(dto.allowBackdate !== undefined && { allowBackdate: dto.allowBackdate }),
         });
 

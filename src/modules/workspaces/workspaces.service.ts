@@ -4,6 +4,7 @@ import { WorkspacesRepository } from './workspaces.repository';
 import { NotFoundError, AuthorizationError, AppError } from '../../core/errors/AppError';
 import { WorkspaceType, WorkspaceRole, AuditAction } from '../../core/types';
 import { CreateWorkspaceDto, UpdateWorkspaceDto } from './workspaces.dto';
+import { assertEastAfricanCurrency } from '../../core/finance';
 
 @injectable()
 export class WorkspacesService {
@@ -25,12 +26,14 @@ export class WorkspacesService {
     }
 
     async createBusinessWorkspace(userId: string, dto: CreateWorkspaceDto) {
+        const defaultCurrency = assertEastAfricanCurrency(dto.defaultCurrency || 'UGX');
         const workspace = await this.prisma.$transaction(async (tx) => {
             const ws = await tx.workspace.create({
                 data: {
                     name: dto.name,
                     type: WorkspaceType.BUSINESS,
                     ownerId: userId,
+                    defaultCurrency,
                 },
                 include: {
                     owner: {
@@ -55,7 +58,7 @@ export class WorkspacesService {
                     action: AuditAction.WORKSPACE_CREATED,
                     resource: 'workspace',
                     resourceId: ws.id,
-                    details: { name: dto.name } as any,
+                    details: { name: dto.name, defaultCurrency } as any,
                 },
             });
 
@@ -81,7 +84,20 @@ export class WorkspacesService {
             }
         }
 
-        const updated = await this.workspacesRepository.update(workspaceId, dto);
+        if (dto.defaultCurrency !== undefined) {
+            const nextCurrency = assertEastAfricanCurrency(dto.defaultCurrency);
+            if (nextCurrency !== workspace.defaultCurrency) {
+                throw new AppError(
+                    'Workspace base currency cannot be changed after creation',
+                    400,
+                    'BASE_CURRENCY_LOCKED',
+                );
+            }
+        }
+
+        const updated = await this.workspacesRepository.update(workspaceId, {
+            ...(dto.name !== undefined && { name: dto.name }),
+        });
 
         await this.prisma.auditLog.create({
             data: {

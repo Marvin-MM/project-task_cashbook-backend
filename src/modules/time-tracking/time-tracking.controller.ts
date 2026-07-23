@@ -91,6 +91,27 @@ export class TimeTrackingController {
         } catch (e) { next(e); }
     }
 
+    async getAttendanceSettings(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.getAttendanceSettings(
+                req.params.workspaceId as string,
+                req.user.userId,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Attendance settings retrieved', data });
+        } catch (e) { next(e); }
+    }
+
+    async updateAttendanceSettings(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.updateAttendanceSettings(
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Attendance settings updated', data });
+        } catch (e) { next(e); }
+    }
+
     async startTimer(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             const data = await this.service.startTimer(
@@ -140,6 +161,29 @@ export class TimeTrackingController {
                 req.user.userId,
             );
             res.status(StatusCodes.OK).json({ success: true, message: 'Active session retrieved', data: data ?? null });
+        } catch (e) { next(e); }
+    }
+
+    async createWorkSession(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.createWorkSession(
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.CREATED).json({ success: true, message: 'Work session created', data });
+        } catch (e) { next(e); }
+    }
+
+    async updateWorkSession(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.updateWorkSession(
+                req.params.sessionId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Work session updated', data });
         } catch (e) { next(e); }
     }
 

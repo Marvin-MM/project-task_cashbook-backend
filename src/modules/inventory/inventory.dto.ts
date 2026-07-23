@@ -20,12 +20,18 @@ export const createInventoryItemSchema = z.object({
     category: z.string().max(100).optional(),
     currency: currencyCode.default('UGX'),
     commercialMode: z.enum(['SELL_ONLY', 'RENT_ONLY', 'SELL_AND_RENT']).default('SELL_ONLY'),
+    sellingPrice: decimalString.optional(),
     defaultSellingPrice: decimalString.optional(),
     defaultRentalRate: decimalString.optional(),
     defaultRentalPeriodUnit: z.enum(['DAY', 'WEEK', 'MONTH']).optional(),
     lowStockThreshold: z.coerce.number().int().min(0).optional(),
     costMethod: z.enum(['WEIGHTED_AVERAGE', 'FIFO', 'LIFO']).default('WEIGHTED_AVERAGE'),
     allowNegativeStock: z.boolean().default(false),
+    createProductService: z.boolean().optional().default(false),
+    productServiceType: z.enum(['PRODUCT', 'SERVICE']).optional(),
+    productServiceName: z.string().min(1).max(200).optional(),
+    productServiceDescription: z.string().max(1000).optional(),
+    productServicePrice: decimalString.optional(),
 });
 
 export const updateInventoryItemSchema = z.object({
