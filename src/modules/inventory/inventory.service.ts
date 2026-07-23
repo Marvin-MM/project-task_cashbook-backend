@@ -162,7 +162,7 @@ export class InventoryService {
             skip,
             take: limit,
             category: query.category,
-            isActive: query.isActive !== undefined ? query.isActive === 'true' : undefined,
+            isActive: query.isActive !== undefined ? query.isActive === 'true' : true,
             search: query.search,
             currency: query.currency,
             commercialMode: query.commercialMode,

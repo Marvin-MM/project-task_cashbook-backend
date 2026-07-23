@@ -56,13 +56,33 @@ export class CatalogRepository {
         }
     ) {
         const where: any = { workspaceId };
+        const AND: any[] = [];
+
         if (options.type) where.type = options.type;
-        if (options.isActive !== undefined) where.isActive = options.isActive;
+        
+        if (options.isActive !== undefined) {
+            where.isActive = options.isActive;
+            if (options.isActive === true) {
+                AND.push({
+                    OR: [
+                        { inventoryItemId: null },
+                        { inventoryItem: { isActive: true } }
+                    ]
+                });
+            }
+        }
+        
         if (options.search) {
-            where.OR = [
-                { name: { contains: options.search, mode: 'insensitive' } },
-                { description: { contains: options.search, mode: 'insensitive' } },
-            ];
+            AND.push({
+                OR: [
+                    { name: { contains: options.search, mode: 'insensitive' } },
+                    { description: { contains: options.search, mode: 'insensitive' } },
+                ]
+            });
+        }
+
+        if (AND.length > 0) {
+            where.AND = AND;
         }
 
         const [items, total] = await Promise.all([

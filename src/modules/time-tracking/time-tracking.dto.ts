@@ -79,11 +79,22 @@ export const clockOutSchema = z.object({
     locationLabel: z.string().max(300).optional(),
 });
 
+/** HH:MM 24-hour time string, e.g. "08:00" */
+const timeHHMMSchema = z
+    .string()
+    .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, 'Must be HH:MM in 24-hour format (e.g. "08:00")')
+    .optional()
+    .nullable();
+
 export const attendanceSettingsSchema = z.object({
     attendanceLocationName: z.string().trim().max(200).optional().nullable(),
     attendanceLatitude: latitudeSchema.optional().nullable(),
     attendanceLongitude: longitudeSchema.optional().nullable(),
     attendanceRadiusMeters: z.coerce.number().int().min(25).max(10000).optional().nullable(),
+    attendanceClockInStart: timeHHMMSchema,
+    attendanceClockInEnd: timeHHMMSchema,
+    attendanceClockOutStart: timeHHMMSchema,
+    attendanceClockOutEnd: timeHHMMSchema,
 }).superRefine((d, ctx) => {
     const hasAnyLocation =
         d.attendanceLatitude !== undefined ||
@@ -104,6 +115,33 @@ export const attendanceSettingsSchema = z.object({
             message: 'attendanceLatitude, attendanceLongitude, and attendanceRadiusMeters must be set together',
             path: ['attendanceLatitude'],
         });
+    }
+
+    // Time window pairs must be complete: either both sides set or both cleared
+    const clockInPairs: [string, string][] = [
+        ['attendanceClockInStart', 'attendanceClockInEnd'],
+        ['attendanceClockOutStart', 'attendanceClockOutEnd'],
+    ];
+    for (const [start, end] of clockInPairs) {
+        const s = d[start as keyof typeof d] as string | null | undefined;
+        const e = d[end as keyof typeof d] as string | null | undefined;
+        const startSet = s != null;
+        const endSet = e != null;
+        if (startSet !== endSet) {
+            ctx.addIssue({
+                code: 'custom',
+                message: `${start} and ${end} must be set together`,
+                path: [start],
+            });
+        }
+        // Ensure start < end when both provided
+        if (startSet && endSet && s! >= e!) {
+            ctx.addIssue({
+                code: 'custom',
+                message: `${start} must be before ${end}`,
+                path: [start],
+            });
+        }
     }
 });
 

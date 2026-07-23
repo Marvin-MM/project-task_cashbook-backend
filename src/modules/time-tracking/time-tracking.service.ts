@@ -92,10 +92,36 @@ export class TimeTrackingService {
                 attendanceLatitude: true,
                 attendanceLongitude: true,
                 attendanceRadiusMeters: true,
+                attendanceClockInStart: true,
+                attendanceClockInEnd: true,
+                attendanceClockOutStart: true,
+                attendanceClockOutEnd: true,
             },
         });
         if (!workspace || !workspace.isActive) throw new NotFoundError('Workspace');
         return workspace;
+    }
+
+    /** Enforce allowed clock-in/out time window if configured on the workspace. */
+    private enforceAttendanceTimeWindow(
+        policy: Awaited<ReturnType<TimeTrackingService['getWorkspaceAttendancePolicy']>>,
+        action: 'clock in' | 'clock out',
+    ) {
+        const start = action === 'clock in' ? policy.attendanceClockInStart : policy.attendanceClockOutStart;
+        const end   = action === 'clock in' ? policy.attendanceClockInEnd   : policy.attendanceClockOutEnd;
+        if (!start || !end) return; // no time window configured
+
+        // Current time expressed as HH:MM (server-local). We compare string-wise since HH:MM is lexicographically sortable.
+        const now = new Date();
+        const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+        if (hhmm < start || hhmm > end) {
+            throw new AppError(
+                `You can only ${action} between ${start} and ${end}`,
+                400,
+                'OUTSIDE_ATTENDANCE_TIME_WINDOW',
+            );
+        }
     }
 
     private enforceAttendanceLocation(
@@ -539,6 +565,14 @@ export class TimeTrackingService {
             dto.attendanceLongitude === null &&
             dto.attendanceRadiusMeters === null;
 
+        // Build time-window patch (always partial — admin can update independently of location)
+        const timeWindowPatch = {
+            ...(dto.attendanceClockInStart !== undefined && { attendanceClockInStart: dto.attendanceClockInStart }),
+            ...(dto.attendanceClockInEnd !== undefined && { attendanceClockInEnd: dto.attendanceClockInEnd }),
+            ...(dto.attendanceClockOutStart !== undefined && { attendanceClockOutStart: dto.attendanceClockOutStart }),
+            ...(dto.attendanceClockOutEnd !== undefined && { attendanceClockOutEnd: dto.attendanceClockOutEnd }),
+        };
+
         const updated = await this.prisma.workspace.update({
             where: { id: workspaceId },
             data: cleared
@@ -547,6 +581,7 @@ export class TimeTrackingService {
                     attendanceLatitude: null,
                     attendanceLongitude: null,
                     attendanceRadiusMeters: null,
+                    ...timeWindowPatch,
                 }
                 : {
                     ...(dto.attendanceLocationName !== undefined && {
@@ -561,6 +596,7 @@ export class TimeTrackingService {
                     ...(dto.attendanceRadiusMeters !== undefined && {
                         attendanceRadiusMeters: dto.attendanceRadiusMeters,
                     }),
+                    ...timeWindowPatch,
                 },
             select: {
                 id: true,
@@ -568,6 +604,10 @@ export class TimeTrackingService {
                 attendanceLatitude: true,
                 attendanceLongitude: true,
                 attendanceRadiusMeters: true,
+                attendanceClockInStart: true,
+                attendanceClockInEnd: true,
+                attendanceClockOutStart: true,
+                attendanceClockOutEnd: true,
             },
         });
 
@@ -584,6 +624,7 @@ export class TimeTrackingService {
 
         return updated;
     }
+
 
     // ─── Timer ────────────────────────────────────────────────
     async startTimer(workspaceId: string, userId: string, dto: StartTimerDto) {
@@ -717,6 +758,7 @@ export class TimeTrackingService {
     async clockIn(workspaceId: string, userId: string, dto: ClockInDto) {
         await this.assertWorkspaceMember(workspaceId, userId);
         const policy = await this.getWorkspaceAttendancePolicy(workspaceId);
+        this.enforceAttendanceTimeWindow(policy, 'clock in');
         this.enforceAttendanceLocation(policy, dto, 'clock in');
 
         const existing = await this.prisma.workSession.findFirst({
@@ -748,8 +790,8 @@ export class TimeTrackingService {
                         clockInLocationLabel: dto.locationLabel ?? null,
                     },
                 });
-            } catch (error) {
-                if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+            } catch (error: any) {
+                if (error.code === 'P2002') {
                     throw new ConflictError('You are already clocked in to this workspace.');
                 }
                 throw error;
@@ -777,6 +819,7 @@ export class TimeTrackingService {
     async clockOut(workspaceId: string, userId: string, dto: ClockOutDto) {
         await this.assertWorkspaceMember(workspaceId, userId);
         const policy = await this.getWorkspaceAttendancePolicy(workspaceId);
+        this.enforceAttendanceTimeWindow(policy, 'clock out');
         this.enforceAttendanceLocation(policy, dto, 'clock out');
 
         const session = await this.repo.findActiveSession(userId, workspaceId);

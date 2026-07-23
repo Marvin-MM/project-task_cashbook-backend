@@ -95,10 +95,18 @@ model Workspace {
   ownerId         String        @map("owner_id") @db.Uuid
   /// Workspace base currency. The app does not perform FX conversion.
   defaultCurrency String        @default("UGX") @map("default_currency")
-  attendanceLocationName String? @map("attendance_location_name")
-  attendanceLatitude     Float?  @map("attendance_latitude")
-  attendanceLongitude    Float?  @map("attendance_longitude")
-  attendanceRadiusMeters Int?    @map("attendance_radius_meters")
+  attendanceLocationName  String? @map("attendance_location_name")
+  attendanceLatitude      Float?  @map("attendance_latitude")
+  attendanceLongitude     Float?  @map("attendance_longitude")
+  attendanceRadiusMeters  Int?    @map("attendance_radius_meters")
+  /// Allowed clock-in window start (local time HH:MM, 24h). Null = no restriction.
+  attendanceClockInStart  String? @map("attendance_clock_in_start")
+  /// Allowed clock-in window end (local time HH:MM, 24h). Null = no restriction.
+  attendanceClockInEnd    String? @map("attendance_clock_in_end")
+  /// Allowed clock-out window start (local time HH:MM, 24h). Null = no restriction.
+  attendanceClockOutStart String? @map("attendance_clock_out_start")
+  /// Allowed clock-out window end (local time HH:MM, 24h). Null = no restriction.
+  attendanceClockOutEnd   String? @map("attendance_clock_out_end")
   isActive        Boolean       @default(true) @map("is_active")
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")

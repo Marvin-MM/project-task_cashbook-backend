@@ -112,6 +112,7 @@ export class CatalogService {
     async getProductService(id: string, workspaceId: string) {
         const item = await this.repository.findProductServiceById(id);
         if (!item || item.workspaceId !== workspaceId || !item.isActive) throw new NotFoundError('Product/Service');
+        if (item.inventoryItem && !item.inventoryItem.isActive) throw new NotFoundError('Product/Service');
         return item;
     }
 
