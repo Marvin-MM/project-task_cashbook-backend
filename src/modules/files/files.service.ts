@@ -51,6 +51,57 @@ export class FilesService {
         }
     }
 
+    /**
+     * Attach a file to a task, a task report, or an expense claim.
+     *
+     * Separate entry point from the cashbook path above because the ownership
+     * check is different in kind — there is no entry to verify, and the caller
+     * has already been authorized against the owning record. What this adds is
+     * the guarantee that the row it writes satisfies attachments_exactly_one_owner.
+     */
+    async uploadOwnedAttachment(
+        owner: { taskId: string } | { taskReportId: string } | { expenseClaimId: string },
+        userId: string,
+        file: Express.Multer.File,
+    ) {
+        try {
+            const { objectName, mimeType, fileSize } = await this.storageService.processAndUpload(file);
+
+            return await this.prisma.attachment.create({
+                data: {
+                    ...owner,
+                    uploadedById: userId,
+                    fileName: file.originalname,
+                    mimeType,
+                    fileSize,
+                    s3Key: objectName,
+                },
+            });
+        } catch (error) {
+            if (error instanceof AppError) throw error;
+            logger.error('File upload failed', { error, owner });
+            throw new AppError('File upload failed', 500, 'UPLOAD_FAILED');
+        }
+    }
+
+    /** Files on one owner, newest first. */
+    async listOwnedAttachments(
+        owner: { taskId: string } | { taskReportId: string } | { expenseClaimId: string },
+    ) {
+        return this.prisma.attachment.findMany({
+            where: { ...owner, isDeleted: false },
+            orderBy: { createdAt: 'desc' },
+            select: {
+                id: true,
+                fileName: true,
+                fileSize: true,
+                mimeType: true,
+                createdAt: true,
+                uploadedById: true,
+            },
+        });
+    }
+
     async getAttachments(entryId: string) {
         return this.prisma.attachment.findMany({
             where: { 

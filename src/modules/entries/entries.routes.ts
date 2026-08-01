@@ -4,6 +4,7 @@ import { EntriesController } from './entries.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
 import { requireCashbookMember } from '../../middlewares/authorize';
+import { idempotency } from '../../middlewares/idempotency';
 import { CashbookPermission } from '../../core/types/permissions';
 import {
     createEntrySchema,
@@ -17,6 +18,18 @@ const router = Router({ mergeParams: true });
 const entriesController = container.resolve(EntriesController);
 
 router.use(authenticate as any);
+
+/*
+ * Literal paths first. `/:entryId/cashbook/:cashbookId` below has the same
+ * shape as `/delete-requests/cashbook/:cashbookId`, and Express matches in
+ * declaration order — with the dynamic one first, listing delete requests
+ * called getOne with entryId = "delete-requests" and went to Prisma with it.
+ */
+router.get(
+    '/delete-requests/cashbook/:cashbookId',
+    requireCashbookMember(CashbookPermission.APPROVE_DELETE) as any,
+    entriesController.getDeleteRequests.bind(entriesController) as any
+);
 
 // ─── Entry CRUD ────────────────────────────────────────
 router.get(
@@ -35,6 +48,7 @@ router.get(
 router.post(
     '/cashbook/:cashbookId',
     requireCashbookMember(CashbookPermission.CREATE_ENTRY) as any,
+    idempotency('POST /entries/cashbook/:cashbookId') as any,
     validate(createEntrySchema),
     entriesController.create.bind(entriesController) as any
 );
@@ -42,6 +56,7 @@ router.post(
 router.patch(
     '/:entryId/cashbook/:cashbookId',
     requireCashbookMember(CashbookPermission.UPDATE_ENTRY) as any,
+    idempotency('PATCH /entries/:entryId/cashbook/:cashbookId') as any,
     validate(updateEntrySchema),
     entriesController.update.bind(entriesController) as any
 );
@@ -49,17 +64,12 @@ router.patch(
 router.delete(
     '/:entryId/cashbook/:cashbookId',
     requireCashbookMember(CashbookPermission.DELETE_ENTRY) as any,
+    idempotency('DELETE /entries/:entryId/cashbook/:cashbookId') as any,
     validate(deleteEntrySchema),
     entriesController.delete.bind(entriesController) as any
 );
 
 // ─── Delete Requests ───────────────────────────────────
-router.get(
-    '/delete-requests/cashbook/:cashbookId',
-    requireCashbookMember(CashbookPermission.APPROVE_DELETE) as any,
-    entriesController.getDeleteRequests.bind(entriesController) as any
-);
-
 router.post(
     '/delete-requests/:requestId/review/cashbook/:cashbookId',
     requireCashbookMember(CashbookPermission.APPROVE_DELETE) as any,

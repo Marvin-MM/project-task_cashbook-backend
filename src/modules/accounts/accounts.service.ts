@@ -11,12 +11,22 @@ import { AppError, NotFoundError } from '../../core/errors/AppError';
 import { AuditAction } from '../../core/types';
 import { Decimal } from '@prisma/client/runtime/library';
 import { assertSameCurrency, normalizeCurrency, recomputeWalletBalance } from '../../core/finance';
+import { withFinancialTransaction } from '../../core/db/transaction';
+import { acquireLocks } from '../../core/db/locks';
+import { ensureWalletLedgerAccount } from '../../core/ledger/coa.seed';
+import { config } from '../../config';
+import { PostingService } from '../../core/ledger/posting.service';
+import {
+    buildOpeningBalanceJournal,
+    buildTransferJournal,
+} from '../../core/ledger/rules/wallet.rules';
 
 @injectable()
 export class AccountsService {
     constructor(
         private repository: AccountsRepository,
         @inject('PrismaClient') private prisma: PrismaClient,
+        private postingService: PostingService,
     ) { }
 
     async createAccount(workspaceId: string, userId: string, data: CreateAccountBody) {
@@ -48,10 +58,16 @@ export class AccountsService {
                     workspaceId,
                     ...accountData,
                     currency: workspaceCurrency,
-                    balance: initialAmount,
+                    // Starts at zero; the opening-balance journal below moves it.
+                    // Setting it here as well would double the balance.
+                    balance: config.LEDGER_MODE === 'on' ? new Decimal(0) : initialAmount,
                 },
                 include: { accountType: true }
             });
+
+            // Every wallet gets a ledger account, so wallet movements are real
+            // journal lines rather than a parallel balance.
+            await ensureWalletLedgerAccount(tx, account, accountType.classification);
 
             await tx.auditLog.create({
                 data: {
@@ -78,8 +94,28 @@ export class AccountsService {
                         type: transactionType,
                         amount: absAmount,
                         description: 'Initial Balance',
+                        // Opening balance is as-of account creation.
+                        transactionDate: account.createdAt,
                     }
                 });
+
+                // Dr Wallet / Cr Opening Balance Equity — the standard way to
+                // introduce a starting balance without inventing income.
+                if (config.LEDGER_MODE !== 'off') {
+                    await this.postingService.post(
+                        tx,
+                        buildOpeningBalanceJournal({
+                            workspaceId,
+                            accountId: account.id,
+                            amount: initialAmount,
+                            accountName: account.name,
+                            openedAt: account.createdAt,
+                            currency: account.currency,
+                            createdById: userId,
+                        }),
+                        { applyCaches: config.LEDGER_MODE === 'on', onDuplicate: 'RETURN_EXISTING' },
+                    );
+                }
 
                 // Generic audit log for this opening transaction
                 await tx.auditLog.create({
@@ -124,16 +160,30 @@ export class AccountsService {
         });
     }
 
-    async getWorkspaceAccounts(workspaceId: string) {
-        return this.repository.findAllByWorkspace(workspaceId);
+    /**
+     * List the workspace's wallets.
+     *
+     * `includeBalances` is false for a plain member: they need wallet identity
+     * to attach an entry to one and to read it back, but the organisation's cash
+     * position is not theirs to see. Stripping the field server-side means the
+     * data never leaves the process, rather than relying on the UI to hide it.
+     */
+    async getWorkspaceAccounts(workspaceId: string, includeBalances = true) {
+        const accounts = await this.repository.findAllByWorkspace(workspaceId);
+        if (includeBalances) return accounts;
+
+        return accounts.map(({ balance, ...rest }) => rest);
     }
 
-    async getAccountById(id: string, workspaceId: string) {
+    async getAccountById(id: string, workspaceId: string, includeBalances = true) {
         const account = await this.repository.findById(id);
         if (!account || account.workspaceId !== workspaceId) {
             throw new NotFoundError('Account');
         }
-        return account;
+        if (includeBalances) return account;
+
+        const { balance, ...rest } = account;
+        return rest;
     }
 
     async updateAccount(id: string, workspaceId: string, userId: string, data: UpdateAccountBody) {
@@ -319,15 +369,12 @@ export class AccountsService {
             throw new AppError('Fee cannot be negative', 400, 'INVALID_FEE');
         }
 
-        return this.prisma.$transaction(async (tx) => {
-            // Lock both accounts in stable order to avoid deadlocks
-            const [firstId, secondId] =
-                data.fromAccountId < data.toAccountId
-                    ? [data.fromAccountId, data.toAccountId]
-                    : [data.toAccountId, data.fromAccountId];
-
-            await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${firstId}::uuid FOR UPDATE`;
-            await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${secondId}::uuid FOR UPDATE`;
+        return withFinancialTransaction(this.prisma, async (tx) => {
+            // acquireLocks sorts ids internally, so both directions of a transfer
+            // take the same lock order.
+            await acquireLocks(tx, [
+                { target: 'WALLET_ACCOUNT', ids: [data.fromAccountId, data.toAccountId] },
+            ]);
 
             const from = await tx.account.findUnique({ where: { id: data.fromAccountId } });
             const to = await tx.account.findUnique({ where: { id: data.toAccountId } });
@@ -358,14 +405,7 @@ export class AccountsService {
                 );
             }
 
-            await tx.account.update({
-                where: { id: from.id },
-                data: { balance: { decrement: totalDebit } },
-            });
-            await tx.account.update({
-                where: { id: to.id },
-                data: { balance: { increment: amount } },
-            });
+            const transferredAt = data.transferredAt ? new Date(data.transferredAt) : new Date();
 
             const transfer = await tx.accountTransfer.create({
                 data: {
@@ -375,10 +415,32 @@ export class AccountsService {
                     amount,
                     feeAmount: feeAmount.greaterThan(0) ? feeAmount : null,
                     description: data.description,
-                    transferredAt: data.transferredAt ? new Date(data.transferredAt) : new Date(),
+                    transferredAt,
                     createdById: userId,
                 },
             });
+
+            // One balanced journal moves both wallets and books the fee as a
+            // real expense. Previously the fee reduced the source wallet but
+            // appeared in no expense total anywhere.
+            if (config.LEDGER_MODE !== 'off') {
+                await this.postingService.post(
+                    tx,
+                    buildTransferJournal({
+                        workspaceId,
+                        transferId: transfer.id,
+                        fromAccountId: from.id,
+                        toAccountId: to.id,
+                        amount,
+                        feeAmount,
+                        description: data.description || `Transfer ${from.name} → ${to.name}`,
+                        transferredAt,
+                        currency: from.currency,
+                        createdById: userId,
+                    }),
+                    { applyCaches: config.LEDGER_MODE === 'on', onDuplicate: 'RETURN_EXISTING' },
+                );
+            }
 
             await tx.financialAuditLog.create({
                 data: {
@@ -423,8 +485,8 @@ export class AccountsService {
      * Recompute wallet balance from non-voided account transactions + transfers.
      */
     async recalculateAccountBalance(accountId: string, workspaceId: string, userId: string) {
-        return this.prisma.$transaction(async (tx) => {
-            await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${accountId}::uuid FOR UPDATE`;
+        return withFinancialTransaction(this.prisma, async (tx) => {
+            await acquireLocks(tx, [{ target: 'WALLET_ACCOUNT', ids: [accountId] }]);
             const account = await tx.account.findUnique({ where: { id: accountId } });
             if (!account || account.workspaceId !== workspaceId) {
                 throw new NotFoundError('Account');

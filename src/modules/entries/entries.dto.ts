@@ -65,6 +65,8 @@ export const entryQuerySchema = z.object({
     endDate: z.string().datetime().optional(),
     sortBy: z.enum(['entryDate', 'amount', 'createdAt']).default('entryDate'),
     sortOrder: z.enum(['asc', 'desc']).default('desc'),
+    /** Show reversed entries alongside live ones. Default false. */
+    includeReversed: z.coerce.boolean().default(false),
 });
 
 export type CreateEntryDto = z.infer<typeof createEntrySchema>;

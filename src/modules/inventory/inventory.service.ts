@@ -959,8 +959,14 @@ export class InventoryService {
         referenceType: InventoryReferenceType,
         referenceId: string,
     ) {
+        // Only original movements, never the compensating rows this function
+        // itself writes. Reversal rows carry the SAME referenceType/referenceId
+        // as what they undo, so without `isReversal: false` a second call would
+        // re-read them and reverse the reversals — doubling stock and skewing
+        // average cost. `reversedBy: null` makes the whole function idempotent:
+        // reversing twice is a no-op rather than a corruption.
         const linkedTransactions = await tx.inventoryTransaction.findMany({
-            where: { referenceType, referenceId },
+            where: { referenceType, referenceId, isReversal: false, reversedBy: null },
             orderBy: { createdAt: 'asc' },
         });
 
@@ -1004,6 +1010,8 @@ export class InventoryService {
                         costOfGoodsSold: cogs,
                         referenceType,
                         referenceId,
+                        isReversal: true,
+                        reversesTransactionId: invTx.id,
                         notes: reversalNotes,
                         createdById: invTx.createdById,
                     },
@@ -1054,6 +1062,8 @@ export class InventoryService {
                         totalCost,
                         referenceType,
                         referenceId,
+                        isReversal: true,
+                        reversesTransactionId: invTx.id,
                         notes: reversalNotes,
                         createdById: invTx.createdById,
                     },

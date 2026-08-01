@@ -12,6 +12,10 @@ import {
     WorkspaceType,
 } from '../core/types';
 import { CashbookPermission, hasPermission } from '../core/types/permissions';
+import {
+    WorkspacePermission,
+    hasWorkspacePermission,
+} from '../core/types/workspace-permissions';
 import { logger } from '../utils/logger';
 
 const prisma = getPrismaClient();
@@ -43,13 +47,32 @@ async function logPermissionDenied(
 }
 
 // ─── Super Admin Guard ─────────────────────────────────
+/**
+ * Re-reads isSuperAdmin and isActive from the database on every request.
+ *
+ * The JWT carries an isSuperAdmin claim, but trusting it means a revoked
+ * superadmin keeps platform access until their access token expires — and a
+ * deactivated account keeps it too. For the most privileged surface in the
+ * product, one extra query is the right trade.
+ */
 export function requireSuperAdmin() {
     return async (req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> => {
         try {
-            if (!req.user?.isSuperAdmin) {
-                await logPermissionDenied(req.user?.userId, 'SUPER_ADMIN_ACCESS', 'system');
+            const userId = req.user?.userId;
+            if (!userId) {
                 throw new AuthorizationError('Super admin access required');
             }
+
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+                select: { isSuperAdmin: true, isActive: true },
+            });
+
+            if (!user?.isSuperAdmin || !user.isActive) {
+                await logPermissionDenied(userId, 'SUPER_ADMIN_ACCESS', 'system');
+                throw new AuthorizationError('Super admin access required');
+            }
+
             next();
         } catch (error) {
             next(error);
@@ -58,7 +81,35 @@ export function requireSuperAdmin() {
 }
 
 // ─── Workspace Membership Guard ────────────────────────
-export function requireWorkspaceMember(allowedRoles?: WorkspaceRole[]) {
+/**
+ * @param requirement A WorkspacePermission (preferred) or, for routes not yet
+ *   migrated, a raw role array. The permission form is what the matrix in
+ *   core/types/workspace-permissions.ts exists to serve.
+ */
+/**
+ * `anyOf` — the caller needs at least ONE of these permissions.
+ *
+ * Member management is why this exists: the route is reachable through two
+ * different grants (MANAGE_MEMBERS for owner/admin/HR, the narrower
+ * MANAGE_SUB_ACCOUNTANTS for accountants), and which roles each may then hand
+ * out is decided in members.service, not here. Expressing that as a single
+ * required permission forced one of the two groups out at the door.
+ */
+export interface AnyOfPermissions {
+    anyOf: WorkspacePermission[];
+}
+
+const isAnyOf = (r: unknown): r is AnyOfPermissions =>
+    typeof r === 'object' && r !== null && Array.isArray((r as AnyOfPermissions).anyOf);
+
+export function requireWorkspaceMember(
+    requirement?: WorkspacePermission | WorkspaceRole[] | AnyOfPermissions,
+) {
+    const requiredPermission =
+        typeof requirement === 'string' ? (requirement as WorkspacePermission) : undefined;
+    const anyOfPermissions = isAnyOf(requirement) ? requirement.anyOf : undefined;
+    const allowedRoles = Array.isArray(requirement) ? requirement : undefined;
+
     return async (req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> => {
         try {
             const workspaceId = req.params.workspaceId as string;
@@ -114,6 +165,25 @@ export function requireWorkspaceMember(allowedRoles?: WorkspaceRole[]) {
                 throw new AuthorizationError('Insufficient workspace role');
             }
 
+            if (requiredPermission && !hasWorkspacePermission(userRole, requiredPermission)) {
+                await logPermissionDenied(userId, requiredPermission, 'workspace', workspaceId, {
+                    userRole,
+                });
+                throw new AuthorizationError(
+                    `You do not have the '${requiredPermission}' permission in this workspace`,
+                );
+            }
+
+            if (anyOfPermissions
+                && !anyOfPermissions.some((p) => hasWorkspacePermission(userRole, p))) {
+                await logPermissionDenied(
+                    userId, anyOfPermissions.join('|'), 'workspace', workspaceId, { userRole },
+                );
+                throw new AuthorizationError(
+                    `You do not have any of the '${anyOfPermissions.join("', '")}' permissions in this workspace`,
+                );
+            }
+
             (req as any).workspace = workspace;
             (req as any).workspaceRole = userRole;
             next();
@@ -166,12 +236,36 @@ export function requireCashbookMember(requiredPermission?: CashbookPermission) {
                 },
             });
 
-            if (!cbMembership) {
+            // Org roles with ACCESS_ALL_CASHBOOKS reach every book implicitly.
+            // Without this, a workspace OWNER could be locked out of a book
+            // created by a MEMBER, because the creator becomes its PRIMARY_ADMIN
+            // and nothing added the owner as a member.
+            let orgRole: WorkspaceRole | null = null;
+            if (workspace) {
+                if (workspace.ownerId === userId) {
+                    orgRole = WorkspaceRole.OWNER;
+                } else {
+                    const wsMembership = await prisma.workspaceMember.findUnique({
+                        where: { workspaceId_userId: { workspaceId: workspace.id, userId } },
+                        select: { role: true },
+                    });
+                    orgRole = (wsMembership?.role as WorkspaceRole) ?? null;
+                }
+            }
+
+            const hasOrgWideAccess = hasWorkspacePermission(
+                orgRole,
+                WorkspacePermission.ACCESS_ALL_CASHBOOKS,
+            );
+
+            if (!cbMembership && !hasOrgWideAccess) {
                 await logPermissionDenied(userId, 'CASHBOOK_ACCESS', 'cashbook', cashbookId);
                 throw new AuthorizationError('You do not have access to this cashbook');
             }
 
-            const userRole = cbMembership.role as CashbookRole;
+            const userRole = cbMembership
+                ? (cbMembership.role as CashbookRole)
+                : CashbookRole.PRIMARY_ADMIN;
 
             if (requiredPermission && !hasPermission(userRole, requiredPermission)) {
                 await logPermissionDenied(userId, requiredPermission, 'cashbook', cashbookId, {
@@ -185,7 +279,45 @@ export function requireCashbookMember(requiredPermission?: CashbookPermission) {
             (req as any).cashbook = cashbook;
             (req as any).cashbookRole = userRole;
             (req as any).workspaceId = cashbook.workspaceId;
+            // Downstream services need the org role too, e.g. to decide whether
+            // a sub-accountant may see this book at all.
+            (req as any).workspaceRole = orgRole;
             next();
+        } catch (error) {
+            next(error);
+        }
+    };
+}
+
+// ─── Entry-derived Cashbook Guard ──────────────────────
+/**
+ * Guard a route that identifies an entry but not its cashbook.
+ *
+ * Resolves the entry's cashbook, then delegates to `requireCashbookMember` so
+ * the same permission matrix applies. Exists because `GET /files/entries/:entryId`
+ * carries no cashbookId and was consequently reachable by any authenticated
+ * user, for any entry in any workspace.
+ */
+export function requireEntryAccess(requiredPermission?: CashbookPermission) {
+    return async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const entryId = req.params.entryId as string;
+            if (!entryId) {
+                throw new AuthorizationError('Entry ID is required');
+            }
+
+            const entry = await prisma.entry.findUnique({
+                where: { id: entryId },
+                select: { cashbookId: true },
+            });
+
+            if (!entry) {
+                throw new NotFoundError('Entry');
+            }
+
+            // requireCashbookMember reads cashbookId off params.
+            req.params.cashbookId = entry.cashbookId;
+            return requireCashbookMember(requiredPermission)(req, res, next);
         } catch (error) {
             next(error);
         }

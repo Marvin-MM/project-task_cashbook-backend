@@ -7,7 +7,6 @@ import PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
 import { logger } from '../../utils/logger';
 import { dbBreaker } from '../../config/breakers';
-import { reportsQueue } from '../../config/queues';
 
 @injectable()
 export class ReportsService {
@@ -15,57 +14,7 @@ export class ReportsService {
         @inject('PrismaClient') private prisma: PrismaClient,
     ) { }
 
-    /**
-     * Queue an async report generation job.
-     * Returns immediately with the job ID for status polling.
-     */
-    async queueReport(cashbookId: string, userId: string, recipientEmail: string, query: ReportQueryDto) {
-        const cashbook = await this.prisma.cashbook.findUnique({
-            where: { id: cashbookId },
-        });
 
-        if (!cashbook || !cashbook.isActive) {
-            throw new NotFoundError('Cashbook');
-        }
-
-        const job = await reportsQueue.add('generate-report', {
-            cashbookId,
-            userId,
-            recipientEmail,
-            query: {
-                startDate: query.startDate,
-                endDate: query.endDate,
-                type: query.type,
-                categoryId: query.categoryId,
-                format: query.format,
-            },
-        });
-
-        logger.info('Report job queued', { jobId: job.id, cashbookId });
-
-        return { jobId: job.id, status: 'queued' };
-    }
-
-    /**
-     * Check the status of a queued report job.
-     */
-    async getJobStatus(jobId: string) {
-        const job = await reportsQueue.getJob(jobId);
-        if (!job) {
-            throw new NotFoundError('Report job');
-        }
-
-        const state = await job.getState();
-        const progress = job.progress;
-
-        return {
-            jobId: job.id,
-            status: state,
-            progress,
-            result: job.returnvalue,
-            failedReason: job.failedReason,
-        };
-    }
 
     /**
      * Synchronous report generation for immediate download.

@@ -193,4 +193,161 @@ export class TasksController {
             res.status(StatusCodes.OK).json({ success: true, message: 'Activity retrieved', data });
         } catch (e) { next(e); }
     }
+
+    // ─── Assignment requests ──────────────────────────────
+
+    async requestAssignment(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.requestAssignment(
+                req.params.taskId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.CREATED).json({ success: true, message: 'Request sent', data });
+        } catch (e) { next(e); }
+    }
+
+    async listAssignmentRequests(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.listAssignmentRequests(
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.query as any,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Requests retrieved', data });
+        } catch (e) { next(e); }
+    }
+
+    async reviewAssignmentRequest(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.reviewAssignmentRequest(
+                req.params.requestId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: req.body.approve ? 'Request approved' : 'Request declined',
+                data,
+            });
+        } catch (e) { next(e); }
+    }
+
+    async withdrawAssignmentRequest(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.withdrawAssignmentRequest(
+                req.params.requestId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Request withdrawn', data });
+        } catch (e) { next(e); }
+    }
+
+    // ─── End-of-task reports ──────────────────────────────
+
+    async submitReport(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.submitReport(
+                req.params.taskId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.CREATED).json({
+                success: true,
+                message: 'Report submitted for review',
+                data,
+            });
+        } catch (e) { next(e); }
+    }
+
+    async listReports(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.listReports(
+                req.params.taskId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Reports retrieved', data });
+        } catch (e) { next(e); }
+    }
+
+    async reviewReport(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.reviewReport(
+                req.params.reportId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: req.body.approve ? 'Report approved' : 'Report sent back',
+                data,
+            });
+        } catch (e) { next(e); }
+    }
+
+    // ─── Attachments ──────────────────────────────────────
+
+    async attachToTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            if (!req.file) {
+                res.status(StatusCodes.BAD_REQUEST).json({
+                    success: false, message: 'No file was uploaded',
+                });
+                return;
+            }
+            const data = await this.service.attachToTask(
+                req.params.taskId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.file,
+            );
+            res.status(StatusCodes.CREATED).json({ success: true, message: 'File attached', data });
+        } catch (e) { next(e); }
+    }
+
+    async listTaskAttachments(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.listTaskAttachments(
+                req.params.taskId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Attachments retrieved', data });
+        } catch (e) { next(e); }
+    }
+
+    async attachToReport(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            if (!req.file) {
+                res.status(StatusCodes.BAD_REQUEST).json({
+                    success: false, message: 'No file was uploaded',
+                });
+                return;
+            }
+            const data = await this.service.attachToReport(
+                req.params.reportId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+                req.file,
+            );
+            res.status(StatusCodes.CREATED).json({ success: true, message: 'File attached', data });
+        } catch (e) { next(e); }
+    }
+
+    async listReportAttachments(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.listReportAttachments(
+                req.params.reportId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Attachments retrieved', data });
+        } catch (e) { next(e); }
+    }
 }

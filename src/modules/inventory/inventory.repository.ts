@@ -147,6 +147,9 @@ export class InventoryRepository {
             workspaceId,
             transactionType: { in: ['SALE', 'RETURN_OUT'] },
             costOfGoodsSold: { not: null },
+            // A sale whose source entry was edited or deleted has been reversed;
+            // its COGS is no longer real and must not inflate gross margin.
+            reversedBy: null,
         };
 
         if (startDate || endDate) {

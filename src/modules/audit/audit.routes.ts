@@ -2,9 +2,9 @@ import { Router } from 'express';
 import { container } from 'tsyringe';
 import { AuditController } from './audit.controller';
 import { authenticate } from '../../middlewares/authenticate';
+import { WorkspacePermission } from '../../core/types/workspace-permissions';
 import { requireWorkspaceMember, requireCashbookMember } from '../../middlewares/authorize';
 import { CashbookPermission } from '../../core/types/permissions';
-import { WorkspaceRole } from '../../core/types';
 
 const router = Router({ mergeParams: true });
 const auditController = container.resolve(AuditController);
@@ -14,7 +14,7 @@ router.use(authenticate as any);
 // Workspace audit logs (owner/admin only)
 router.get(
     '/workspace/:workspaceId',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_AUDIT_LOG) as any,
     auditController.getWorkspaceAuditLogs.bind(auditController) as any
 );
 

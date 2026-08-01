@@ -208,4 +208,19 @@ export class TimeTrackingController {
             res.status(StatusCodes.OK).json({ success: true, message: 'Clocked out', data });
         } catch (e) { next(e); }
     }
+
+    /**
+     * Not workspace-scoped, deliberately — the whole point is to reach a session
+     * in a workspace the caller cannot currently address.
+     */
+    async closeMyOpenSession(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.service.closeMyOpenSession(req.user.userId);
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Your open session was closed',
+                data,
+            });
+        } catch (e) { next(e); }
+    }
 }

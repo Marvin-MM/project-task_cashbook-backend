@@ -1,0 +1,24 @@
+/*
+ * A second build, for the operational scripts.
+ *
+ * They cannot ride along in the main one: `tsconfig.json` sets `rootDir: ./src`
+ * so `dist/server.js` sits at the top of dist, and widening the root to `.`
+ * would move it to `dist/src/server.js` and break `npm start`, the Dockerfile
+ * CMD and the deploy workflow together.
+ *
+ * So the scripts compile separately, to their own directory, with `rootDir: .`
+ * — which is why the output is `dist-scripts/scripts/*.js` importing
+ * `dist-scripts/src/*.js`. That duplicates the app's compiled output on disk
+ * (a few MB) and buys the ability to run a backfill with plain `node`, inside
+ * the production image, with no dev dependencies present.
+ */
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "rootDir": ".",
+        "outDir": "./dist-scripts",
+        "noEmit": false
+    },
+    "include": ["scripts/**/*", "src/**/*"],
+    "exclude": ["node_modules", "dist", "dist-scripts", "src/test/**/*", "**/*.test.ts"]
+}

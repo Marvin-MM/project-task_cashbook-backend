@@ -2,7 +2,7 @@ import { injectable } from 'tsyringe';
 import { Response, NextFunction } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { CashbooksService } from './cashbooks.service';
-import { AuthenticatedRequest, ApiResponse } from '../../core/types';
+import { AuthenticatedRequest, ApiResponse, WorkspaceRole } from '../../core/types';
 
 @injectable()
 export class CashbooksController {
@@ -12,7 +12,8 @@ export class CashbooksController {
         try {
             const cashbooks = await this.cashbooksService.getCashbooks(
                 req.params.workspaceId as string,
-                req.user.userId
+                req.user.userId,
+                (req as { workspaceRole?: WorkspaceRole }).workspaceRole,
             );
             res.status(StatusCodes.OK).json({
                 success: true,

@@ -4,7 +4,7 @@ import { CatalogController } from './catalog.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
 import { requireWorkspaceMember } from '../../middlewares/authorize';
-import { WorkspaceRole } from '../../core/types';
+import { WorkspacePermission } from '../../core/types/workspace-permissions';
 import {
     createTaxSchema,
     updateTaxSchema,
@@ -22,33 +22,33 @@ router.use(authenticate as any);
 
 router.get(
     '/taxes',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_CATALOG) as any,
     controller.getTaxes.bind(controller) as any
 );
 
 router.get(
     '/taxes/:taxId',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_CATALOG) as any,
     controller.getTax.bind(controller) as any
 );
 
 router.post(
     '/taxes',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_CATALOG) as any,
     validate(createTaxSchema),
     controller.createTax.bind(controller) as any
 );
 
 router.patch(
     '/taxes/:taxId',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_CATALOG) as any,
     validate(updateTaxSchema),
     controller.updateTax.bind(controller) as any
 );
 
 router.delete(
     '/taxes/:taxId',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_CATALOG) as any,
     controller.deleteTax.bind(controller) as any
 );
 
@@ -56,34 +56,34 @@ router.delete(
 
 router.get(
     '/products',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_CATALOG) as any,
     validate(catalogQuerySchema, 'query'),
     controller.getProductsServices.bind(controller) as any
 );
 
 router.get(
     '/products/:itemId',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_CATALOG) as any,
     controller.getProductService.bind(controller) as any
 );
 
 router.post(
     '/products',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_CATALOG) as any,
     validate(createProductServiceSchema),
     controller.createProductService.bind(controller) as any
 );
 
 router.patch(
     '/products/:itemId',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_CATALOG) as any,
     validate(updateProductServiceSchema),
     controller.updateProductService.bind(controller) as any
 );
 
 router.delete(
     '/products/:itemId',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_CATALOG) as any,
     controller.deleteProductService.bind(controller) as any
 );
 

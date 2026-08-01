@@ -24,6 +24,16 @@ app.use(
     })
 );
 
+// ─── JSON serialization ────────────────────────────────
+// JournalEntry.seq is a BigInt (a monotonic ordering key), and JSON.stringify
+// throws on BigInt rather than serializing it — which turned a report query into
+// a 500. Numbers are safe here: the values are autoincrement counters, far below
+// Number.MAX_SAFE_INTEGER. Registered app-wide so no future BigInt column can
+// break a route the same way.
+app.set('json replacer', (_key: string, value: unknown) =>
+    typeof value === 'bigint' ? Number(value) : value,
+);
+
 // ─── Body Parsing ─────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

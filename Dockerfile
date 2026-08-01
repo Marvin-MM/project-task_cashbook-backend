@@ -24,11 +24,12 @@ WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/package.json ./
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.scripts.json ./
 COPY src ./src
+COPY scripts ./scripts
 COPY prisma ./prisma
 
-RUN npm run build
+RUN npm run build && npm run build:scripts
 
 
 # ── Stage 3: Production Image ───────────────────────────
@@ -46,18 +47,25 @@ ENV PORT=5000
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/package.json ./
 
-# Remove dev dependencies
-# ⚠️ NOTE: If 'prisma' is in devDependencies, this removes the CLI.
-# If your next error is "command not found", remove this prune line.
+# Remove dev dependencies.
+# 'prisma' is a runtime dependency (not a devDependency) because the entrypoint
+# runs `prisma migrate deploy`, so the CLI must survive this prune.
 RUN npm prune --omit=dev && npm cache clean --force
 
 # Copy built JS output
 COPY --from=builder /app/dist ./dist
 
+# The operational scripts, compiled. They are built separately (see
+# tsconfig.scripts.json) precisely so they can run HERE, with plain `node` and
+# no dev dependencies: a backfill you cannot execute against production is not
+# a backfill. Run one with
+#   docker compose run --rm api node dist-scripts/scripts/backfill-ledger.js --apply
+COPY --from=builder /app/dist-scripts ./dist-scripts
+
 # Copy Prisma engines
 COPY --from=deps /app/node_modules/.prisma ./node_modules/.prisma
 
-# ✅ FIXED: Copy the schema so 'npx prisma db push' can find it
+# Schema + migration history, needed by `prisma migrate deploy` at startup.
 COPY prisma ./prisma
 
 EXPOSE 5000
@@ -70,4 +78,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 ENTRYPOINT ["/sbin/tini", "--"]
 
-CMD ["node", "dist/server.js"]
+# `migrate deploy` takes a Postgres advisory lock, so concurrent replicas are safe:
+# the first applies pending migrations, the rest wait and then no-op.
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node dist/server.js"]

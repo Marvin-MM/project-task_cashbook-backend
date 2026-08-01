@@ -1,7 +1,6 @@
 import { logger } from '../utils/logger';
 import { createEmailWorker } from './email.worker';
 import { createNotificationsWorker } from './notifications.worker';
-// import { createReportsWorker } from './reports.worker';
 
 /**
  * Bootstrap all BullMQ workers.
@@ -12,11 +11,9 @@ export function startWorkers() {
 
     const emailWorker = createEmailWorker();
     const notificationsWorker = createNotificationsWorker();
-    // const reportsWorker = createReportsWorker();
 
     logger.info('✅ Email worker started (concurrency: 5)');
     logger.info('✅ Notifications worker started (concurrency: 10)');
-    // logger.info('✅ Reports worker started (concurrency: 2)');
 
     return { emailWorker, notificationsWorker };
 }
@@ -29,7 +26,6 @@ export async function stopWorkers(workers: ReturnType<typeof startWorkers>) {
     await Promise.all([
         workers.emailWorker.close(),
         workers.notificationsWorker.close(),
-        // workers.reportsWorker.close(),
     ]);
     logger.info('✅ All workers stopped');
 }

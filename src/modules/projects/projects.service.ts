@@ -3,6 +3,8 @@ import { PrismaClient, ProjectRole, ProjectStatus } from '@prisma/client';
 import { ProjectsRepository } from './projects.repository';
 import { NotFoundError, ConflictError, AuthorizationError, AppError } from '../../core/errors/AppError';
 import { AuditAction, WorkspaceRole } from '../../core/types';
+import { workspaceUserCan } from '../../core/authz/workspace-access';
+import { WorkspacePermission } from '../../core/types/workspace-permissions';
 import { assertSameCurrency, normalizeCurrency } from '../../core/finance';
 import {
     CreateProjectDto,
@@ -32,15 +34,20 @@ export class ProjectsService {
         return project;
     }
 
-    /** Returns true when the caller is workspace OWNER or ADMIN. */
+    /**
+     * Whether the caller may run projects across the whole workspace.
+     *
+     * Reads the permission matrix rather than testing for OWNER/ADMIN by hand,
+     * which is what lets PROJECT_MANAGER exist at all — and means the next role
+     * needs no change here.
+     */
     private async isWorkspaceManager(workspaceId: string, userId: string): Promise<boolean> {
-        const ws = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
-        if (!ws) return false;
-        if (ws.ownerId === userId) return true;
-        const membership = await this.prisma.workspaceMember.findUnique({
-            where: { workspaceId_userId: { workspaceId, userId } },
-        });
-        return membership?.role === WorkspaceRole.ADMIN;
+        return workspaceUserCan(
+            this.prisma,
+            workspaceId,
+            userId,
+            WorkspacePermission.MANAGE_PROJECTS,
+        );
     }
 
     /** Returns the caller's project role or null if not a member. */

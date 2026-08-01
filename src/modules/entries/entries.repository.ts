@@ -1,5 +1,5 @@
 import { injectable, inject } from 'tsyringe';
-import { PrismaClient, Prisma } from '@prisma/client';
+import { EntryStatus, PrismaClient, Prisma } from '@prisma/client';
 
 @injectable()
 export class EntriesRepository {
@@ -44,6 +44,8 @@ export class EntriesRepository {
             endDate?: string;
             sortBy: string;
             sortOrder: string;
+            /** Include reversed entries. Off by default, matching the old delete UX. */
+            includeReversed?: boolean;
         }
     ) {
         const {
@@ -59,7 +61,10 @@ export class EntriesRepository {
 
         const where: Prisma.EntryWhereInput = {
             cashbookId,
-            isDeleted: false,
+            // Reversed entries are hidden by default so the list looks exactly as
+            // it did when deletes were destructive; they remain queryable, and
+            // their journals always count in reports.
+            ...(params.includeReversed ? {} : { status: EntryStatus.POSTED }),
         };
 
         if (filters.type) where.type = filters.type as any;

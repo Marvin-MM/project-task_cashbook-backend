@@ -2,7 +2,19 @@ import { injectable } from 'tsyringe';
 import { Response, NextFunction } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { AccountsService } from './accounts.service';
-import { AuthenticatedRequest } from '../../core/types';
+import { AuthenticatedRequest, WorkspaceRole } from '../../core/types';
+import {
+    WorkspacePermission,
+    hasWorkspacePermission,
+} from '../../core/types/workspace-permissions';
+
+/** Whether this caller may see the organisation's cash position. */
+function canSeeBalances(req: AuthenticatedRequest): boolean {
+    return hasWorkspacePermission(
+        (req as { workspaceRole?: WorkspaceRole }).workspaceRole,
+        WorkspacePermission.VIEW_WALLET_BALANCES,
+    );
+}
 
 @injectable()
 export class AccountsController {
@@ -23,7 +35,10 @@ export class AccountsController {
 
     async getAll(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const data = await this.service.getWorkspaceAccounts(req.params.workspaceId as string);
+            const data = await this.service.getWorkspaceAccounts(
+                req.params.workspaceId as string,
+                canSeeBalances(req),
+            );
             res.status(StatusCodes.OK).json({
                 success: true,
                 message: 'Accounts retrieved successfully',
@@ -36,7 +51,11 @@ export class AccountsController {
 
     async getById(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
-            const data = await this.service.getAccountById(req.params.id as string, req.params.workspaceId as string);
+            const data = await this.service.getAccountById(
+                req.params.id as string,
+                req.params.workspaceId as string,
+                canSeeBalances(req),
+            );
             res.status(StatusCodes.OK).json({
                 success: true,
                 message: 'Account retrieved successfully',

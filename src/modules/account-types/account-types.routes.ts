@@ -4,7 +4,7 @@ import { AccountTypesController } from './account-types.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
 import { requireWorkspaceMember } from '../../middlewares/authorize';
-import { WorkspaceRole } from '../../core/types';
+import { WorkspacePermission } from '../../core/types/workspace-permissions';
 import { createAccountTypeSchema, updateAccountTypeSchema } from './account-types.dto';
 
 const router = Router({ mergeParams: true });
@@ -16,14 +16,14 @@ router.use(authenticate as any);
 // List account types
 router.get(
     '/',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_WALLETS) as any,
     controller.getAll.bind(controller) as any
 );
 
 // Create account type
 router.post(
     '/',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
     validate(createAccountTypeSchema),
     controller.create.bind(controller) as any
 );
@@ -31,7 +31,7 @@ router.post(
 // Update account type
 router.patch(
     '/:id',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
     validate(updateAccountTypeSchema),
     controller.update.bind(controller) as any
 );
@@ -39,7 +39,7 @@ router.patch(
 // Delete account type
 router.delete(
     '/:id',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
     controller.delete.bind(controller) as any
 );
 

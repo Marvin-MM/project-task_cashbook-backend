@@ -1,14 +1,11 @@
-import { injectable } from 'tsyringe';
+import { inject, injectable } from 'tsyringe';
 import { PrismaClient, Prisma, AccountTransaction, TransactionSourceType } from '@prisma/client';
-import { getPrismaClient } from '../../config/database';
 
 @injectable()
 export class AccountTransactionsRepository {
-    private prisma: PrismaClient;
-
-    constructor() {
-        this.prisma = getPrismaClient();
-    }
+    // Injected rather than pulled from getPrismaClient(), so this repository
+    // honours whichever client the container provides (including in tests).
+    constructor(@inject('PrismaClient') private prisma: PrismaClient) { }
 
     async findById(id: string): Promise<AccountTransaction | null> {
         return this.prisma.accountTransaction.findUnique({
@@ -24,7 +21,9 @@ export class AccountTransactionsRepository {
             this.prisma.accountTransaction.count({ where }),
             this.prisma.accountTransaction.findMany({
                 where,
-                orderBy: { createdAt: 'desc' },
+                // Business date first; createdAt only breaks ties, so a backdated
+                // movement sorts where it belongs in the statement.
+                orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
                 skip: pagination?.skip,
                 take: pagination?.take,
                 include: { accountCategory: true }

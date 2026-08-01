@@ -75,39 +75,10 @@ export class CashbooksRepository {
         });
     }
 
-    async updateBalance(id: string, amount: number, type: 'INCOME' | 'EXPENSE') {
-        return this.prisma.cashbook.update({
-            where: { id },
-            data: {
-                balance: type === 'INCOME'
-                    ? { increment: amount }
-                    : { decrement: amount },
-                totalIncome: type === 'INCOME'
-                    ? { increment: amount }
-                    : undefined,
-                totalExpense: type === 'EXPENSE'
-                    ? { increment: amount }
-                    : undefined,
-            },
-        });
-    }
-
-    async reverseBalance(id: string, amount: number, type: 'INCOME' | 'EXPENSE') {
-        return this.prisma.cashbook.update({
-            where: { id },
-            data: {
-                balance: type === 'INCOME'
-                    ? { decrement: amount }
-                    : { increment: amount },
-                totalIncome: type === 'INCOME'
-                    ? { decrement: amount }
-                    : undefined,
-                totalExpense: type === 'EXPENSE'
-                    ? { decrement: amount }
-                    : undefined,
-            },
-        });
-    }
+    // NOTE: updateBalance/reverseBalance were removed here. They took `number`
+    // amounts, ignored chargeAmount, and ignored wallet linkage, so they
+    // contradicted the rules in src/core/finance/money.ts. They had no callers.
+    // Cashbook balances are maintained only through cashbookIncrementPayload.
 
     async getFinancialSummary(cashbookId: string) {
         return this.prisma.cashbook.findUnique({

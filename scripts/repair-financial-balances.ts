@@ -1,236 +1,268 @@
 /**
- * Non-destructive repair of denormalized financial caches.
+ * Recompute cached balances from the ledger.
  *
- * Recomputes:
- *  - Cashbook balance / totalIncome / totalExpense (charge + wallet-link aware)
- *  - Account balances from non-voided AccountTransactions + AccountTransfers
- *  - Obligation status from outstanding vs total
- *  - Invoice amountPaid / amountDue / status from linked obligations
+ * Before the double-entry ledger existed, this script rebuilt caches by
+ * replaying entries with the same formulas the write path used — so a bug in
+ * those formulas produced identically wrong results in both places, and the
+ * script could not detect it. Now the journal is the source of truth and this
+ * simply re-derives each cache from the lines.
  *
- * Usage:
- *   npx tsx scripts/repair-financial-balances.ts --dry-run
- *   npx tsx scripts/repair-financial-balances.ts --apply
+ * Dry-run by default. Nothing is written without --apply.
  *
- * Never deletes user rows.
+ *   npm run repair:balances          inspect
+ *   npm run repair:balances:apply    fix
  */
+import 'reflect-metadata';
 import 'dotenv/config';
-import { PrismaClient, ObligationStatus, InvoiceStatus } from '@prisma/client';
-import {
-    recomputeCashbookFromEntries,
-    recomputeWalletBalance,
-    obligationStatusFromAmounts,
-    invoiceStatusFromOutstanding,
-} from '../src/core/finance';
+import { PrismaClient } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
+import { LedgerIntegrityService } from '../src/core/ledger/integrity.service';
 
 const prisma = new PrismaClient();
-const apply = process.argv.includes('--apply');
-const dryRun = !apply;
+const APPLY = process.argv.includes('--apply');
 
-type Diff = {
+interface Fix {
     entity: string;
     id: string;
+    label: string;
     field: string;
-    oldValue: string;
-    newValue: string;
-};
+    stored: string;
+    ledger: string;
+    difference: string;
+}
 
-async function main() {
-    const diffs: Diff[] = [];
-    console.log(dryRun ? '=== DRY RUN (no writes) ===' : '=== APPLY MODE ===');
+const D = (v: unknown) => new Decimal((v as string | number) ?? 0);
 
-    // ── Cashbooks ──────────────────────────────────────
-    const cashbooks = await prisma.cashbook.findMany({ select: { id: true, name: true, balance: true, totalIncome: true, totalExpense: true } });
-    console.log(`Cashbooks: ${cashbooks.length}`);
+async function ledgerBalance(ledgerAccountId: string): Promise<Decimal> {
+    const [row] = await prisma.$queryRaw<Array<{ net: Decimal }>>`
+        SELECT COALESCE(SUM(debit - credit), 0) AS net
+        FROM journal_lines WHERE ledger_account_id = ${ledgerAccountId}::uuid
+    `;
+    return D(row?.net);
+}
 
-    for (const cb of cashbooks) {
-        const entries = await prisma.entry.findMany({
-            where: { cashbookId: cb.id, isDeleted: false },
-            select: {
-                type: true,
-                amount: true,
-                chargeAmount: true,
-                accountTransactions: {
-                    where: { voidedAt: null },
-                    select: { id: true },
-                    take: 1,
-                },
-            },
-        });
-
-        const computed = recomputeCashbookFromEntries(
-            entries.map((e) => ({
-                type: e.type,
-                amount: e.amount,
-                chargeAmount: e.chargeAmount,
-                hasWalletLink: e.accountTransactions.length > 0,
-            })),
-        );
-
-        if (!cb.balance.equals(computed.balance)) {
-            diffs.push({ entity: 'cashbook', id: cb.id, field: 'balance', oldValue: cb.balance.toString(), newValue: computed.balance.toString() });
-        }
-        if (!cb.totalIncome.equals(computed.totalIncome)) {
-            diffs.push({ entity: 'cashbook', id: cb.id, field: 'totalIncome', oldValue: cb.totalIncome.toString(), newValue: computed.totalIncome.toString() });
-        }
-        if (!cb.totalExpense.equals(computed.totalExpense)) {
-            diffs.push({ entity: 'cashbook', id: cb.id, field: 'totalExpense', oldValue: cb.totalExpense.toString(), newValue: computed.totalExpense.toString() });
-        }
-
-        if (!dryRun && (
-            !cb.balance.equals(computed.balance) ||
-            !cb.totalIncome.equals(computed.totalIncome) ||
-            !cb.totalExpense.equals(computed.totalExpense)
-        )) {
-            await prisma.cashbook.update({
-                where: { id: cb.id },
-                data: {
-                    balance: computed.balance,
-                    totalIncome: computed.totalIncome,
-                    totalExpense: computed.totalExpense,
-                },
-            });
-        }
-    }
-
-    // ── Accounts ───────────────────────────────────────
-    const accounts = await prisma.account.findMany({ select: { id: true, balance: true, workspaceId: true } });
-    console.log(`Accounts: ${accounts.length}`);
-
-    for (const account of accounts) {
-        const transactions = await prisma.accountTransaction.findMany({
-            where: { accountId: account.id, voidedAt: null },
-            select: { type: true, amount: true, chargeAmount: true },
-        });
-
-        const transfers = await prisma.accountTransfer.findMany({
-            where: {
-                voidedAt: null,
-                OR: [{ fromAccountId: account.id }, { toAccountId: account.id }],
-            },
-            select: { fromAccountId: true, toAccountId: true, amount: true, feeAmount: true },
-        });
-
-        const computed = recomputeWalletBalance(
-            transactions,
-            transfers.map((t) =>
-                t.fromAccountId === account.id
-                    ? { direction: 'OUT' as const, amount: t.amount, feeAmount: t.feeAmount }
-                    : { direction: 'IN' as const, amount: t.amount },
-            ),
-        );
-
-        if (!account.balance.equals(computed)) {
-            diffs.push({
-                entity: 'account',
-                id: account.id,
-                field: 'balance',
-                oldValue: account.balance.toString(),
-                newValue: computed.toString(),
-            });
-            if (!dryRun) {
-                await prisma.account.update({
-                    where: { id: account.id },
-                    data: { balance: computed },
-                });
-            }
-        }
-    }
-
-    // ── Obligations ────────────────────────────────────
-    const obligations = await prisma.cashbookObligation.findMany({
+async function repairCashbooks(workspaceId: string, fixes: Fix[]) {
+    const cashbooks = await prisma.cashbook.findMany({
+        where: { workspaceId },
         select: {
-            id: true,
-            totalAmount: true,
-            outstandingAmount: true,
-            status: true,
-            referenceType: true,
-            referenceId: true,
+            id: true, name: true, balance: true, totalIncome: true, totalExpense: true,
+            cashLedgerAccountId: true,
         },
     });
-    console.log(`Obligations: ${obligations.length}`);
 
-    for (const o of obligations) {
-        const newStatus = obligationStatusFromAmounts(o.totalAmount, o.outstandingAmount, o.status);
-        if (newStatus !== o.status && o.status !== ObligationStatus.CANCELLED) {
-            diffs.push({
-                entity: 'obligation',
-                id: o.id,
-                field: 'status',
-                oldValue: o.status,
-                newValue: newStatus,
-            });
-            if (!dryRun) {
-                await prisma.cashbookObligation.update({
-                    where: { id: o.id },
-                    data: { status: newStatus as ObligationStatus },
+    for (const cashbook of cashbooks) {
+        const updates: Record<string, Decimal> = {};
+
+        if (cashbook.cashLedgerAccountId) {
+            const ledger = await ledgerBalance(cashbook.cashLedgerAccountId);
+            if (!ledger.equals(cashbook.balance)) {
+                fixes.push({
+                    entity: 'cashbook', id: cashbook.id, label: cashbook.name, field: 'balance',
+                    stored: cashbook.balance.toString(), ledger: ledger.toString(),
+                    difference: cashbook.balance.sub(ledger).toString(),
                 });
+                updates.balance = ledger;
             }
-        }
-    }
-
-    // ── Invoices from invoice-linked obligations ───────
-    const invoiceObligations = obligations.filter((o) => o.referenceType === 'INVOICE' && o.referenceId);
-    console.log(`Invoice-linked obligations: ${invoiceObligations.length}`);
-
-    for (const o of invoiceObligations) {
-        const invoice = await prisma.invoice.findUnique({ where: { id: o.referenceId! } });
-        if (!invoice || invoice.status === InvoiceStatus.VOID || invoice.status === InvoiceStatus.DRAFT) {
-            continue;
+        } else {
+            console.warn(
+                `  ! ${cashbook.name} has no book-cash ledger account; ` +
+                'open it once in the app so it is provisioned, then re-run.',
+            );
         }
 
-        const amountPaid = invoice.totalAmount.sub(o.outstandingAmount);
-        const amountDue = o.outstandingAmount.lessThan(0) ? o.outstandingAmount.mul(0) : o.outstandingAmount;
-        const newStatus = invoiceStatusFromOutstanding(
-            invoice.totalAmount,
-            amountDue,
-            invoice.status,
-        ) as InvoiceStatus;
+        // Restricted to CASHBOOK_ENTRY, which is what keeps these columns
+        // meaning what they have always meant: direct wallet activity and
+        // transfers have never counted as cashbook activity.
+        const [totals] = await prisma.$queryRaw<Array<{ income: Decimal; expense: Decimal }>>`
+            SELECT
+              COALESCE(SUM(CASE WHEN la.class = 'INCOME'  THEN jl.credit - jl.debit ELSE 0 END), 0) AS income,
+              COALESCE(SUM(CASE WHEN la.class = 'EXPENSE' THEN jl.debit - jl.credit ELSE 0 END), 0) AS expense
+            FROM journal_lines jl
+            JOIN journal_entries je ON je.id = jl.journal_entry_id
+            JOIN ledger_accounts la ON la.id = jl.ledger_account_id
+            WHERE jl.cashbook_id = ${cashbook.id}::uuid
+              AND je.source_type = 'CASHBOOK_ENTRY'
+        `;
 
-        if (
-            !invoice.amountPaid.equals(amountPaid) ||
-            !invoice.amountDue.equals(amountDue) ||
-            invoice.status !== newStatus
-        ) {
-            diffs.push({
-                entity: 'invoice',
-                id: invoice.id,
-                field: 'paid/due/status',
-                oldValue: `${invoice.amountPaid}/${invoice.amountDue}/${invoice.status}`,
-                newValue: `${amountPaid}/${amountDue}/${newStatus}`,
+        const income = D(totals?.income);
+        const expense = D(totals?.expense);
+
+        if (!income.equals(cashbook.totalIncome)) {
+            fixes.push({
+                entity: 'cashbook', id: cashbook.id, label: cashbook.name, field: 'totalIncome',
+                stored: cashbook.totalIncome.toString(), ledger: income.toString(),
+                difference: cashbook.totalIncome.sub(income).toString(),
             });
-            if (!dryRun) {
-                await prisma.invoice.update({
-                    where: { id: invoice.id },
-                    data: {
-                        amountPaid: amountPaid.lessThan(0) ? invoice.totalAmount : amountPaid,
-                        amountDue,
-                        status: newStatus,
-                    },
-                });
-            }
+            updates.totalIncome = income;
         }
-    }
+        if (!expense.equals(cashbook.totalExpense)) {
+            fixes.push({
+                entity: 'cashbook', id: cashbook.id, label: cashbook.name, field: 'totalExpense',
+                stored: cashbook.totalExpense.toString(), ledger: expense.toString(),
+                difference: cashbook.totalExpense.sub(expense).toString(),
+            });
+            updates.totalExpense = expense;
+        }
 
-    console.log(`\nDiffs found: ${diffs.length}`);
-    for (const d of diffs.slice(0, 200)) {
-        console.log(`  [${d.entity}] ${d.id} ${d.field}: ${d.oldValue} → ${d.newValue}`);
-    }
-    if (diffs.length > 200) {
-        console.log(`  ... and ${diffs.length - 200} more`);
-    }
-
-    if (dryRun) {
-        console.log('\nRe-run with --apply to write corrections.');
-    } else {
-        console.log('\nCorrections applied. Re-run dry-run to confirm zero remaining diffs.');
+        if (APPLY && Object.keys(updates).length > 0) {
+            await prisma.cashbook.update({ where: { id: cashbook.id }, data: updates });
+        }
     }
 }
 
+async function repairWallets(workspaceId: string, fixes: Fix[]) {
+    const accounts = await prisma.account.findMany({
+        where: { workspaceId },
+        select: { id: true, name: true, balance: true, ledgerAccountId: true },
+    });
+
+    for (const account of accounts) {
+        if (!account.ledgerAccountId) {
+            console.warn(
+                `  ! ${account.name} has no ledger account; ` +
+                'open it once in the app so it is provisioned, then re-run.',
+            );
+            continue;
+        }
+
+        const ledger = await ledgerBalance(account.ledgerAccountId);
+        if (!ledger.equals(account.balance)) {
+            fixes.push({
+                entity: 'account', id: account.id, label: account.name, field: 'balance',
+                stored: account.balance.toString(), ledger: ledger.toString(),
+                difference: account.balance.sub(ledger).toString(),
+            });
+            if (APPLY) {
+                await prisma.account.update({
+                    where: { id: account.id },
+                    data: { balance: ledger },
+                });
+            }
+        }
+    }
+}
+
+/**
+ * Obligation outstanding is its own source of truth; the AR/AP control accounts
+ * are checked AGAINST it, not derived from it. A divergence means a settlement
+ * path skipped a posting — a code bug this script must surface rather than
+ * quietly paper over by adjusting one side to match the other.
+ */
+async function checkControls(workspaceId: string) {
+    const integrity = new LedgerIntegrityService(prisma);
+    const report = await integrity.verifyWorkspace(workspaceId);
+    return report.findings.filter((f) => f.check.endsWith('_CONTROL') || f.check === 'TRIAL_BALANCE');
+}
+
+async function main() {
+    console.log(
+        APPLY
+            ? 'Repairing cached balances from the ledger…\n'
+            : 'Inspecting cached balances against the ledger (dry run; pass --apply to fix)…\n',
+    );
+
+    const workspaces = await prisma.workspace.findMany({
+        select: { id: true, name: true },
+        orderBy: { createdAt: 'asc' },
+    });
+
+    const allFixes: Fix[] = [];
+    const controlIssues: Array<{ workspace: string; detail: string }> = [];
+
+    const unbackfilled: string[] = [];
+
+    for (const workspace of workspaces) {
+        // A workspace with cached balances but no journals predates the ledger
+        // and has not been backfilled. "Repairing" it would derive zero from an
+        // empty ledger and wipe real balances — the opposite of a repair.
+        const [journalCount, cachedActivity] = await Promise.all([
+            prisma.journalEntry.count({ where: { workspaceId: workspace.id } }),
+            prisma.cashbook.count({
+                where: {
+                    workspaceId: workspace.id,
+                    OR: [
+                        { balance: { not: 0 } },
+                        { totalIncome: { not: 0 } },
+                        { totalExpense: { not: 0 } },
+                    ],
+                },
+            }),
+        ]);
+
+        if (journalCount === 0 && cachedActivity > 0) {
+            unbackfilled.push(workspace.name);
+            continue;
+        }
+
+        const fixes: Fix[] = [];
+        await repairCashbooks(workspace.id, fixes);
+        await repairWallets(workspace.id, fixes);
+
+        const controls = await checkControls(workspace.id);
+        for (const c of controls) {
+            controlIssues.push({
+                workspace: workspace.name,
+                detail: `${c.check}: expected ${c.expected}, got ${c.actual} (Δ ${c.difference})`,
+            });
+        }
+
+        if (fixes.length > 0 || controls.length > 0) {
+            console.log(workspace.name);
+            for (const f of fixes) {
+                console.log(
+                    `  ${f.entity} ${f.label} · ${f.field}: ` +
+                    `stored ${f.stored} → ledger ${f.ledger} (Δ ${f.difference})`,
+                );
+            }
+            for (const c of controls) {
+                console.log(`  ⚠ ${c.check}: expected ${c.expected}, got ${c.actual}`);
+            }
+            console.log('');
+        }
+
+        allFixes.push(...fixes);
+    }
+
+    console.log('─'.repeat(64));
+    console.log(`Workspaces scanned:  ${workspaces.length - unbackfilled.length}`);
+    console.log(`Cache discrepancies: ${allFixes.length}${APPLY ? ' (repaired)' : ''}`);
+    console.log(`Control mismatches:  ${controlIssues.length}`);
+
+    if (controlIssues.length > 0) {
+        console.log(
+            '\n⚠ Control-account and trial-balance mismatches are NOT repaired here.\n' +
+            '  They mean a posting was missed or a journal is unbalanced, which is a\n' +
+            '  code bug rather than cache drift. Investigate before adjusting anything:\n',
+        );
+        for (const issue of controlIssues) {
+            console.log(`    ${issue.workspace} — ${issue.detail}`);
+        }
+    }
+
+    if (!APPLY && allFixes.length > 0) {
+        console.log('\nRe-run with --apply to write these corrections.');
+    }
+
+    if (unbackfilled.length > 0) {
+        console.log(
+            `\nSkipped ${unbackfilled.length} workspace(s) with balances but no journals:\n` +
+            `    ${unbackfilled.join(', ')}\n\n` +
+            '  These predate the ledger. Repairing them would derive zero from an empty\n' +
+            '  ledger and wipe their balances. Backfill them first, or reset the data.',
+        );
+    }
+
+    if (allFixes.length === 0 && controlIssues.length === 0 && unbackfilled.length === 0) {
+        console.log('\n✓ Every cached balance agrees with the ledger.');
+    }
+
+    // Non-zero exit so a cron wrapper or CI job can alert on a real problem.
+    if (controlIssues.length > 0) process.exitCode = 1;
+}
+
 main()
-    .catch((err) => {
-        console.error(err);
+    .catch((error) => {
+        console.error('Repair failed:', error);
         process.exit(1);
     })
-    .finally(async () => {
-        await prisma.$disconnect();
-    });
+    .finally(() => prisma.$disconnect());

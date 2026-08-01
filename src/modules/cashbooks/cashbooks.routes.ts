@@ -3,9 +3,9 @@ import { container } from 'tsyringe';
 import { CashbooksController } from './cashbooks.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
+import { WorkspacePermission } from '../../core/types/workspace-permissions';
 import { requireWorkspaceMember, requireCashbookMember } from '../../middlewares/authorize';
 import { CashbookPermission } from '../../core/types/permissions';
-import { WorkspaceRole } from '../../core/types';
 import {
     createCashbookSchema,
     updateCashbookSchema,
@@ -29,7 +29,7 @@ router.get(
 // Create cashbook in a workspace
 router.post(
     '/workspace/:workspaceId',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN, WorkspaceRole.MEMBER]) as any,
+    requireWorkspaceMember(WorkspacePermission.CREATE_CASHBOOK) as any,
     validate(createCashbookSchema),
     cashbooksController.create.bind(cashbooksController) as any
 );

@@ -43,9 +43,30 @@ model User {
   taskAssigned         TaskAssignment[]    @relation("TaskAssigner")
   taskComments         TaskComment[]
   checklistItemsDone   TaskChecklistItem[] @relation("ChecklistCompleter")
+  taskRequestsMade     TaskAssignmentRequest[] @relation("TaskRequestRequester")
+  taskRequestsReviewed TaskAssignmentRequest[] @relation("TaskRequestReviewer")
+  taskReportsWritten   TaskReport[]        @relation("TaskReportAuthor")
+  expenseClaimsMade    TaskExpenseClaim[]  @relation("ExpenseClaimant")
+  expenseClaimsReviewed TaskExpenseClaim[] @relation("ExpenseReviewer")
+  staffContacts        Contact[]
+  taskReportsReviewed  TaskReport[]        @relation("TaskReportReviewer")
   timeEntries          TimeEntry[]
+  timeEntriesCreated   TimeEntry[]         @relation("TimeEntryCreator")
   workSessions         WorkSession[]
+  workSchedules        WorkSchedule[]
+  attendanceDays       AttendanceDay[]
+  leaveRequests        LeaveRequest[]      @relation("LeaveRequester")
+  leaveReviewed        LeaveRequest[]      @relation("LeaveReviewer")
+  overtimeRequests     OvertimeRequest[]   @relation("OvertimeRequester")
+  overtimeReviewed     OvertimeRequest[]   @relation("OvertimeReviewer")
+  attendanceFlags      AttendanceFlag[]    @relation("FlaggedUser")
+  flagsWaived          AttendanceFlag[]    @relation("FlagWaiver")
+  workReports          WorkReport[]        @relation("WorkReportAuthor")
+  workReportsReviewed  WorkReport[]        @relation("WorkReportReviewer")
+  workSessionsAdjusted WorkSession[]       @relation("WorkSessionAdjuster")
+  workSessionsClosed   WorkSession[]       @relation("WorkSessionCloser")
   notifications        Notification[]
+  journalEntries       JournalEntry[]
 
   @@unique([provider, providerId])
   @@map("users")
@@ -99,15 +120,36 @@ model Workspace {
   attendanceLatitude      Float?  @map("attendance_latitude")
   attendanceLongitude     Float?  @map("attendance_longitude")
   attendanceRadiusMeters  Int?    @map("attendance_radius_meters")
-  /// Allowed clock-in window start (local time HH:MM, 24h). Null = no restriction.
+  /// Earliest clock-in (workspace-local HH:MM, 24h). Null = no restriction.
   attendanceClockInStart  String? @map("attendance_clock_in_start")
-  /// Allowed clock-in window end (local time HH:MM, 24h). Null = no restriction.
+  /// Latest clock-in (workspace-local HH:MM, 24h). Null = no restriction.
   attendanceClockInEnd    String? @map("attendance_clock_in_end")
-  /// Allowed clock-out window start (local time HH:MM, 24h). Null = no restriction.
+  /// Earliest clock-out (workspace-local HH:MM, 24h). Advisory: leaving before
+  /// this raises an EARLY_OUT flag, it does not refuse the clock-out.
   attendanceClockOutStart String? @map("attendance_clock_out_start")
-  /// Allowed clock-out window end (local time HH:MM, 24h). Null = no restriction.
-  attendanceClockOutEnd   String? @map("attendance_clock_out_end")
+  /// Whether the clock-in window REFUSES a late arrival rather than flagging it.
+  /// Off by default: refusing means a late employee records no attendance at
+  /// all, which is worse than recording it as late.
+  enforceClockWindows     Boolean @default(false) @map("enforce_clock_windows")
+  /// IANA zone every wall-clock attendance policy is evaluated in. Before this
+  /// existed the comparison used the server container's zone, so a Kampala
+  /// workspace allowing 08:00-09:30 really allowed 11:00-12:30 local.
+  timezone                String  @default("Africa/Kampala")
   isActive        Boolean       @default(true) @map("is_active")
+  /// CASH: revenue recognized when cash lands (obligations post via a deferred
+  /// offset so AR still appears on the balance sheet). ACCRUAL is reserved and
+  /// not implemented — switching it would decouple Cashbook.totalIncome from
+  /// ledger income.
+  revenueBasis    RevenueBasis  @default(CASH) @map("revenue_basis")
+  /// How many incomplete tasks a member may hold at once. Null = unlimited.
+  /// Checked when a task assignment is REQUESTED and again when it is APPROVED
+  /// — without the second check a member requests five while free and a manager
+  /// approves all five.
+  maxConcurrentOpenTasks Int? @default(1) @map("max_concurrent_open_tasks")
+  /// OFF: inventory is an operational subledger only and COGS is not posted to
+  /// the GL, matching cash-basis totalExpense. PERPETUAL capitalizes purchases
+  /// and recognizes COGS at sale, which changes what totalExpense means.
+  inventoryValuation InventoryValuationMode @default(OFF) @map("inventory_valuation")
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
 
@@ -134,7 +176,23 @@ model Workspace {
   tasks              Task[]
   workSessions       WorkSession[]
   timeEntries        TimeEntry[]
+  taskAssignmentRequests TaskAssignmentRequest[]
+  taskReports            TaskReport[]
+  expenseClaims          TaskExpenseClaim[]
+  attendanceSettings     AttendanceSettings?
+  attendanceSites        AttendanceSite[]
+  workSchedules          WorkSchedule[]
+  holidays               Holiday[]
+  attendanceDays         AttendanceDay[]
+  leaveTypes             LeaveType[]
+  leaveRequests          LeaveRequest[]
+  overtimeRequests       OvertimeRequest[]
+  attendanceFlags        AttendanceFlag[]
+  workReports            WorkReport[]
   notifications      Notification[]
+  ledgerAccounts     LedgerAccount[]
+  journalEntries     JournalEntry[]
+  fiscalPeriods      FiscalPeriod[]
 
   @@index([ownerId])
   @@index([type])
@@ -143,6 +201,14 @@ model Workspace {
 
 model WorkspaceMember {
   id          String        @id @default(uuid()) @db.Uuid
+  /// Employment bounds and opt-out for attendance.
+  ///
+  /// Without these the absence rollup invents absences for the owner, for
+  /// contractors, and for anyone hired mid-month — every day before they
+  /// started would show as ABSENT.
+  employmentStartDate DateTime? @map("employment_start_date") @db.Date
+  employmentEndDate   DateTime? @map("employment_end_date") @db.Date
+  attendanceTracked   Boolean   @default(true) @map("attendance_tracked")
   workspaceId String        @map("workspace_id") @db.Uuid
   userId      String        @map("user_id") @db.Uuid
   role        WorkspaceRole @default(MEMBER)
@@ -171,6 +237,10 @@ model Cashbook {
   totalExpense  Decimal  @default(0) @map("total_expense") @db.Decimal(20, 4)
   allowBackdate Boolean  @default(false) @map("allow_backdate")
   isActive      Boolean  @default(true) @map("is_active")
+  /// This book's private "unallocated book cash" ASSET account. Nullable only so
+  /// the ledger can be introduced without a destructive migration; every
+  /// cashbook created after Phase 1 has one.
+  cashLedgerAccountId String? @unique @map("cash_ledger_account_id") @db.Uuid
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
@@ -179,7 +249,10 @@ model Cashbook {
   entries     Entry[]
   obligations CashbookObligation[]
   attachments Attachment[]
+  expenseClaims TaskExpenseClaim[]
   invoices    Invoice[]
+  cashLedgerAccount LedgerAccount? @relation(fields: [cashLedgerAccountId], references: [id], onDelete: Restrict)
+  journalEntries    JournalEntry[]
 
   @@index([workspaceId])
   @@map("cashbooks")
@@ -217,9 +290,17 @@ model Entry {
   obligationId  String?   @map("obligation_id") @db.Uuid
   entryDate     DateTime  @map("entry_date")
   createdById   String    @map("created_by_id") @db.Uuid
+  /// Mirrors (status == REVERSED). Retained so existing repository filters keep
+  /// working through the cutover; dropped once every read path uses `status`.
   isDeleted     Boolean   @default(false) @map("is_deleted")
   deletedAt     DateTime? @map("deleted_at")
   deletedReason String?   @map("deleted_reason")
+  /// Entries are never destroyed. A "delete" posts a reversing journal and flips
+  /// this to REVERSED; the row and its journals stay for audit.
+  status        EntryStatus @default(POSTED)
+  reversedAt    DateTime? @map("reversed_at")
+  reversedById  String?   @map("reversed_by_id") @db.Uuid
+  reversalReason String?  @map("reversal_reason")
   version       Int       @default(1)
   isReconciled  Boolean   @default(false) @map("is_reconciled")
   createdAt     DateTime  @default(now()) @map("created_at")
@@ -234,6 +315,7 @@ model Entry {
   audits              EntryAudit[]
   deleteRequests      DeleteRequest[]
   attachments         Attachment[]
+  expenseClaim        TaskExpenseClaim?
   accountTransactions AccountTransaction[]
 
   @@index([cashbookId])
@@ -242,6 +324,7 @@ model Entry {
   @@index([contactId])
   @@index([createdById])
   @@index([isDeleted])
+  @@index([cashbookId, status, entryDate])
   @@map("entries")
 }
 
@@ -319,6 +402,9 @@ model CashbookObligation {
   referenceType     String?          @map("reference_type") // e.g. 'INVOICE'
   referenceId       String?          @map("reference_id") @db.Uuid
   archivedAt        DateTime?        @map("archived_at")
+  /// Bumped on every amount change, so the obligation's journal can be reversed
+  /// and re-posted under a fresh posting key.
+  version           Int              @default(1)
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 
@@ -326,6 +412,7 @@ model CashbookObligation {
   cashbook  Cashbook  @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
   contact   Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
   entries   Entry[]
+  expenseClaim TaskExpenseClaim?
 
   @@index([workspaceId])
   @@index([cashbookId])
@@ -344,11 +431,16 @@ model Category {
   color       String?
   icon        String?
   isActive    Boolean  @default(true) @map("is_active")
+  /// Optional income/expense account this category posts to. Unmapped categories
+  /// fall back to the seeded Sales Revenue / General Expenses accounts, so the
+  /// user-facing category flow is unchanged.
+  glAccountId String?  @map("gl_account_id") @db.Uuid
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   entries   Entry[]
+  glAccount LedgerAccount? @relation(fields: [glAccountId], references: [id], onDelete: SetNull)
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -361,6 +453,11 @@ enum ContactType {
   PERSONAL
   CUSTOMER
   VENDOR
+  /// A member of the organisation, as a counterparty.
+  ///
+  /// Needed so an approved out-of-pocket expense can open a payable owed to the
+  /// person who paid it: AP is tracked against a Contact, and a User is not one.
+  STAFF
 }
 
 model Contact {
@@ -376,7 +473,13 @@ model Contact {
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
+  /// Set when this contact stands for a member of the workspace. Lets a
+  /// reimbursement find (or create) the same counterparty every time instead of
+  /// making a new "Jane Doe" per claim.
+  userId      String?     @map("user_id") @db.Uuid
+
   workspace       Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user            User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
   entries         Entry[]
   customerProfile CustomerProfile?
   obligations     CashbookObligation[]
@@ -386,6 +489,8 @@ model Contact {
 
   @@index([workspaceId])
   @@index([type])
+  /// One staff contact per person per workspace.
+  @@unique([workspaceId, userId])
   @@map("contacts")
 }
 
@@ -427,25 +532,44 @@ model PaymentMode {
 
 // ─── Attachment ────────────────────────────────────────
 
+/// A stored file, owned by exactly one thing.
+///
+/// cashbookId used to be required, which meant nothing outside a cashbook could
+/// carry a file — no receipts on an expense claim, no evidence on a task report.
+/// It is now one of four mutually exclusive owners, enforced by a CHECK in the
+/// migration (num_nonnulls(...) = 1) rather than by convention.
+///
+/// One model rather than one per owner so that storage, presigning and soft
+/// delete stay a single code path: two file stacks is how a delete ends up
+/// removing the row on one side and orphaning the object on the other.
 model Attachment {
-  id           String    @id @default(uuid()) @db.Uuid
-  cashbookId   String    @map("cashbook_id") @db.Uuid
-  entryId      String?   @map("entry_id") @db.Uuid
-  fileName     String    @map("file_name")
-  fileSize     Int       @map("file_size")
-  mimeType     String    @map("mime_type")
-  s3Key        String    @map("s3_key")
-  uploadedById String    @map("uploaded_by_id") @db.Uuid
-  isDeleted    Boolean   @default(false) @map("is_deleted") // NEW
-  deletedAt    DateTime? @map("deleted_at") // NEW
-  createdAt    DateTime  @default(now()) @map("created_at")
+  id             String    @id @default(uuid()) @db.Uuid
+  cashbookId     String?   @map("cashbook_id") @db.Uuid
+  entryId        String?   @map("entry_id") @db.Uuid
+  taskId         String?   @map("task_id") @db.Uuid
+  taskReportId   String?   @map("task_report_id") @db.Uuid
+  expenseClaimId String?   @map("expense_claim_id") @db.Uuid
+  fileName       String    @map("file_name")
+  fileSize       Int       @map("file_size")
+  mimeType       String    @map("mime_type")
+  s3Key          String    @map("s3_key")
+  uploadedById   String    @map("uploaded_by_id") @db.Uuid
+  isDeleted      Boolean   @default(false) @map("is_deleted")
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
 
-  cashbook Cashbook @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
-  entry    Entry?   @relation(fields: [entryId], references: [id], onDelete: SetNull)
+  cashbook     Cashbook?         @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
+  entry        Entry?            @relation(fields: [entryId], references: [id], onDelete: SetNull)
+  task         Task?             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskReport   TaskReport?       @relation(fields: [taskReportId], references: [id], onDelete: Cascade)
+  expenseClaim TaskExpenseClaim? @relation(fields: [expenseClaimId], references: [id], onDelete: Cascade)
 
   @@index([cashbookId])
   @@index([entryId])
-  @@index([isDeleted]) 
+  @@index([taskId])
+  @@index([taskReportId])
+  @@index([expenseClaimId])
+  @@index([isDeleted])
   @@map("attachments")
 }
 
@@ -504,6 +628,37 @@ model FinancialAuditLog {
   @@map("financial_audit_logs")
 }
 
+/// Exactly-once guarantee for financial POSTs.
+///
+/// A client retrying after a timeout must not create a second entry. The record
+/// is claimed before the handler runs and completed with the response, so a
+/// retry with the same key replays the original response verbatim instead of
+/// re-executing. Scoped by workspace so a key cannot leak across tenants, and by
+/// endpoint so it cannot be reused for a different operation.
+model IdempotencyRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String?  @map("workspace_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  key            String
+  /// Route template, e.g. "POST /entries/cashbook/:cashbookId".
+  endpoint       String
+  /// sha256 of the canonicalized request body. A different hash under the same
+  /// key is a client bug, not a retry, and is rejected rather than replayed.
+  requestHash    String   @map("request_hash")
+  state          String   @default("IN_PROGRESS")
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  resourceId     String?  @map("resource_id") @db.Uuid
+  claimedAt      DateTime @default(now()) @map("claimed_at")
+  completedAt    DateTime? @map("completed_at")
+  expiresAt      DateTime @map("expires_at")
+
+  @@unique([workspaceId, endpoint, key])
+  @@index([expiresAt])
+  @@index([userId])
+  @@map("idempotency_records")
+}
+
 // ─── Enums ─────────────────────────────────────────────
 
 enum WorkspaceType {
@@ -512,8 +667,31 @@ enum WorkspaceType {
 }
 
 enum WorkspaceRole {
+  /// Full control, including deleting the workspace.
   OWNER
+  /// Everything except deleting the workspace.
   ADMIN
+  /// Full accounting access across every book. Can add sub-accountants, and
+  /// only sub-accountants.
+  ACCOUNTANT
+  /// Org-level accounting access, but cashbook data limited to the books they
+  /// have been explicitly granted. Cannot manage members.
+  SUB_ACCOUNTANT
+  /// Runs projects and tasks org-wide: creates projects, assigns work, approves
+  /// task reports and expense claims. NO financial access — books only through
+  /// an explicit CashbookMember row.
+  ///
+  /// Distinct from ProjectRole.PROJECT_MANAGER, which delegates a SINGLE
+  /// project to someone who is otherwise a plain member. Same name, different
+  /// scope; always reference them qualified.
+  PROJECT_MANAGER
+  /// People operations: attendance settings, schedules, leave, overtime and
+  /// work reports. May onboard and offboard staff, but can only ever assign
+  /// MEMBER. NO financial access — books only through an explicit
+  /// CashbookMember row.
+  HR
+  /// No org-financial access at all. Books they are an explicit member of,
+  /// plus projects, tasks and time tracking.
   MEMBER
 }
 
@@ -586,12 +764,17 @@ model Account {
   allowNegative    Boolean   @default(false) @map("allow_negative")
   note             String?
   archivedAt       DateTime? @map("archived_at")
+  /// This wallet's ledger account. Nullable only to allow a non-destructive
+  /// introduction of the ledger; every account created after Phase 1 has one.
+  ledgerAccountId  String?   @unique @map("ledger_account_id") @db.Uuid
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
   workspace       Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   accountType     AccountType          @relation(fields: [accountTypeId], references: [id])
+  ledgerAccount   LedgerAccount?       @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
   transactions    AccountTransaction[]
+  expenseClaims   TaskExpenseClaim[]
   transfersFrom   AccountTransfer[]    @relation("TransferFrom")
   transfersTo     AccountTransfer[]    @relation("TransferTo")
 
@@ -626,6 +809,14 @@ model AccountTransaction {
   chargeAmount      Decimal?              @map("charge_amount") @db.Decimal(20, 4)
   description       String
   accountCategoryId String?               @map("account_category_id") @db.Uuid
+  /// Business date of the movement. For cashbook-linked rows this mirrors
+  /// Entry.entryDate, so a backdated entry lands in the wallet statement on the
+  /// date it happened rather than at wall-clock insert time. Period filtering
+  /// and statement ordering must use this, never createdAt.
+  transactionDate   DateTime              @default(now()) @map("transaction_date")
+  /// Bumped on each edit so the journal can be reversed and re-posted under a
+  /// fresh posting key. Only meaningful for DIRECT rows.
+  version           Int                   @default(1)
   /// When set, this row is retained for audit but must not affect wallet balance.
   voidedAt          DateTime?             @map("voided_at")
   createdAt         DateTime              @default(now()) @map("created_at")
@@ -639,6 +830,7 @@ model AccountTransaction {
   @@index([sourceId])
   @@index([workspaceId])
   @@index([voidedAt])
+  @@index([accountId, transactionDate])
   @@map("account_transactions")
 }
 
@@ -846,16 +1038,26 @@ model InventoryTransaction {
   sellingPrice    Decimal?                 @map("selling_price") @db.Decimal(20, 4)
   referenceType   InventoryReferenceType?  @map("reference_type")
   referenceId     String?                  @map("reference_id") @db.Uuid
+  /// True for compensating rows written by reverseInventoryForReference.
+  /// Reversal rows carry the SAME referenceType/referenceId as the movement they
+  /// undo, so without this flag a second reversal re-reads them and undoes the
+  /// undo — silently corrupting stock and average cost.
+  isReversal      Boolean                  @default(false) @map("is_reversal")
+  /// The movement this row reverses. Unique: a movement can be reversed once.
+  reversesTransactionId String?            @unique @map("reverses_transaction_id") @db.Uuid
   notes           String?
   createdById     String                   @map("created_by_id") @db.Uuid
   createdAt       DateTime                 @default(now()) @map("created_at")
 
-  item            InventoryItem    @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  item            InventoryItem         @relation(fields: [itemId], references: [id], onDelete: Cascade)
   lotConsumptions LotConsumption[]
+  reverses        InventoryTransaction? @relation("InventoryReversal", fields: [reversesTransactionId], references: [id])
+  reversedBy      InventoryTransaction? @relation("InventoryReversal")
 
   @@index([itemId])
   @@index([workspaceId])
   @@index([referenceType, referenceId])
+  @@index([referenceType, referenceId, isReversal])
   @@index([transactionType])
   @@index([createdAt])
   @@map("inventory_transactions")
@@ -1056,6 +1258,9 @@ enum ProjectStatus {
   ARCHIVED
 }
 
+/// Per-project delegation. PROJECT_MANAGER here governs ONE project; the
+/// workspace-level WorkspaceRole.PROJECT_MANAGER governs every project in the
+/// organisation. Different grants, deliberately both kept.
 enum ProjectRole {
   PROJECT_MANAGER
   CONTRIBUTOR
@@ -1085,6 +1290,7 @@ model Project {
   members     ProjectMember[]
   tasks       Task[]
   timeEntries TimeEntry[]
+  expenseClaims TaskExpenseClaim[]
 
   @@index([workspaceId])
   @@index([status])
@@ -1116,7 +1322,23 @@ enum TaskStatus {
   TODO
   IN_PROGRESS
   BLOCKED
+  /// Work is finished and an end-of-task report is awaiting review.
+  ///
+  /// This one value is what makes "members submit a report at the end of each
+  /// task" and "a member-created task is approved by a manager once it is
+  /// complete" the same mechanism: an assignee cannot reach DONE directly, only
+  /// by submitting a report, and only an approver can move it on from here.
+  IN_REVIEW
   DONE
+}
+
+/// Shared lifecycle for anything that is asked for and then decided.
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  /// Taken back by the requester before anyone decided.
+  WITHDRAWN
 }
 
 enum TaskPriority {
@@ -1149,6 +1371,12 @@ model Task {
   notifications Notification[]
   comments      TaskComment[]
   checklist     TaskChecklistItem[]
+  assignmentRequests TaskAssignmentRequest[]
+  reports            TaskReport[]
+  expenseClaims      TaskExpenseClaim[]
+  attachments        Attachment[]
+  attendanceSite     AttendanceSite?
+  clockInSessions    WorkSession[]       @relation("ClockInTask")
 
   @@index([workspaceId])
   @@index([projectId])
@@ -1213,6 +1441,139 @@ model TaskChecklistItem {
   @@map("task_checklist_items")
 }
 
+/// "May I take this on?" — a member asks, an approver decides.
+///
+/// Exists because a member can see every task in a project they belong to but
+/// may only act on one they are assigned to. Without this they would have to
+/// find a manager out of band.
+model TaskAssignmentRequest {
+  id          String         @id @default(uuid()) @db.Uuid
+  workspaceId String         @map("workspace_id") @db.Uuid
+  taskId      String         @map("task_id") @db.Uuid
+  requesterId String         @map("requester_id") @db.Uuid
+  message     String?
+  status      ApprovalStatus @default(PENDING)
+  reviewerId  String?        @map("reviewer_id") @db.Uuid
+  reviewNote  String?        @map("review_note")
+  reviewedAt  DateTime?      @map("reviewed_at")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task      Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  requester User      @relation("TaskRequestRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  reviewer  User?     @relation("TaskRequestReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status])
+  @@index([taskId])
+  @@index([requesterId, status])
+  /// One live request per person per task — a partial unique index in the
+  /// migration, since Prisma cannot express "WHERE status = 'PENDING'".
+  @@map("task_assignment_requests")
+}
+
+/// The end-of-task report an assignee submits, and a manager reviews.
+///
+/// Submitting moves the task to IN_REVIEW; approving is the only way it reaches
+/// DONE. Rejecting sends it back to IN_PROGRESS with the reviewer's note.
+model TaskReport {
+  id           String         @id @default(uuid()) @db.Uuid
+  workspaceId  String         @map("workspace_id") @db.Uuid
+  taskId       String         @map("task_id") @db.Uuid
+  authorId     String         @map("author_id") @db.Uuid
+  summary      String
+  blockers     String?
+  minutesSpent Int?           @map("minutes_spent")
+  status       ApprovalStatus @default(PENDING)
+  reviewerId   String?        @map("reviewer_id") @db.Uuid
+  reviewNote   String?        @map("review_note")
+  reviewedAt   DateTime?      @map("reviewed_at")
+  /// Compare-and-swap guard so two reviewers cannot both decide one report.
+  version      Int            @default(1)
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task      Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author    User      @relation("TaskReportAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  reviewer  User?     @relation("TaskReportReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  attachments Attachment[]
+
+  @@index([workspaceId, status])
+  @@index([taskId])
+  @@index([authorId])
+  /// One report under review or accepted per task — partial unique in the
+  /// migration. A rejected report does not block resubmission.
+  @@map("task_reports")
+}
+
+/// Where the money came from when the expense was incurred.
+enum ExpensePaymentSource {
+  /// The member paid out of their own pocket and is owed it back.
+  OWN_MONEY
+  /// Paid from an organisation wallet, so the money has already left.
+  ORG_WALLET
+}
+
+/// An expense incurred doing a task, with proof, awaiting a decision.
+///
+/// Approving posts to the ledger, and what it posts depends on who paid:
+///
+///   ORG_WALLET -> an EXPENSE entry linked to that wallet. The book balance does
+///                 not move but money-out does, and the wallet decreases —
+///                 the existing wallet-link rule, unchanged.
+///
+///   OWN_MONEY  -> a PAYABLE obligation owed to the member's staff contact,
+///                 posting Dr Deferred Purchases / Cr Accounts Payable. The
+///                 expense reaches the P&L when the org actually reimburses
+///                 them, which is correct on this ledger's cash basis, and
+///                 "what we owe staff" shows up in AP aging in the meantime.
+model TaskExpenseClaim {
+  id           String               @id @default(uuid()) @db.Uuid
+  workspaceId  String               @map("workspace_id") @db.Uuid
+  taskId       String?              @map("task_id") @db.Uuid
+  projectId    String?              @map("project_id") @db.Uuid
+  claimantId   String               @map("claimant_id") @db.Uuid
+  amount       Decimal              @db.Decimal(20, 4)
+  currency     String
+  description  String
+  incurredOn   DateTime             @map("incurred_on") @db.Date
+  paymentSource ExpensePaymentSource @map("payment_source")
+  /// The wallet the money left. Required when paymentSource is ORG_WALLET,
+  /// enforced by a CHECK in the migration.
+  accountId    String?              @map("account_id") @db.Uuid
+  status       ApprovalStatus       @default(PENDING)
+  reviewerId   String?              @map("reviewer_id") @db.Uuid
+  reviewNote   String?              @map("review_note")
+  reviewedAt   DateTime?            @map("reviewed_at")
+  /// Chosen by the approver at the moment of approval, not by the claimant.
+  cashbookId   String?              @map("cashbook_id") @db.Uuid
+  /// Exactly one of these is set on approval, and each is unique — the database
+  /// backstop against a claim posting to the ledger twice.
+  entryId      String?              @unique @map("entry_id") @db.Uuid
+  obligationId String?              @unique @map("obligation_id") @db.Uuid
+  /// Compare-and-swap guard so two approvers cannot both post one claim.
+  version      Int                  @default(1)
+  createdAt    DateTime             @default(now()) @map("created_at")
+  updatedAt    DateTime             @updatedAt @map("updated_at")
+
+  workspace  Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task       Task?               @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  project    Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  claimant   User                @relation("ExpenseClaimant", fields: [claimantId], references: [id], onDelete: Cascade)
+  reviewer   User?               @relation("ExpenseReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  account    Account?            @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  cashbook   Cashbook?           @relation(fields: [cashbookId], references: [id], onDelete: Restrict)
+  entry      Entry?              @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  obligation CashbookObligation? @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+  attachments Attachment[]
+
+  @@index([workspaceId, status])
+  @@index([claimantId])
+  @@index([taskId])
+  @@map("task_expense_claims")
+}
+
 // ─── Time Tracking ──────────────────────────────────────
 
 enum TimeEntrySource {
@@ -1235,13 +1596,21 @@ model TimeEntry {
   billable        Boolean         @default(true)
   /// Locked entries cannot be edited by the owner (managers can unlock)
   isLocked        Boolean         @default(false) @map("is_locked")
+  /// Workspace-local day these minutes belong to. Same reasoning as
+  /// WorkSession.businessDate — the previous "day" bucket in the summary was a
+  /// UTC slice of startTime, which put evening work on the following day.
+  businessDate    DateTime        @map("business_date") @db.Date
+  /// Who recorded the entry. Differs from userId when a manager logs time on
+  /// someone else's behalf; without it the two are indistinguishable.
+  createdById     String          @map("created_by_id") @db.Uuid
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  task      Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
-  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task      Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  createdBy User      @relation("TimeEntryCreator", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@index([userId])
   @@index([workspaceId])
@@ -1250,37 +1619,541 @@ model TimeEntry {
   @@index([startTime])
   @@index([endTime])
   @@index([billable])
-  /// At most one open TIMER per user per workspace (enforced via raw SQL migration too)
+  @@index([workspaceId, userId, businessDate])
+  @@index([workspaceId, projectId, businessDate])
+  /// The partial unique index enforcing one open TIMER per user per workspace is
+  /// created in 0008_attendance_timezone_core. It did NOT exist before that
+  /// migration, despite a comment here claiming it did — which is why the P2002
+  /// handlers in startTimer and clockIn were unreachable.
   @@map("time_entries")
 }
 
+/// What someone is doing right now, self-reported while clocked in.
+///
+/// BREAK and LUNCH are not merely informational: their minutes are subtracted
+/// from worked time when the schedule says breaks are unpaid, which is why
+/// presence is stored as intervals rather than as a single current value.
+enum PresenceStatus {
+  AVAILABLE
+  WORKING
+  BUSY
+  BREAK
+  LUNCH
+  MEETING
+}
+
+/// How strictly a workspace treats clocking in away from a known site.
+enum GeofenceEnforcement {
+  /// No location checking at all.
+  OFF
+  /// Allowed, but recorded as off-site.
+  WARN
+  /// Refused.
+  ENFORCE
+}
+
+/// Half-day leave: which part of the day is covered.
+enum LeaveDayPortion {
+  FULL
+  FIRST_HALF
+  SECOND_HALF
+}
+
+/// Why someone's attendance on a day is worth a second look.
+enum AttendanceFlagType {
+  LATE_IN
+  EARLY_OUT
+  MISSED_CLOCK_OUT
+  ABSENT
+  OUT_OF_GEOFENCE
+}
+
+enum AttendanceFlagStatus {
+  ACTIVE
+  /// Cancelled by an owner or admin, with a reason on the record.
+  WAIVED
+}
+
+/// Overtime asked for in advance, or accounted for afterwards.
+enum OvertimeRequestType {
+  PLANNED
+  RETROACTIVE
+}
+
+enum WorkReportPeriod {
+  DAILY
+  MONTHLY
+}
+
+/// What a day looked like for one person, after the fact.
+enum AttendanceDayStatus {
+  PRESENT
+  /// Worked, but under what the schedule expected.
+  PARTIAL
+  /// Expected and did not appear.
+  ABSENT
+  ON_LEAVE
+  HOLIDAY
+  /// Not a working day for this person.
+  NON_WORKING
+}
+
+/// How an open session ended. Anything other than CLOSED means a human did not
+/// tap clock-out, which is worth surfacing rather than inferring from nulls.
+enum WorkSessionStatus {
+  OPEN
+  CLOSED
+  AUTO_CLOSED
+  ADMIN_CLOSED
+}
+
+/// Workspace-wide attendance policy.
+///
+/// A separate table rather than more columns on Workspace: this grows with
+/// every people-ops feature, and Workspace is already read on nearly every
+/// request.
+model AttendanceSettings {
+  id          String  @id @default(uuid()) @db.Uuid
+  workspaceId String  @unique @map("workspace_id") @db.Uuid
+
+  /// Minutes past local midnight at which a business day starts. 0 = midnight.
+  /// A workspace running 22:00-06:00 shifts sets this to e.g. 240 so one shift
+  /// is not split across two business dates.
+  dayBoundaryMinutes Int @default(0) @map("day_boundary_minutes")
+
+  geofenceEnforcement GeofenceEnforcement @default(WARN) @map("geofence_enforcement")
+  /// Whether an assignee may clock in at a site attached to their task.
+  allowTaskSiteClockIn Boolean @default(true) @map("allow_task_site_clock_in")
+
+  /// Track hours past the scheduled end. When off, those minutes are still
+  /// MEASURED — see WorkSession.rawOvertimeMinutes — but count as zero.
+  overtimeTrackingEnabled Boolean @default(false) @map("overtime_tracking_enabled")
+  /// Whether time billable to a client is tracked at all.
+  billableTrackingEnabled Boolean @default(true) @map("billable_tracking_enabled")
+
+  /// Minutes before the scheduled end to nudge people to wrap up and report.
+  wrapUpReminderMinutes Int  @default(30) @map("wrap_up_reminder_minutes")
+  /// Leaving before the earliest clock-out has to say why.
+  earlyClockOutRequiresReason Boolean @default(true) @map("early_clock_out_requires_reason")
+  allowClockInWhileOnLeave    Boolean @default(false) @map("allow_clock_in_while_on_leave")
+  flagsEnabled                Boolean @default(true) @map("flags_enabled")
+  /// Whether everyone can see everyone's presence. Location is never shared
+  /// this way — only the status.
+  presenceVisibleToAllMembers Boolean @default(true) @map("presence_visible_to_all_members")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("attendance_settings")
+}
+
+/// A place someone may clock in from.
+///
+/// One table for both workspace sites and per-task sites so the geofence check
+/// is a single query and a single code path. Two representations of "a circle
+/// on the earth" is how a WARN/ENFORCE policy ends up applied inconsistently
+/// between them — and it also fixes an existing limitation, since a workspace
+/// could previously have only one location.
+model AttendanceSite {
+  id           String  @id @default(uuid()) @db.Uuid
+  workspaceId  String  @map("workspace_id") @db.Uuid
+  /// Null for a workspace-level site; set for a site attached to one task.
+  taskId       String? @unique @map("task_id") @db.Uuid
+  name         String
+  latitude     Float
+  longitude    Float
+  radiusMeters Int     @map("radius_meters")
+  isPrimary    Boolean @default(false) @map("is_primary")
+  isActive     Boolean @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task      Task?     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  clockedInSessions  WorkSession[] @relation("ClockInSite")
+  clockedOutSessions WorkSession[] @relation("ClockOutSite")
+
+  @@index([workspaceId, isActive])
+  @@map("attendance_sites")
+}
+
+/// Working hours, either the organisation default or one person's override.
+///
+/// Temporal on purpose. Without effectiveFrom/To, editing the schedule in June
+/// silently rewrites January's late-arrival flags, because the flag computation
+/// resolves the schedule as it was on the day.
+model WorkSchedule {
+  id          String  @id @default(uuid()) @db.Uuid
+  workspaceId String  @map("workspace_id") @db.Uuid
+  /// Null = the organisation default everyone inherits.
+  userId      String? @map("user_id") @db.Uuid
+  name        String  @default("Standard hours")
+
+  /// ISO weekdays, 1 = Monday .. 7 = Sunday.
+  workingDays Int[]   @map("working_days")
+  startTime   String  @map("start_time")
+  endTime     String  @map("end_time")
+  /// endTime <= startTime, e.g. 22:00-06:00. Derived on write, stored so the
+  /// resolver does not have to re-derive it on every read.
+  crossesMidnight Boolean @default(false) @map("crosses_midnight")
+
+  /// Minutes after startTime before an arrival counts as late.
+  graceMinutes         Int @default(10) @map("grace_minutes")
+  /// Minutes before endTime that leaving is still not "early".
+  earlyOutGraceMinutes Int @default(10) @map("early_out_grace_minutes")
+  breakMinutes         Int @default(0)  @map("break_minutes")
+  breakPaid            Boolean @default(false) @map("break_paid")
+  expectedMinutesPerDay Int @map("expected_minutes_per_day")
+
+  /// Advisory windows. There is deliberately no clock-out upper bound.
+  clockInWindowStart  String? @map("clock_in_window_start")
+  clockInWindowEnd    String? @map("clock_in_window_end")
+  clockOutWindowStart String? @map("clock_out_window_start")
+
+  effectiveFrom DateTime  @map("effective_from") @db.Date
+  effectiveTo   DateTime? @map("effective_to") @db.Date
+  createdById   String?   @map("created_by_id") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions  WorkSession[]
+
+  @@index([workspaceId, userId, effectiveFrom])
+  @@map("work_schedules")
+}
+
+/// A day nobody is expected to work.
+model Holiday {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  date        DateTime @db.Date
+  name        String
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, date])
+  @@map("holidays")
+}
+
+/// How long someone spent in each presence state.
+///
+/// An interval log rather than a single column on the session, because break
+/// and lunch minutes have to be SUBTRACTED from worked time — that needs
+/// durations, not a current value. WorkSession.presenceStatus caches the open
+/// interval's status for the "who is around" view.
+model WorkSessionPresence {
+  id          String         @id @default(uuid()) @db.Uuid
+  sessionId   String         @map("session_id") @db.Uuid
+  workspaceId String         @map("workspace_id") @db.Uuid
+  userId      String         @map("user_id") @db.Uuid
+  status      PresenceStatus
+  startedAt   DateTime       @map("started_at")
+  endedAt     DateTime?      @map("ended_at")
+  minutes     Int?
+  note        String?
+
+  session WorkSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, startedAt])
+  @@index([workspaceId, userId, startedAt])
+  @@map("work_session_presence")
+}
+
+/// One person, one day, after the fact.
+///
+/// A derived rollup with a single writer. It exists because absence cannot be
+/// computed from rows that exist — "who was missing" needs a day x member grid
+/// resolved against schedules, holidays and leave, which is not a GROUP BY over
+/// sessions. It is also what keeps an approved report from changing months
+/// later because somebody edited the schedule.
+model AttendanceDay {
+  id           String              @id @default(uuid()) @db.Uuid
+  workspaceId  String              @map("workspace_id") @db.Uuid
+  userId       String              @map("user_id") @db.Uuid
+  businessDate DateTime            @map("business_date") @db.Date
+  status       AttendanceDayStatus
+
+  expectedMinutes        Int @default(0) @map("expected_minutes")
+  workedMinutes          Int @default(0) @map("worked_minutes")
+  breakMinutes           Int @default(0) @map("break_minutes")
+  /// Always measured, whatever the overtime toggle says — discarding it makes a
+  /// later dispute unresolvable.
+  rawOvertimeMinutes     Int @default(0) @map("raw_overtime_minutes")
+  /// What rollups and reports actually total. Zero when overtime tracking is
+  /// off and no approved request covers the day.
+  countedOvertimeMinutes Int @default(0) @map("counted_overtime_minutes")
+  billableMinutes        Int @default(0) @map("billable_minutes")
+  lateMinutes            Int @default(0) @map("late_minutes")
+  earlyOutMinutes        Int @default(0) @map("early_out_minutes")
+
+  firstClockIn DateTime? @map("first_clock_in")
+  lastClockOut DateTime? @map("last_clock_out")
+  sessionCount Int       @default(0) @map("session_count")
+  scheduleId   String?   @map("schedule_id") @db.Uuid
+  computedAt   DateTime  @default(now()) @map("computed_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId, businessDate])
+  @@index([workspaceId, businessDate, status])
+  @@map("attendance_days")
+}
+
+/// A kind of leave a workspace recognises.
+model LeaveType {
+  id             String  @id @default(uuid()) @db.Uuid
+  workspaceId    String  @map("workspace_id") @db.Uuid
+  name           String
+  code           String
+  /// Whether the day still counts as paid time.
+  isPaid         Boolean @default(true) @map("is_paid")
+  allowHalfDay   Boolean @default(true) @map("allow_half_day")
+  maxDaysPerYear Int?    @map("max_days_per_year")
+  colorHex       String? @map("color_hex")
+  sortOrder      Int     @default(0) @map("sort_order")
+  isActive       Boolean @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  requests  LeaveRequest[]
+
+  @@unique([workspaceId, code])
+  @@unique([workspaceId, name])
+  @@map("leave_types")
+}
+
+/// Time off, asked for and decided.
+model LeaveRequest {
+  id           String          @id @default(uuid()) @db.Uuid
+  workspaceId  String          @map("workspace_id") @db.Uuid
+  userId       String          @map("user_id") @db.Uuid
+  leaveTypeId  String          @map("leave_type_id") @db.Uuid
+  startDate    DateTime        @map("start_date") @db.Date
+  endDate      DateTime        @map("end_date") @db.Date
+  startPortion LeaveDayPortion @default(FULL) @map("start_portion")
+  endPortion   LeaveDayPortion @default(FULL) @map("end_portion")
+  /// Working days covered, halves included — 2.5, not 3.
+  totalDays    Decimal         @map("total_days") @db.Decimal(5, 2)
+  reason       String
+  status       ApprovalStatus  @default(PENDING)
+  reviewerId   String?         @map("reviewer_id") @db.Uuid
+  reviewNote   String?         @map("review_note")
+  reviewedAt   DateTime?       @map("reviewed_at")
+  version      Int             @default(1)
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User       @relation("LeaveRequester", fields: [userId], references: [id], onDelete: Cascade)
+  leaveType LeaveType  @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
+  reviewer  User?      @relation("LeaveReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  days      LeaveDay[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, userId, startDate])
+  @@map("leave_requests")
+}
+
+/// One approved day off, materialised so "is this person expected today" is an
+/// indexed join rather than half-day range arithmetic.
+///
+/// Created on approval and deleted on cancellation. The unique on
+/// (workspace, user, date) is the real double-booking backstop — stronger than
+/// any overlap check in a service, because it also survives two approvals
+/// landing at the same instant.
+model LeaveDay {
+  id             String          @id @default(uuid()) @db.Uuid
+  leaveRequestId String          @map("leave_request_id") @db.Uuid
+  workspaceId    String          @map("workspace_id") @db.Uuid
+  userId         String          @map("user_id") @db.Uuid
+  date           DateTime        @db.Date
+  portion        LeaveDayPortion @default(FULL)
+
+  request LeaveRequest @relation(fields: [leaveRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId, date])
+  @@index([workspaceId, date])
+  @@map("leave_days")
+}
+
+/// Permission to work past the scheduled end, or a record of having done so.
+model OvertimeRequest {
+  id              String                @id @default(uuid()) @db.Uuid
+  workspaceId     String                @map("workspace_id") @db.Uuid
+  userId          String                @map("user_id") @db.Uuid
+  businessDate    DateTime              @map("business_date") @db.Date
+  type            OvertimeRequestType   @default(PLANNED)
+  requestedMinutes Int                  @map("requested_minutes")
+  reason          String
+  status          ApprovalStatus        @default(PENDING)
+  /// May be less than requested — an approver can grant part of it.
+  approvedMinutes Int?                  @map("approved_minutes")
+  reviewerId      String?               @map("reviewer_id") @db.Uuid
+  reviewNote      String?               @map("review_note")
+  reviewedAt      DateTime?             @map("reviewed_at")
+  version         Int                   @default(1)
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation("OvertimeRequester", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer  User?     @relation("OvertimeReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, userId, businessDate])
+  @@map("overtime_requests")
+}
+
+/// A late arrival, an early departure, a forgotten clock-out.
+///
+/// Flags only — no money and no scoring. Waiving one requires a reason and is
+/// audit-logged, and is deliberately owner/admin only: HR owns the policy, so
+/// erasing a breach of it should not sit with them.
+model AttendanceFlag {
+  id           String               @id @default(uuid()) @db.Uuid
+  workspaceId  String               @map("workspace_id") @db.Uuid
+  userId       String               @map("user_id") @db.Uuid
+  businessDate DateTime             @map("business_date") @db.Date
+  type         AttendanceFlagType
+  /// How many minutes past grace, where that makes sense.
+  minutes      Int?
+  sessionId    String?              @map("session_id") @db.Uuid
+  status       AttendanceFlagStatus @default(ACTIVE)
+  detail       Json?
+  waivedById   String?              @map("waived_by_id") @db.Uuid
+  waivedAt     DateTime?            @map("waived_at")
+  waiverReason String?              @map("waiver_reason")
+  createdAt    DateTime             @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation("FlaggedUser", fields: [userId], references: [id], onDelete: Cascade)
+  waivedBy  User?     @relation("FlagWaiver", fields: [waivedById], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, businessDate, status])
+  @@index([workspaceId, userId, businessDate])
+  @@map("attendance_flags")
+}
+
+/// A daily or monthly work report.
+///
+/// Distinct from TaskReport: that one ends a task, this one covers a period
+/// regardless of what was worked on.
+model WorkReport {
+  id           String           @id @default(uuid()) @db.Uuid
+  workspaceId  String           @map("workspace_id") @db.Uuid
+  userId       String           @map("user_id") @db.Uuid
+  period       WorkReportPeriod
+  periodStart  DateTime         @map("period_start") @db.Date
+  periodEnd    DateTime         @map("period_end") @db.Date
+  summary      String
+  blockers     String?
+  nextSteps    String?          @map("next_steps")
+  /// Hours and task counts as they stood at submission. Snapshotted so a later
+  /// time-entry edit cannot silently change what a reviewer already approved.
+  metrics      Json?
+  status       ApprovalStatus   @default(PENDING)
+  submittedAt  DateTime         @default(now()) @map("submitted_at")
+  reviewerId   String?          @map("reviewer_id") @db.Uuid
+  reviewNote   String?          @map("review_note")
+  reviewedAt   DateTime?        @map("reviewed_at")
+  /// True when the author could approve reports anyway — recorded rather than
+  /// hidden, so the queue does not silently omit them.
+  autoApproved Boolean          @default(false) @map("auto_approved")
+  version      Int              @default(1)
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation("WorkReportAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer  User?     @relation("WorkReportReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, userId, period, periodStart])
+  @@index([workspaceId, status])
+  @@map("work_reports")
+}
+
 model WorkSession {
-  id                    String    @id @default(uuid()) @db.Uuid
-  userId                String    @map("user_id") @db.Uuid
-  workspaceId           String    @map("workspace_id") @db.Uuid
-  clockIn               DateTime  @map("clock_in")
-  clockOut              DateTime? @map("clock_out")
-  totalMinutes          Int?      @map("total_minutes")
+  id                    String            @id @default(uuid()) @db.Uuid
+  userId                String            @map("user_id") @db.Uuid
+  workspaceId           String            @map("workspace_id") @db.Uuid
+  clockIn               DateTime          @map("clock_in")
+  clockOut              DateTime?         @map("clock_out")
+  totalMinutes          Int?              @map("total_minutes")
   description           String?
-  clockInLatitude       Float?    @map("clock_in_latitude")
-  clockInLongitude      Float?    @map("clock_in_longitude")
-  clockInLocationLabel  String?   @map("clock_in_location_label")
-  clockOutLatitude      Float?    @map("clock_out_latitude")
-  clockOutLongitude     Float?    @map("clock_out_longitude")
-  clockOutLocationLabel String?   @map("clock_out_location_label")
-  adjustedById          String?   @map("adjusted_by_id") @db.Uuid
-  adjustedAt            DateTime? @map("adjusted_at")
-  adjustmentReason      String?   @map("adjustment_reason")
-  createdAt             DateTime  @default(now()) @map("created_at")
-  updatedAt             DateTime  @updatedAt @map("updated_at")
+  /// The workspace-local day these minutes belong to, decided at clock-in and
+  /// stored rather than derived. Every rollup groups on this: deriving it at
+  /// read time would need (ts AT TIME ZONE 'UTC' AT TIME ZONE tz)::date on the
+  /// hot path, and would silently re-bucket history if the zone ever changed.
+  businessDate          DateTime          @map("business_date") @db.Date
+  status                WorkSessionStatus @default(OPEN)
+  /// Cache of the open presence interval. NULL exactly when the session is
+  /// closed — a CHECK enforces it, so presence cannot outlive a session.
+  presenceStatus        PresenceStatus?   @map("presence_status")
+  presenceChangedAt     DateTime?         @map("presence_changed_at")
+  /// The schedule as it stood on the day, captured at clock-in. Editing the
+  /// schedule later must not retroactively make somebody late.
+  scheduleId            String?           @map("schedule_id") @db.Uuid
+  scheduledStartUtc     DateTime?         @map("scheduled_start_utc")
+  scheduledEndUtc       DateTime?         @map("scheduled_end_utc")
+  scheduledMinutes      Int?              @map("scheduled_minutes")
+  graceMinutesApplied   Int?              @map("grace_minutes_applied")
+  /// Minutes in unpaid BREAK/LUNCH, subtracted from workedMinutes.
+  breakMinutes          Int               @default(0) @map("break_minutes")
+  workedMinutes         Int?              @map("worked_minutes")
+  rawOvertimeMinutes    Int               @default(0) @map("raw_overtime_minutes")
+  countedOvertimeMinutes Int              @default(0) @map("counted_overtime_minutes")
+  clockInSiteId         String?           @map("clock_in_site_id") @db.Uuid
+  clockOutSiteId        String?           @map("clock_out_site_id") @db.Uuid
+  /// The task whose site was used to clock in, when one was.
+  clockInTaskId         String?           @map("clock_in_task_id") @db.Uuid
+  clockInDistanceMeters Float?            @map("clock_in_distance_meters")
+  clockOutDistanceMeters Float?           @map("clock_out_distance_meters")
+  clockInLatitude       Float?            @map("clock_in_latitude")
+  clockInLongitude      Float?            @map("clock_in_longitude")
+  clockInLocationLabel  String?           @map("clock_in_location_label")
+  clockInWithinGeofence Boolean?          @map("clock_in_within_geofence")
+  clockOutLatitude      Float?            @map("clock_out_latitude")
+  clockOutLongitude     Float?            @map("clock_out_longitude")
+  clockOutLocationLabel String?           @map("clock_out_location_label")
+  clockOutWithinGeofence Boolean?         @map("clock_out_within_geofence")
+  /// Set when the session did not end with the user tapping clock-out.
+  autoClosedAt          DateTime?         @map("auto_closed_at")
+  closedById            String?           @map("closed_by_id") @db.Uuid
+  closureReason         String?           @map("closure_reason")
+  /// Required by policy when clocking out before the configured earliest time.
+  earlyOutReason        String?           @map("early_out_reason")
+  adjustedById          String?           @map("adjusted_by_id") @db.Uuid
+  adjustedAt            DateTime?         @map("adjusted_at")
+  adjustmentReason      String?           @map("adjustment_reason")
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  adjustedBy User?    @relation("WorkSessionAdjuster", fields: [adjustedById], references: [id], onDelete: SetNull)
+  closedBy   User?    @relation("WorkSessionCloser", fields: [closedById], references: [id], onDelete: SetNull)
+  schedule     WorkSchedule?   @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  clockInSite  AttendanceSite? @relation("ClockInSite", fields: [clockInSiteId], references: [id], onDelete: SetNull)
+  clockOutSite AttendanceSite? @relation("ClockOutSite", fields: [clockOutSiteId], references: [id], onDelete: SetNull)
+  clockInTask  Task?           @relation("ClockInTask", fields: [clockInTaskId], references: [id], onDelete: SetNull)
+  presence     WorkSessionPresence[]
 
   @@index([userId])
   @@index([workspaceId])
   @@index([clockIn])
   @@index([clockOut])
+  @@index([workspaceId, businessDate])
+  @@index([workspaceId, userId, businessDate])
+  /// Partial unique indexes live in the migration, not here — Prisma cannot
+  /// express them. See 0008_attendance_timezone_core:
+  ///   work_sessions_one_open_per_user  (user_id) WHERE clock_out IS NULL
   @@map("work_sessions")
 }
 
@@ -1290,6 +2163,35 @@ enum NotificationType {
   TASK_ASSIGNED
   TASK_DUE_SOON
   TASK_OVERDUE
+  TASK_ASSIGNMENT_REQUESTED
+  TASK_ASSIGNMENT_DECIDED
+  TASK_REPORT_SUBMITTED
+  TASK_REPORT_DECIDED
+  EXPENSE_CLAIM_SUBMITTED
+  EXPENSE_CLAIM_DECIDED
+  LEAVE_REQUESTED
+  LEAVE_DECIDED
+  OVERTIME_REQUESTED
+  OVERTIME_DECIDED
+  WORK_REPORT_SUBMITTED
+  WORK_REPORT_DECIDED
+  ATTENDANCE_WRAP_UP
+  SESSION_AUTO_CLOSED
+  ATTENDANCE_FLAG_RAISED
+}
+
+/// What a notification points at, so it can link to something other than a task
+/// without adding a nullable foreign key per entity type.
+enum NotificationEntityType {
+  TASK
+  TASK_ASSIGNMENT_REQUEST
+  TASK_REPORT
+  EXPENSE_CLAIM
+  LEAVE_REQUEST
+  OVERTIME_REQUEST
+  WORK_REPORT
+  WORK_SESSION
+  ATTENDANCE_FLAG
 }
 
 model Notification {
@@ -1300,6 +2202,13 @@ model Notification {
   title       String
   body        String
   taskId      String?          @map("task_id") @db.Uuid
+  /// Generic target, so a notification can point at a request or a report.
+  /// taskId is kept for the rows that predate this and for task-scoped queries.
+  entityType  NotificationEntityType? @map("entity_type")
+  entityId    String?          @map("entity_id") @db.Uuid
+  /// Deterministic dedupe key. Retries, and any overlap between replicas,
+  /// collapse onto one row instead of notifying somebody four times.
+  groupKey    String?          @map("group_key")
   isRead      Boolean          @default(false) @map("is_read")
   readAt      DateTime?        @map("read_at")
   createdAt   DateTime         @default(now()) @map("created_at")
@@ -1312,5 +2221,226 @@ model Notification {
   @@index([workspaceId])
   @@index([isRead])
   @@index([createdAt])
+  /// Nullable groupKey means NULLs stay distinct in Postgres, so unkeyed
+  /// notifications are unconstrained — exactly the semantics wanted.
+  @@unique([userId, type, groupKey])
   @@map("notifications")
+}
+
+// ═══════════════════════════════════════════════════════════
+// ─── Double-entry general ledger ───────────────────────────
+// ═══════════════════════════════════════════════════════════
+//
+// Every financial event posts a balanced JournalEntry. The cached columns on
+// Cashbook and Account (balance / totalIncome / totalExpense) are DERIVED from
+// this ledger and have exactly one writer: PostingService.
+//
+// The rule that a wallet-linked entry moves the wallet but not the cashbook's
+// book balance is not enforced anywhere here — it falls out of routing the cash
+// leg to the wallet's ledger account instead of the cashbook's Book Cash
+// account. See src/core/ledger/rules/entry.rules.ts.
+
+enum LedgerAccountClass {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+enum NormalBalance {
+  DEBIT
+  CREDIT
+}
+
+enum LedgerAccountOrigin {
+  /// Seeded from the chart-of-accounts template.
+  SYSTEM
+  /// Auto-created 1:1 with a wallet Account.
+  WALLET
+  /// Auto-created 1:1 with a Cashbook (its unallocated book cash).
+  BOOK_CASH
+  /// Created by an accountant.
+  USER
+}
+
+enum JournalStatus {
+  POSTED
+  /// Superseded: a REVERSING journal cancels this one out.
+  REVERSED
+  /// This journal is itself the reversal of another.
+  REVERSING
+}
+
+enum JournalSourceType {
+  CASHBOOK_ENTRY
+  ACCOUNT_TRANSACTION
+  ACCOUNT_TRANSFER
+  ACCOUNT_OPENING
+  /// Receivables/payables. Invoices post through their obligation, never directly.
+  OBLIGATION
+  INVENTORY
+  MANUAL
+}
+
+enum EntryStatus {
+  POSTED
+  REVERSED
+}
+
+enum RevenueBasis {
+  CASH
+  ACCRUAL
+}
+
+enum InventoryValuationMode {
+  OFF
+  PERPETUAL
+}
+
+enum FiscalPeriodStatus {
+  OPEN
+  CLOSED
+}
+
+model LedgerAccount {
+  id               String              @id @default(uuid()) @db.Uuid
+  workspaceId      String              @map("workspace_id") @db.Uuid
+  code             String
+  name             String
+  class            LedgerAccountClass
+  normalBalance    NormalBalance       @map("normal_balance")
+  origin           LedgerAccountOrigin @default(USER)
+  /// Stable handle for seeded accounts ('AR', 'SALES_REVENUE', ...) so rules can
+  /// look them up without depending on user-editable codes or names.
+  systemKey        String?             @map("system_key")
+  parentId         String?             @map("parent_id") @db.Uuid
+  /// Single-currency by construction. No FX: every line must match.
+  currency         String
+  /// Drives the direct-method cash flow statement.
+  isCashEquivalent Boolean             @default(false) @map("is_cash_equivalent")
+  /// False for roll-up parents, which exist for presentation only.
+  isPostable       Boolean             @default(true) @map("is_postable")
+  /// System accounts cannot be renamed, re-coded or deleted.
+  isProtected      Boolean             @default(false) @map("is_protected")
+  isActive         Boolean             @default(true) @map("is_active")
+  archivedAt       DateTime?           @map("archived_at")
+  createdAt        DateTime            @default(now()) @map("created_at")
+  updatedAt        DateTime            @updatedAt @map("updated_at")
+
+  workspace     Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parent        LedgerAccount?  @relation("CoaTree", fields: [parentId], references: [id])
+  children      LedgerAccount[] @relation("CoaTree")
+  lines         JournalLine[]
+  walletAccount Account?
+  cashbook      Cashbook?
+  categories    Category[]
+
+  @@unique([workspaceId, code])
+  /// Scoped by currency: a workspace holding both UGX and USD books needs one
+  /// Sales Revenue account per currency. There is no FX, so each currency's
+  /// books balance independently and no journal ever mixes them.
+  @@unique([workspaceId, systemKey, currency])
+  @@index([workspaceId, class])
+  @@index([workspaceId, currency])
+  @@index([parentId])
+  @@map("ledger_accounts")
+}
+
+model JournalEntry {
+  id          String            @id @default(uuid()) @db.Uuid
+  /// Global monotonic ordering key. The stable tie-break for same-date rows in
+  /// general-ledger running balances; without it those are non-deterministic.
+  seq         BigInt            @default(autoincrement())
+  workspaceId String            @map("workspace_id") @db.Uuid
+  /// Null for org-level events (wallet transfers, direct wallet transactions).
+  cashbookId  String?           @map("cashbook_id") @db.Uuid
+  /// Business date. Every report filters on this, never on postedAt.
+  entryDate   DateTime          @map("entry_date") @db.Date
+  postedAt    DateTime          @default(now()) @map("posted_at")
+  status      JournalStatus     @default(POSTED)
+  currency    String
+  description String
+  sourceType  JournalSourceType @map("source_type")
+  sourceId    String?           @map("source_id") @db.Uuid
+  /// Deterministic and unique per workspace: 'entry:<id>:v3', 'entry:<id>:v3:rev'.
+  /// This is the database-level exactly-once guarantee — it holds even when the
+  /// HTTP idempotency middleware is bypassed.
+  postingKey  String            @map("posting_key")
+  totalDebit  Decimal           @map("total_debit") @db.Decimal(20, 4)
+  totalCredit Decimal           @map("total_credit") @db.Decimal(20, 4)
+  reversesJournalEntryId String? @unique @map("reverses_journal_entry_id") @db.Uuid
+  createdById String            @map("created_by_id") @db.Uuid
+  createdAt   DateTime          @default(now()) @map("created_at")
+
+  workspace  Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  cashbook   Cashbook?     @relation(fields: [cashbookId], references: [id], onDelete: Restrict)
+  createdBy  User          @relation(fields: [createdById], references: [id])
+  reverses   JournalEntry? @relation("JournalReversal", fields: [reversesJournalEntryId], references: [id])
+  reversedBy JournalEntry? @relation("JournalReversal")
+  lines      JournalLine[]
+
+  @@unique([workspaceId, postingKey])
+  @@index([workspaceId, entryDate])
+  @@index([cashbookId, entryDate])
+  @@index([sourceType, sourceId])
+  @@index([workspaceId, status])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id             String   @id @default(uuid()) @db.Uuid
+  journalEntryId String   @map("journal_entry_id") @db.Uuid
+  lineNumber     Int      @map("line_number")
+
+  /// Denormalized from the header so every report query hits this table alone.
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  cashbookId     String?  @map("cashbook_id") @db.Uuid
+  entryDate      DateTime @map("entry_date") @db.Date
+  currency       String
+
+  ledgerAccountId String  @map("ledger_account_id") @db.Uuid
+  debit           Decimal @default(0) @db.Decimal(20, 4)
+  credit          Decimal @default(0) @db.Decimal(20, 4)
+  memo            String?
+
+  // ─── Analysis dimensions ───
+  /// obligationId is what makes AR/AP aging a pure ledger query.
+  contactId       String? @map("contact_id") @db.Uuid
+  categoryId      String? @map("category_id") @db.Uuid
+  obligationId    String? @map("obligation_id") @db.Uuid
+  inventoryItemId String? @map("inventory_item_id") @db.Uuid
+  entryId         String? @map("entry_id") @db.Uuid
+
+  journalEntry  JournalEntry  @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  ledgerAccount LedgerAccount @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+
+  @@unique([journalEntryId, lineNumber])
+  @@index([workspaceId, ledgerAccountId, entryDate])
+  @@index([workspaceId, cashbookId, entryDate])
+  @@index([ledgerAccountId, obligationId])
+  @@index([workspaceId, contactId, entryDate])
+  @@map("journal_lines")
+}
+
+/// Posting lock. Nothing may be posted into or reversed out of a CLOSED period;
+/// reversals of closed periods post at the current date instead.
+model FiscalPeriod {
+  id          String             @id @default(uuid()) @db.Uuid
+  workspaceId String             @map("workspace_id") @db.Uuid
+  startDate   DateTime           @map("start_date") @db.Date
+  endDate     DateTime           @map("end_date") @db.Date
+  status      FiscalPeriodStatus @default(OPEN)
+  closedById  String?            @map("closed_by_id") @db.Uuid
+  closedAt    DateTime?          @map("closed_at")
+  note        String?
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, startDate])
+  @@index([workspaceId, status])
+  @@index([workspaceId, startDate, endDate])
+  @@map("fiscal_periods")
 }

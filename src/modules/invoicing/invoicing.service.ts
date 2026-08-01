@@ -569,20 +569,37 @@ export class InvoicingService {
                 data: { status: InvoiceStatus.VOID },
             });
 
-            // 2. Cancel the linked RECEIVABLE obligation if there is one
+            // 2. Cancel the linked RECEIVABLE obligation, taking its remaining
+            //    balance off the books. A bare status flip would leave the
+            //    receivable sitting on the balance sheet forever.
             if (
                 invoice.status === InvoiceStatus.SENT ||
                 invoice.status === InvoiceStatus.OVERDUE ||
                 invoice.status === InvoiceStatus.PARTIALLY_PAID
             ) {
-                await tx.cashbookObligation.updateMany({
+                const linked = await tx.cashbookObligation.findMany({
                     where: {
                         referenceType: 'INVOICE',
                         referenceId: invoiceId,
                         status: { not: ObligationStatus.CANCELLED },
                     },
-                    data: { status: ObligationStatus.CANCELLED },
+                    select: { id: true, cashbookId: true },
                 });
+
+                const { ObligationsService } = await import(
+                    '../cashbook-obligations/obligations.service'
+                );
+                const { container } = await import('tsyringe');
+                const obligationsService = container.resolve(ObligationsService);
+
+                for (const obligation of linked) {
+                    await obligationsService.cancelObligationInTx(
+                        tx,
+                        obligation.id,
+                        userId,
+                        `Invoice ${invoice.invoiceNumber} voided`,
+                    );
+                }
             }
 
             // 3. Reverse inventory stock-outs via RETURN_IN (proper lot restoration for FIFO/LIFO)

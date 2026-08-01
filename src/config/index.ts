@@ -46,7 +46,28 @@ const envSchema = z.object({
     LOG_LEVEL: z.string().default('debug'),
     LOG_DIR: z.string().default('logs'),
 
+    /**
+     * Comma-separated list of platform superadmin emails.
+     *
+     * This env var is the single source of truth: on boot and on every login,
+     * users in the list are promoted and users no longer in it are demoted.
+     * Editing it therefore takes effect without touching the database.
+     */
+    SUPER_ADMIN_EMAILS: z.string().default(''),
+    /** Superseded by SUPER_ADMIN_EMAILS; still read so existing deploys keep working. */
     SUPER_ADMIN_EMAIL: z.string().email().default('admin@cashbook.com'),
+
+    /**
+     * Double-entry ledger rollout switch.
+     *
+     *   off    no journals are written (pre-ledger behaviour)
+     *   shadow journals are written alongside the legacy balance arithmetic,
+     *          which still owns the cached columns. The integrity verifier
+     *          compares the two; any mismatch is a posting-rule bug caught
+     *          before anything depends on it.
+     *   on     the ledger is the source of truth and the sole writer of caches
+     */
+    LEDGER_MODE: z.enum(['off', 'shadow', 'on']).default('on'),
 
     GOOGLE_CLIENT_ID: z.string().default(''),
 
@@ -66,3 +87,23 @@ if (!parsed.success) {
 
 export const config = parsed.data;
 export type Config = z.infer<typeof envSchema>;
+
+/**
+ * The normalized superadmin allow-list.
+ *
+ * Merges SUPER_ADMIN_EMAILS (the list) with the legacy single-value
+ * SUPER_ADMIN_EMAIL so existing deploys are not silently demoted on upgrade.
+ * Lower-cased and de-duplicated, because email comparison is case-insensitive
+ * and a stray duplicate should not change behaviour.
+ */
+export function superAdminEmails(): string[] {
+    const fromList = config.SUPER_ADMIN_EMAILS.split(',')
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean);
+
+    const legacy = config.SUPER_ADMIN_EMAIL?.trim().toLowerCase();
+    // The old default is a placeholder, not a real grant.
+    if (legacy && legacy !== 'admin@cashbook.com') fromList.push(legacy);
+
+    return [...new Set(fromList)];
+}

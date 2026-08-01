@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isValidTimeZone } from '../../core/time/zones';
 import { TimeEntrySource } from '@prisma/client';
 
 const latitudeSchema = z.coerce.number().min(-90).max(90);
@@ -70,6 +71,14 @@ export const clockInSchema = z.object({
     latitude: latitudeSchema.optional(),
     longitude: longitudeSchema.optional(),
     locationLabel: z.string().max(300).optional(),
+    /**
+     * Clock in from where a job is.
+     *
+     * Only honoured when the caller is assigned to that task and the workspace
+     * allows task sites — otherwise anyone could borrow somebody else's site to
+     * clock in from wherever they happen to be.
+     */
+    taskId: z.string().uuid().optional(),
 });
 
 export const clockOutSchema = z.object({
@@ -77,6 +86,12 @@ export const clockOutSchema = z.object({
     latitude: latitudeSchema.optional(),
     longitude: longitudeSchema.optional(),
     locationLabel: z.string().max(300).optional(),
+    /**
+     * Why you are leaving before the workspace's earliest clock-out time.
+     * Recorded, never required by the schema — a clock-out is not refusable, so
+     * a missing reason must not be able to block one.
+     */
+    earlyOutReason: z.string().max(500).optional(),
 });
 
 /** HH:MM 24-hour time string, e.g. "08:00" */
@@ -93,8 +108,19 @@ export const attendanceSettingsSchema = z.object({
     attendanceRadiusMeters: z.coerce.number().int().min(25).max(10000).optional().nullable(),
     attendanceClockInStart: timeHHMMSchema,
     attendanceClockInEnd: timeHHMMSchema,
+    /**
+     * Earliest expected clock-out. Advisory: leaving before it raises a flag,
+     * it does not refuse the clock-out. There is deliberately no upper bound —
+     * one used to exist, and once it passed the session could never be closed,
+     * which locked the person out of clocking in to every other organisation.
+     */
     attendanceClockOutStart: timeHHMMSchema,
-    attendanceClockOutEnd: timeHHMMSchema,
+    /** Whether a late arrival is refused outright rather than recorded as late. */
+    enforceClockWindows: z.boolean().optional(),
+    /** IANA zone every wall-clock policy above is evaluated in. */
+    timezone: z.string().refine(isValidTimeZone, {
+        message: 'Must be an IANA time zone such as "Africa/Kampala"',
+    }).optional(),
 }).superRefine((d, ctx) => {
     const hasAnyLocation =
         d.attendanceLatitude !== undefined ||
@@ -117,32 +143,25 @@ export const attendanceSettingsSchema = z.object({
         });
     }
 
-    // Time window pairs must be complete: either both sides set or both cleared
-    const clockInPairs: [string, string][] = [
-        ['attendanceClockInStart', 'attendanceClockInEnd'],
-        ['attendanceClockOutStart', 'attendanceClockOutEnd'],
-    ];
-    for (const [start, end] of clockInPairs) {
-        const s = d[start as keyof typeof d] as string | null | undefined;
-        const e = d[end as keyof typeof d] as string | null | undefined;
-        const startSet = s != null;
-        const endSet = e != null;
-        if (startSet !== endSet) {
-            ctx.addIssue({
-                code: 'custom',
-                message: `${start} and ${end} must be set together`,
-                path: [start],
-            });
-        }
-        // Ensure start < end when both provided
-        if (startSet && endSet && s! >= e!) {
-            ctx.addIssue({
-                code: 'custom',
-                message: `${start} must be before ${end}`,
-                path: [start],
-            });
-        }
+    // The clock-in window is a pair: both sides set, or both cleared.
+    const start = d.attendanceClockInStart;
+    const end = d.attendanceClockInEnd;
+    if ((start != null) !== (end != null)) {
+        ctx.addIssue({
+            code: 'custom',
+            message: 'attendanceClockInStart and attendanceClockInEnd must be set together',
+            path: ['attendanceClockInStart'],
+        });
     }
+    if (start != null && end != null && start >= end) {
+        ctx.addIssue({
+            code: 'custom',
+            message: 'attendanceClockInStart must be before attendanceClockInEnd',
+            path: ['attendanceClockInStart'],
+        });
+    }
+    // attendanceClockOutStart stands alone — it has no partner to be ordered
+    // against, which is the point.
 });
 
 const workSessionAdjustmentBase = z.object({

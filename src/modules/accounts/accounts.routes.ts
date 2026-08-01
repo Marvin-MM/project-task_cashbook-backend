@@ -4,7 +4,8 @@ import { AccountsController } from './accounts.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
 import { requireWorkspaceMember } from '../../middlewares/authorize';
-import { WorkspaceRole } from '../../core/types';
+import { WorkspacePermission } from '../../core/types/workspace-permissions';
+import { idempotency } from '../../middlewares/idempotency';
 import {
     createAccountSchema,
     updateAccountSchema,
@@ -21,21 +22,22 @@ router.use(authenticate as any);
 // List accounts
 router.get(
     '/',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_WALLETS) as any,
     controller.getAll.bind(controller) as any
 );
 
 // Get Net Worth
 router.get(
     '/net-worth',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_WALLET_BALANCES) as any,
     controller.getNetWorth.bind(controller) as any
 );
 
 // Wallet transfer (must be before /:id routes)
 router.post(
     '/transfers',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
+    idempotency('POST /workspaces/:workspaceId/accounts/transfers') as any,
     validate(createAccountTransferSchema),
     controller.transfer.bind(controller) as any
 );
@@ -43,21 +45,22 @@ router.post(
 // Get single account
 router.get(
     '/:id',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_WALLETS) as any,
     controller.getById.bind(controller) as any
 );
 
 // Recalculate wallet balance from ledger + transfers
 router.post(
     '/:id/recalculate',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
     controller.recalculateBalance.bind(controller) as any
 );
 
 // Create account
 router.post(
     '/',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
+    idempotency('POST /workspaces/:workspaceId/accounts') as any,
     validate(createAccountSchema),
     controller.create.bind(controller) as any
 );
@@ -65,7 +68,7 @@ router.post(
 // Update account
 router.patch(
     '/:id',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
     validate(updateAccountSchema),
     controller.update.bind(controller) as any
 );
@@ -73,7 +76,7 @@ router.patch(
 // Archive/Unarchive account
 router.post(
     '/:id/archive',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
     validate(archiveAccountSchema),
     controller.archive.bind(controller) as any
 );
@@ -81,7 +84,7 @@ router.post(
 // Delete account
 router.delete(
     '/:id',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
     controller.delete.bind(controller) as any
 );
 

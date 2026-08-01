@@ -5,7 +5,7 @@ import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
 import { requireWorkspaceMember } from '../../middlewares/authorize';
 import { createWorkspaceSchema, updateWorkspaceSchema } from './workspaces.dto';
-import { WorkspaceRole } from '../../core/types';
+import { WorkspacePermission } from '../../core/types/workspace-permissions';
 
 const router = Router();
 const workspacesController = container.resolve(WorkspacesController);
@@ -25,14 +25,14 @@ router.post(
 // Get single workspace
 router.get(
     '/:workspaceId',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_WORKSPACE) as any,
     workspacesController.getOne.bind(workspacesController) as any
 );
 
 // Update workspace
 router.patch(
     '/:workspaceId',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.UPDATE_WORKSPACE) as any,
     validate(updateWorkspaceSchema),
     workspacesController.update.bind(workspacesController) as any
 );
@@ -40,7 +40,7 @@ router.patch(
 // Delete workspace
 router.delete(
     '/:workspaceId',
-    requireWorkspaceMember([WorkspaceRole.OWNER]) as any,
+    requireWorkspaceMember(WorkspacePermission.DELETE_WORKSPACE) as any,
     workspacesController.delete.bind(workspacesController) as any
 );
 

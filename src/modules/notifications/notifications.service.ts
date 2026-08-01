@@ -1,5 +1,5 @@
 import { injectable, inject } from 'tsyringe';
-import { PrismaClient, NotificationType } from '@prisma/client';
+import { PrismaClient, NotificationEntityType, NotificationType } from '@prisma/client';
 import { NotFoundError, AuthorizationError } from '../../core/errors/AppError';
 import { notificationsQueue } from '../../config/queues';
 import { NotificationQueryDto, MarkReadDto } from './notifications.dto';
@@ -22,6 +22,21 @@ export interface NotificationJobData {
     /** For scheduler-triggered jobs — overdue/due-soon message. */
     customTitle?: string;
     customBody?: string;
+    /** Callers that already know the wording pass it directly. */
+    title?: string;
+    body?: string;
+    /** What the notification links to, when it is not a task. */
+    entityType?: NotificationEntityType;
+    entityId?: string;
+    /**
+     * Deterministic dedupe key.
+     *
+     * BullMQ retries a failed job, and the same event can be produced by more
+     * than one path. With a groupKey the insert becomes an upsert on
+     * (userId, type, groupKey), so a person is told once rather than four
+     * times. Omitting it keeps the old behaviour: every job makes a row.
+     */
+    groupKey?: string;
 }
 
 @injectable()

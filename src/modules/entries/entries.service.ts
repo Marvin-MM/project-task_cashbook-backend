@@ -1,5 +1,5 @@
 import { injectable, inject } from 'tsyringe';
-import { PrismaClient, TransactionSourceType, InventoryReferenceType } from '@prisma/client';
+import { Prisma, PrismaClient, TransactionSourceType, InventoryReferenceType } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { EntriesRepository } from './entries.repository';
 import {
@@ -28,11 +28,22 @@ import { generateReceiptPdf } from './receipt.generator';
 import { receiptEmailTemplate } from '../../utils/emailTemplates';
 import { sendEmail } from '../../config/email';
 import {
-    cashbookIncrementPayload,
     effectiveCashAmount,
     obligationStatusFromAmounts,
+    // Still used for overdraft checks and audit-log before/after values — the
+    // balance writes themselves now come from the ledger.
     walletBalanceDelta,
 } from '../../core/finance';
+import { withFinancialTransaction } from '../../core/db/transaction';
+import { acquireLocks } from '../../core/db/locks';
+import { assertPeriodOpen, resolveReversalDate } from '../../core/ledger/period';
+import { config } from '../../config';
+import { PostingService } from '../../core/ledger/posting.service';
+import {
+    buildEntryJournal,
+    entryPostingKey,
+    type EntryPostingInput,
+} from '../../core/ledger/rules/entry.rules';
 
 @injectable()
 export class EntriesService {
@@ -40,6 +51,7 @@ export class EntriesService {
         private entriesRepository: EntriesRepository,
         @inject('PrismaClient') private prisma: PrismaClient,
         private inventoryService: InventoryService,
+        private postingService: PostingService,
     ) { }
 
     // ─── List Entries ──────────────────────────────────
@@ -55,6 +67,7 @@ export class EntriesService {
             endDate: query.endDate,
             sortBy: query.sortBy,
             sortOrder: query.sortOrder,
+            includeReversed: query.includeReversed,
         });
 
         const totalPages = Math.ceil(total / query.limit);
@@ -170,6 +183,10 @@ export class EntriesService {
             }
         }
 
+        // Carried into the posting rules: a payment against a receivable clears
+        // AR rather than booking fresh revenue.
+        let obligationForPosting: { id: string; type: 'RECEIVABLE' | 'PAYABLE' } | null = null;
+
         // Obligation Pre-validation requirements
         if (dto.obligationId) {
             const obligation = await this.prisma.cashbookObligation.findUnique({
@@ -179,6 +196,11 @@ export class EntriesService {
             if (!obligation) {
                 throw new NotFoundError('Obligation');
             }
+
+            obligationForPosting = {
+                id: obligation.id,
+                type: obligation.type as 'RECEIVABLE' | 'PAYABLE',
+            };
 
             if (obligation.cashbookId !== cashbookId || obligation.workspaceId !== cashbook.workspaceId) {
                 throw new AppError('Obligation does not belong to this cashbook', 400, 'INVALID_OBLIGATION');
@@ -206,8 +228,16 @@ export class EntriesService {
         }
 
         // Use transaction for concurrency safety
-        const entry = await this.prisma.$transaction(async (tx) => {
-            // Read cashbook inside transaction for accurate balanceBefore (Issue 7)
+        const entry = await withFinancialTransaction(this.prisma, async (tx) => {
+            // Take every lock this write needs, once, in a globally consistent
+            // order. Locking the cashbook is what makes balanceBefore/balanceAfter
+            // in the audit log truthful under concurrency.
+            await acquireLocks(tx, [
+                { target: 'CASHBOOK', ids: [cashbookId] },
+                { target: 'WALLET_ACCOUNT', ids: [dto.accountId] },
+                { target: 'OBLIGATION', ids: [dto.obligationId] },
+            ]);
+
             const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
                 where: { id: cashbookId },
             });
@@ -237,35 +267,27 @@ export class EntriesService {
                 },
             });
 
-            // Update cashbook: totals always; balance only if not wallet-linked
+            // Balances are written by PostingService from the journal legs (see
+            // the posting call at the end of this transaction). The legacy
+            // cashbookIncrementPayload / account.update arithmetic that used to
+            // live here was deleted once shadow mode proved the two agree.
             const balanceBefore = lockedCashbook.balance;
             const chargeAmount = dto.chargeAmount ? new Decimal(dto.chargeAmount) : new Decimal(0);
             const hasWalletLink = Boolean(dto.accountId);
-
-            const cashbookPayload = cashbookIncrementPayload(
-                dto.type,
-                amount,
-                chargeAmount,
-                hasWalletLink,
-                'apply',
-            );
-
-            await tx.cashbook.update({
-                where: { id: cashbookId },
-                data: cashbookPayload,
-            });
 
             const balanceAfter = hasWalletLink
                 ? balanceBefore
                 : balanceBefore.add(walletBalanceDelta(dto.type, amount, chargeAmount));
 
             if (dto.accountId) {
-                await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${dto.accountId}::uuid FOR UPDATE`;
-
+                // Already locked by acquireLocks above.
                 const lockedAccount = await tx.account.findUniqueOrThrow({
                     where: { id: dto.accountId }
                 });
 
+                // Overdraft is a business rule, not a bookkeeping one, so it is
+                // still checked here — the ledger would happily post a negative
+                // wallet balance.
                 const walletDelta = walletBalanceDelta(dto.type, amount, chargeAmount);
                 if (!lockedAccount.allowNegative && walletDelta.lessThan(0)) {
                     const newAccountBalance = lockedAccount.balance.add(walletDelta);
@@ -274,11 +296,9 @@ export class EntriesService {
                     }
                 }
 
-                await tx.account.update({
-                    where: { id: dto.accountId },
-                    data: { balance: { increment: walletDelta } }
-                });
-
+                // The wallet subledger row the frontend reads. It carries
+                // accountCategoryId, which the GL does not, so it stays — but as
+                // a projection alongside the journal, not a source of truth.
                 await this.upsertCashbookAccountTransaction(tx, {
                     workspaceId: cashbook.workspaceId,
                     accountId: dto.accountId,
@@ -287,6 +307,7 @@ export class EntriesService {
                     amount,
                     chargeAmount: chargeAmount.greaterThan(0) ? chargeAmount : null,
                     description: newEntry.description,
+                    transactionDate: entryDate,
                 });
             }
 
@@ -308,8 +329,7 @@ export class EntriesService {
                     }
                 }
 
-                await tx.$queryRaw`SELECT id FROM cashbook_obligations WHERE id = ${dto.obligationId}::uuid FOR UPDATE`;
-
+                // Already locked by acquireLocks above.
                 const lockedObligation = await tx.cashbookObligation.findUniqueOrThrow({
                     where: { id: dto.obligationId }
                 });
@@ -409,6 +429,25 @@ export class EntriesService {
                 );
             }
 
+            // ─── Double-entry posting ──────────────────────────────
+            await this.postEntryJournal(tx, {
+                workspaceId: cashbook.workspaceId,
+                cashbookId,
+                entryId: newEntry.id,
+                version: newEntry.version,
+                type: dto.type as 'INCOME' | 'EXPENSE',
+                amount,
+                chargeAmount,
+                description: dto.description,
+                entryDate,
+                currency: cashbook.currency,
+                createdById: userId,
+                accountId: dto.accountId ?? null,
+                categoryId: dto.categoryId ?? null,
+                contactId: dto.contactId ?? null,
+                obligation: obligationForPosting,
+            });
+
             return newEntry;
         });
 
@@ -448,6 +487,18 @@ export class EntriesService {
             );
         }
 
+        // Money-affecting edits must carry expectedVersion. Without it there is no
+        // way to detect that another request changed the entry between the client
+        // reading it and submitting. The claim itself happens atomically inside the
+        // transaction below; this is only the fast-fail.
+        if (financialFieldsTouched && dto.expectedVersion === undefined) {
+            throw new AppError(
+                'expectedVersion is required when changing amount, type, charge, date, wallet, obligation or inventory.',
+                400,
+                'EXPECTED_VERSION_REQUIRED',
+            );
+        }
+
         if (dto.expectedVersion !== undefined && dto.expectedVersion !== entry.version) {
             throw new ConflictError(
                 `Entry was modified by another request (expected version ${dto.expectedVersion}, current ${entry.version})`,
@@ -478,15 +529,20 @@ export class EntriesService {
         const newValues: Record<string, any> = {};
         const changes: Record<string, { from: any; to: any }> = {};
 
-        // Find existing non-voided account transaction, if any
-        const existingTx = await this.prisma.accountTransaction.findFirst({
+        // Unlocked probe, used ONLY to discover which wallet rows this update may
+        // touch so they can be locked up front. The authoritative read happens
+        // inside the transaction, under lock. If a concurrent update changed the
+        // wallet link between this probe and the transaction, the version claim
+        // below rejects us — every update bumps version — so acting on the probe
+        // for lock selection is safe.
+        const walletProbe = await this.prisma.accountTransaction.findFirst({
             where: {
                 sourceId: entryId,
                 sourceType: TransactionSourceType.CASHBOOK_ENTRY,
                 voidedAt: null,
-            }
+            },
+            select: { accountId: true },
         });
-        const hasAccountChanged = dto.accountId !== undefined && dto.accountId !== (existingTx?.accountId || null);
 
         // Track changes
         if (dto.type && dto.type !== entry.type) {
@@ -515,10 +571,66 @@ export class EntriesService {
             changes.entryDate = { from: entry.entryDate.toISOString(), to: dto.entryDate };
         }
 
-        const updated = await this.prisma.$transaction(async (tx) => {
+        const updated = await withFinancialTransaction(this.prisma, async (tx) => {
+            // Lock every row this write may touch, once, in a globally consistent
+            // order. Locking BOTH the current and the target wallet here is what
+            // removes the X->Y / Y->X deadlock: previously they were locked in
+            // argument order, so two opposite re-links could each hold one and
+            // wait on the other.
+            await acquireLocks(tx, [
+                { target: 'CASHBOOK', ids: [entry.cashbookId] },
+                { target: 'WALLET_ACCOUNT', ids: [walletProbe?.accountId, dto.accountId] },
+                { target: 'OBLIGATION', ids: [entry.obligationId, dto.obligationId] },
+            ]);
+
+            // Atomic compare-and-swap on version. This is the real concurrency
+            // guard: `updateMany` lets us put version in the WHERE clause, which
+            // `update` cannot. Two racing edits with the same expectedVersion both
+            // used to pass the pre-transaction check and both applied.
+            if (dto.expectedVersion !== undefined) {
+                const claimed = await tx.entry.updateMany({
+                    where: { id: entryId, version: dto.expectedVersion, isDeleted: false },
+                    data: { version: { increment: 1 } },
+                });
+
+                if (claimed.count === 0) {
+                    const current = await tx.entry.findUnique({
+                        where: { id: entryId },
+                        select: { version: true, isDeleted: true },
+                    });
+                    throw new ConflictError(
+                        current?.isDeleted
+                            ? 'Entry was deleted by another request'
+                            : `Entry was modified by another request (expected version ${dto.expectedVersion}, current ${current?.version})`,
+                    );
+                }
+            }
+
             const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
                 where: { id: entry.cashbookId },
             });
+
+            // Authoritative read, under lock, after the version claim.
+            const existingTx = await tx.accountTransaction.findFirst({
+                where: {
+                    sourceId: entryId,
+                    sourceType: TransactionSourceType.CASHBOOK_ENTRY,
+                    voidedAt: null,
+                },
+            });
+
+            // Defence in depth: if the wallet link moved between the probe and
+            // now, we hold the wrong locks. The version claim should make this
+            // unreachable; surfacing it as a conflict is safer than proceeding
+            // with an unlocked row.
+            if ((existingTx?.accountId ?? null) !== (walletProbe?.accountId ?? null)) {
+                throw new ConflictError(
+                    'Entry wallet link changed concurrently; retry the update.',
+                );
+            }
+
+            const hasAccountChanged =
+                dto.accountId !== undefined && dto.accountId !== (existingTx?.accountId || null);
 
             const targetAccountId = dto.accountId !== undefined ? dto.accountId : existingTx?.accountId || null;
 
@@ -528,19 +640,9 @@ export class EntriesService {
             const oldEffectiveAmount = effectiveCashAmount(entry.type, oldAmount, oldChargeAmount);
             const balanceBefore = lockedCashbook.balance;
 
-            // Reverse old cashbook effect
-            await tx.cashbook.update({
-                where: { id: entry.cashbookId },
-                data: cashbookIncrementPayload(
-                    entry.type,
-                    oldAmount,
-                    oldChargeAmount,
-                    Boolean(existingTx),
-                    'reverse',
-                ),
-            });
-
-            // Apply new amount
+            // Cashbook and wallet balances are rewritten by PostingService's
+            // reverse-and-repost at the end of this transaction. The hand-written
+            // reverse-then-apply arithmetic that lived here is gone.
             const newType = dto.type || entry.type;
             const newAmount = dto.amount ? new Decimal(dto.amount) : entry.amount;
             const isIncome = newType === EntryType.INCOME;
@@ -548,17 +650,8 @@ export class EntriesService {
                 ? (dto.chargeAmount ? new Decimal(dto.chargeAmount) : new Decimal(0))
                 : (entry.chargeAmount || new Decimal(0));
             const newEffectiveAmount = effectiveCashAmount(newType, newAmount, newChargeAmount);
-
-            await tx.cashbook.update({
-                where: { id: entry.cashbookId },
-                data: cashbookIncrementPayload(
-                    newType,
-                    newAmount,
-                    newChargeAmount,
-                    Boolean(targetAccountId),
-                    'apply',
-                ),
-            });
+            // Keeps the wallet statement's business date in step with the entry.
+            const newEntryDate = dto.entryDate ? new Date(dto.entryDate) : entry.entryDate;
 
             // Cashbook balance audit: only unlinked entries move it
             let balanceAfter = balanceBefore;
@@ -577,15 +670,6 @@ export class EntriesService {
                     wasIncome !== isIncome ||
                     oldChargeAmount.toString() !== newChargeAmount.toString();
 
-                if (existingTx && (moneyChanged || dto.accountId === null)) {
-                    await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${existingTx.accountId}::uuid FOR UPDATE`;
-                    const oldWalletDelta = walletBalanceDelta(entry.type, oldAmount, oldChargeAmount);
-                    await tx.account.update({
-                        where: { id: existingTx.accountId },
-                        data: { balance: { increment: oldWalletDelta.negated() } },
-                    });
-                }
-
                 if (targetAccountId) {
                     if (moneyChanged || !existingTx) {
                         const targetAccount = await tx.account.findUniqueOrThrow({ where: { id: targetAccountId } });
@@ -601,21 +685,27 @@ export class EntriesService {
                             );
                         }
 
-                        await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${targetAccountId}::uuid FOR UPDATE`;
+                        // Already locked by acquireLocks above.
                         const lockedTarget = await tx.account.findUniqueOrThrow({ where: { id: targetAccountId } });
 
+                        // Overdraft remains a business rule checked here; the
+                        // ledger itself would post a negative balance happily.
+                        // Compare against the balance net of this entry's old
+                        // effect, since the repost reverses it first.
                         const newWalletDelta = walletBalanceDelta(newType, newAmount, newChargeAmount);
+                        const oldWalletDelta =
+                            existingTx && existingTx.accountId === targetAccountId
+                                ? walletBalanceDelta(entry.type, oldAmount, oldChargeAmount)
+                                : new Decimal(0);
+
                         if (!lockedTarget.allowNegative && newWalletDelta.lessThan(0)) {
-                            const provisional = lockedTarget.balance.add(newWalletDelta);
+                            const provisional = lockedTarget.balance
+                                .sub(oldWalletDelta)
+                                .add(newWalletDelta);
                             if (provisional.lessThan(0)) {
                                 throw new AppError(`Transaction exceeds account balance.`, 400, 'INSUFFICIENT_FUNDS');
                             }
                         }
-
-                        await tx.account.update({
-                            where: { id: targetAccountId },
-                            data: { balance: { increment: newWalletDelta } },
-                        });
                     }
 
                     if (existingTx && dto.accountId !== null) {
@@ -626,7 +716,8 @@ export class EntriesService {
                                 amount: newAmount,
                                 chargeAmount: newChargeAmount.greaterThan(0) ? newChargeAmount : null,
                                 type: newType as any,
-                                description: dto.description || existingTx.description
+                                description: dto.description || existingTx.description,
+                                transactionDate: newEntryDate,
                             }
                         });
                     } else if (!existingTx) {
@@ -638,6 +729,7 @@ export class EntriesService {
                             amount: newAmount,
                             chargeAmount: newChargeAmount.greaterThan(0) ? newChargeAmount : null,
                             description: dto.description || entry.description,
+                            transactionDate: newEntryDate,
                         });
                     }
                 } else if (existingTx && dto.accountId === null) {
@@ -656,7 +748,7 @@ export class EntriesService {
 
                 // If moving away from an obligation, reverse it
                 if (entry.obligationId && dto.obligationId === null) {
-                    await tx.$queryRaw`SELECT id FROM cashbook_obligations WHERE id = ${entry.obligationId}::uuid FOR UPDATE`;
+                    // Already locked by acquireLocks above.
                     const oldOblig = await tx.cashbookObligation.findUniqueOrThrow({ where: { id: entry.obligationId } });
 
                     const newOutstanding = oldOblig.outstandingAmount.add(oldAmount);
@@ -680,7 +772,7 @@ export class EntriesService {
                         outstandingAmount: cappedOutstanding,
                     });
                 } else if (targetObligId) {
-                    await tx.$queryRaw`SELECT id FROM cashbook_obligations WHERE id = ${targetObligId}::uuid FOR UPDATE`;
+                    // Already locked by acquireLocks above.
                     const lockedTarget = await tx.cashbookObligation.findUniqueOrThrow({ where: { id: targetObligId } });
 
                     const changedObligation = entry.obligationId && entry.obligationId !== targetObligId;
@@ -701,7 +793,7 @@ export class EntriesService {
                     }
 
                     if (changedObligation) {
-                        await tx.$queryRaw`SELECT id FROM cashbook_obligations WHERE id = ${entry.obligationId}::uuid FOR UPDATE`;
+                        // Already locked by acquireLocks above.
                         const oldOblig = await tx.cashbookObligation.findUniqueOrThrow({ where: { id: entry.obligationId as string } });
                         const revOutstanding = oldOblig.outstandingAmount.add(oldAmount);
                         const cappedRevOutstanding = revOutstanding.greaterThan(oldOblig.totalAmount)
@@ -791,7 +883,10 @@ export class EntriesService {
                     ...(dto.paymentModeId !== undefined ? { paymentModeId: dto.paymentModeId } : {}),
                     ...(dto.obligationId !== undefined ? { obligationId: dto.obligationId } : {}),
                     ...(dto.entryDate && { entryDate: new Date(dto.entryDate) }),
-                    version: { increment: 1 },
+                    // The version claim above already incremented when
+                    // expectedVersion was supplied; incrementing again here would
+                    // skip a version and break the next client's compare-and-swap.
+                    ...(dto.expectedVersion === undefined ? { version: { increment: 1 } } : {}),
                 },
                 include: {
                     category: true,
@@ -802,6 +897,54 @@ export class EntriesService {
                     },
                 },
             });
+
+            // ─── Double-entry: reverse the old version, post the new one ───
+            // The journal is never edited in place. The previous version's
+            // journal is reversed and a fresh one posted under the new version's
+            // posting key, so the ledger keeps a complete history of the edit.
+            if (this.ledgerEnabled) {
+                // Both ends of the edit must be in open periods: the version
+                // being reversed and the version being posted. Editing an entry
+                // out of, or into, closed books is exactly what closing prevents.
+                await assertPeriodOpen(tx, cashbook.workspaceId, entry.entryDate);
+                await assertPeriodOpen(tx, cashbook.workspaceId, updatedEntry.entryDate);
+
+                const targetObligation = updatedEntry.obligationId
+                    ? await tx.cashbookObligation.findUnique({
+                        where: { id: updatedEntry.obligationId },
+                        select: { id: true, type: true },
+                    })
+                    : null;
+
+                await this.postingService.repost(tx, {
+                    originalPostingKey: entryPostingKey(entryId, entry.version),
+                    reason: 'Entry updated',
+                    createdById: userId,
+                    applyCaches: this.ledgerOwnsCaches,
+                    next: buildEntryJournal({
+                        workspaceId: cashbook.workspaceId,
+                        cashbookId: entry.cashbookId,
+                        entryId,
+                        version: updatedEntry.version,
+                        type: updatedEntry.type as 'INCOME' | 'EXPENSE',
+                        amount: updatedEntry.amount,
+                        chargeAmount: updatedEntry.chargeAmount,
+                        description: updatedEntry.description,
+                        entryDate: updatedEntry.entryDate,
+                        currency: lockedCashbook.currency,
+                        createdById: userId,
+                        accountId: targetAccountId,
+                        categoryId: updatedEntry.categoryId,
+                        contactId: updatedEntry.contactId,
+                        obligation: targetObligation
+                            ? {
+                                id: targetObligation.id,
+                                type: targetObligation.type as 'RECEIVABLE' | 'PAYABLE',
+                            }
+                            : null,
+                    }),
+                });
+            }
 
             // Audit trail (immutable record of the edit)
             await tx.entryAudit.create({
@@ -1009,8 +1152,23 @@ export class EntriesService {
             throw new NotFoundError('Cashbook');
         }
 
-        await this.prisma.$transaction(async (tx) => {
-            // Read cashbook inside transaction for accurate balanceBefore
+        // Unlocked probe, used only to select wallet locks; see updateEntry.
+        const walletProbe = await this.prisma.accountTransaction.findFirst({
+            where: {
+                sourceId: entry.id,
+                sourceType: TransactionSourceType.CASHBOOK_ENTRY,
+                voidedAt: null,
+            },
+            select: { accountId: true },
+        });
+
+        await withFinancialTransaction(this.prisma, async (tx) => {
+            await acquireLocks(tx, [
+                { target: 'CASHBOOK', ids: [entry.cashbookId] },
+                { target: 'WALLET_ACCOUNT', ids: [walletProbe?.accountId] },
+                { target: 'OBLIGATION', ids: [entry.obligationId] },
+            ]);
+
             const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
                 where: { id: entry.cashbookId },
             });
@@ -1028,31 +1186,40 @@ export class EntriesService {
                 }
             });
 
+            if ((existingTx?.accountId ?? null) !== (walletProbe?.accountId ?? null)) {
+                throw new ConflictError('Entry wallet link changed concurrently; retry the delete.');
+            }
+
             let balanceAfter = balanceBefore;
 
-            // Reverse cashbook activity (+ balance if unlinked)
-            await tx.cashbook.update({
-                where: { id: entry.cashbookId },
-                data: cashbookIncrementPayload(
-                    entry.type,
-                    amount,
-                    chargeAmount,
-                    Boolean(existingTx),
-                    'reverse',
-                ),
-            });
-
+            // Cashbook and wallet balances are rewritten by the reversing
+            // journal posted below; the hand-written reversal arithmetic is gone.
             if (!existingTx) {
                 balanceAfter = balanceBefore.sub(walletBalanceDelta(entry.type, amount, chargeAmount));
             }
 
             if (existingTx) {
-                await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${existingTx.accountId}::uuid FOR UPDATE`;
-                const oldWalletDelta = walletBalanceDelta(entry.type, amount, chargeAmount);
-                await tx.account.update({
+                // Already locked by acquireLocks above.
+                const lockedAccount = await tx.account.findUniqueOrThrow({
                     where: { id: existingTx.accountId },
-                    data: { balance: { increment: oldWalletDelta.negated() } },
                 });
+                const oldWalletDelta = walletBalanceDelta(entry.type, amount, chargeAmount);
+                const reversalDelta = oldWalletDelta.negated();
+
+                // Deleting an INCOME entry withdraws money from the wallet, which
+                // can overdraw it. Every other wallet-debiting path guards this;
+                // this one did not.
+                if (!lockedAccount.allowNegative && reversalDelta.lessThan(0)) {
+                    if (lockedAccount.balance.add(reversalDelta).lessThan(0)) {
+                        throw new AppError(
+                            `Deleting this entry would overdraw account "${lockedAccount.name}" ` +
+                            `(balance ${lockedAccount.balance.toString()}, reversal ${reversalDelta.toString()}). ` +
+                            'Allow a negative balance on the account, or reverse the offsetting entries first.',
+                            400,
+                            'INSUFFICIENT_FUNDS',
+                        );
+                    }
+                }
 
                 // Void wallet ledger row (retain audit history)
                 await tx.accountTransaction.update({
@@ -1062,7 +1229,7 @@ export class EntriesService {
             }
 
             if (entry.obligationId) {
-                await tx.$queryRaw`SELECT id FROM cashbook_obligations WHERE id = ${entry.obligationId}::uuid FOR UPDATE`;
+                // Already locked by acquireLocks above.
                 const lockedObligation = await tx.cashbookObligation.findUniqueOrThrow({ where: { id: entry.obligationId } });
 
                 const newOutstanding = lockedObligation.outstandingAmount.add(amount);
@@ -1114,17 +1281,41 @@ export class EntriesService {
                 entry.id,
             );
 
-            // Soft-delete the entry
+            // ─── Double-entry: post the reversing journal ──────────
+            // The original journal is never removed. It is marked REVERSED and a
+            // mirror-image REVERSING journal is appended, so the books stay in
+            // balance and the history of the correction is itself auditable.
+            await this.reverseEntryJournal(tx, {
+                workspaceId: cashbook.workspaceId,
+                entryId: entry.id,
+                version: entry.version,
+                reason,
+                userId,
+                originalDate: entry.entryDate,
+            });
+
+            // Mark the entry reversed. `isDeleted` is kept in step so the
+            // existing repository filters and list queries keep working; it is
+            // retired once every read path uses `status`.
             await tx.entry.update({
                 where: { id: entry.id },
                 data: {
+                    status: 'REVERSED',
+                    reversedAt: new Date(),
+                    reversedById: userId,
+                    reversalReason: reason,
                     isDeleted: true,
                     deletedAt: new Date(),
                     deletedReason: reason,
-                    // Clean up relationships
+                    // Attachments are soft-deleted, not destroyed: a reversed
+                    // entry keeps its supporting documents for audit. The old
+                    // deleteMany here removed them permanently.
                     attachments: {
-                        deleteMany: {}
-                    }
+                        updateMany: {
+                            where: { isDeleted: false },
+                            data: { isDeleted: true, deletedAt: new Date() },
+                        },
+                    },
                 },
             });
 
@@ -1179,6 +1370,70 @@ export class EntriesService {
         });
     }
 
+    // ─── Double-entry posting ──────────────────────────────
+    //
+    // Rollout is controlled by config.LEDGER_MODE:
+    //   off    skip entirely
+    //   shadow write journals but leave the cached columns to the legacy
+    //          arithmetic, so LedgerIntegrityService can prove the two agree
+    //   on     the ledger owns the caches (Phase 2)
+
+    private get ledgerEnabled(): boolean {
+        return config.LEDGER_MODE !== 'off';
+    }
+
+    /** In shadow mode the legacy code still writes the caches; don't double up. */
+    private get ledgerOwnsCaches(): boolean {
+        return config.LEDGER_MODE === 'on';
+    }
+
+    private async postEntryJournal(
+        tx: Prisma.TransactionClient,
+        input: EntryPostingInput,
+    ): Promise<void> {
+        if (!this.ledgerEnabled) return;
+
+        // Closed books stay closed. Checked here rather than in PostingService
+        // so reversals can shift their date instead of failing.
+        await assertPeriodOpen(tx, input.workspaceId, input.entryDate);
+
+        await this.postingService.post(tx, buildEntryJournal(input), {
+            applyCaches: this.ledgerOwnsCaches,
+            // A retried create must not double-post. The posting key is
+            // deterministic, so this is the database-level exactly-once guard.
+            onDuplicate: 'RETURN_EXISTING',
+        });
+    }
+
+    /** Reverse the journal for an entry version, if one was posted. */
+    private async reverseEntryJournal(
+        tx: Prisma.TransactionClient,
+        args: {
+            workspaceId: string;
+            entryId: string;
+            version: number;
+            reason: string;
+            userId: string;
+            originalDate: Date;
+        },
+    ): Promise<void> {
+        if (!this.ledgerEnabled) return;
+
+        // A correction to a closed period posts at today's date rather than
+        // being rejected — the books stay closed, and the correction is still
+        // recorded.
+        const reversalDate = await resolveReversalDate(tx, args.workspaceId, args.originalDate);
+
+        await this.postingService.reverse(tx, {
+            workspaceId: args.workspaceId,
+            originalPostingKey: entryPostingKey(args.entryId, args.version),
+            reason: args.reason,
+            createdById: args.userId,
+            reversalDate,
+            applyCaches: this.ledgerOwnsCaches,
+        });
+    }
+
     /**
      * Create or revive a cashbook-linked AccountTransaction.
      * Revives a previously voided row for the same (sourceId, accountId) to honor the unique constraint.
@@ -1193,6 +1448,8 @@ export class EntriesService {
             amount: Decimal;
             chargeAmount: Decimal | null;
             description: string;
+            /** Entry.entryDate — the wallet statement must show the business date. */
+            transactionDate: Date;
         },
     ) {
         const existingAny = await tx.accountTransaction.findFirst({
@@ -1212,6 +1469,7 @@ export class EntriesService {
                     amount: data.amount,
                     chargeAmount: data.chargeAmount,
                     description: data.description,
+                    transactionDate: data.transactionDate,
                 },
             });
         }
@@ -1226,6 +1484,7 @@ export class EntriesService {
                 amount: data.amount,
                 chargeAmount: data.chargeAmount,
                 description: data.description,
+                transactionDate: data.transactionDate,
             },
         });
     }

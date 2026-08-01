@@ -1,7 +1,14 @@
 node_modules/
 dist/
+dist-scripts/
 .env
+.env.test
 logs/
 *.log
 .DS_Store
 coverage/
+
+# Claude Code workspace settings. Local-only by design: `settings.json` is the
+# shareable half of the convention, but everything here is one machine's
+# permission grants, so all of it stays out of the history.
+.claude/

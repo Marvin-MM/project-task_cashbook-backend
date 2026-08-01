@@ -70,3 +70,43 @@ export type TaskQueryDto = z.infer<typeof taskQuerySchema>;
 export type CreateTaskCommentDto = z.infer<typeof createTaskCommentSchema>;
 export type CreateChecklistItemDto = z.infer<typeof createChecklistItemSchema>;
 export type UpdateChecklistItemDto = z.infer<typeof updateChecklistItemSchema>;
+
+// ─── Task approvals ───────────────────────────────────────
+
+export const requestAssignmentSchema = z.object({
+    message: z.string().max(500).optional(),
+});
+
+export const reviewRequestSchema = z.object({
+    approve: z.boolean(),
+    reviewNote: z.string().max(500).optional(),
+});
+
+export const submitTaskReportSchema = z.object({
+    summary: z.string().min(1, 'Say what you did').max(5000),
+    blockers: z.string().max(2000).optional(),
+    /** Optional: the ledger of truth for time is the time-tracking module. */
+    minutesSpent: z.coerce.number().int().min(0).max(60 * 24 * 365).optional(),
+});
+
+export const reviewTaskReportSchema = z.object({
+    approve: z.boolean(),
+    /**
+     * Required when rejecting — enforced in the service rather than here,
+     * because the rule depends on `approve` and a cross-field refine would
+     * report the error against the wrong path.
+     */
+    reviewNote: z.string().max(2000).optional(),
+});
+
+export const assignmentRequestQuerySchema = z.object({
+    taskId: z.string().uuid().optional(),
+    status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'WITHDRAWN']).optional(),
+    mine: z.coerce.boolean().optional(),
+});
+
+export type RequestAssignmentDto = z.infer<typeof requestAssignmentSchema>;
+export type ReviewRequestDto = z.infer<typeof reviewRequestSchema>;
+export type SubmitTaskReportDto = z.infer<typeof submitTaskReportSchema>;
+export type ReviewTaskReportDto = z.infer<typeof reviewTaskReportSchema>;
+export type AssignmentRequestQueryDto = z.infer<typeof assignmentRequestQuerySchema>;

@@ -51,6 +51,21 @@ export enum WorkspaceType {
 export enum WorkspaceRole {
     OWNER = 'OWNER',
     ADMIN = 'ADMIN',
+    /** Full accounting access across every book; may add sub-accountants only. */
+    ACCOUNTANT = 'ACCOUNTANT',
+    /** Org-level accounting access; book data limited to explicit grants. */
+    SUB_ACCOUNTANT = 'SUB_ACCOUNTANT',
+    /**
+     * Runs projects and tasks org-wide. No financial access; books only via an
+     * explicit CashbookMember row.
+     *
+     * Not to be confused with ProjectRole.PROJECT_MANAGER, which delegates a
+     * single project. Same name, different scope.
+     */
+    PROJECT_MANAGER = 'PROJECT_MANAGER',
+    /** People operations: attendance, leave, overtime, work reports. */
+    HR = 'HR',
+    /** No org-financial access. Assigned books, projects, tasks, time tracking. */
     MEMBER = 'MEMBER',
 }
 
@@ -177,6 +192,7 @@ export enum AuditAction {
     OBLIGATION_CREATED = 'OBLIGATION_CREATED',
     OBLIGATION_UPDATED = 'OBLIGATION_UPDATED',
     OBLIGATION_ARCHIVED = 'OBLIGATION_ARCHIVED',
+    OBLIGATION_CANCELLED = 'OBLIGATION_CANCELLED',
     OBLIGATION_STATUS_CHANGED = 'OBLIGATION_STATUS_CHANGED',
     OBLIGATION_PAYMENT_APPLIED = 'OBLIGATION_PAYMENT_APPLIED',
     OBLIGATION_PAYMENT_REVERSED = 'OBLIGATION_PAYMENT_REVERSED',
@@ -228,6 +244,34 @@ export enum AuditAction {
     TASK_COMMENT_ADDED = 'TASK_COMMENT_ADDED',
     TASK_COMMENT_DELETED = 'TASK_COMMENT_DELETED',
     TASK_CHECKLIST_UPDATED = 'TASK_CHECKLIST_UPDATED',
+
+    // Task approvals
+    TASK_ASSIGNMENT_REQUESTED = 'TASK_ASSIGNMENT_REQUESTED',
+    TASK_ASSIGNMENT_APPROVED = 'TASK_ASSIGNMENT_APPROVED',
+    TASK_ASSIGNMENT_REJECTED = 'TASK_ASSIGNMENT_REJECTED',
+    TASK_REPORT_SUBMITTED = 'TASK_REPORT_SUBMITTED',
+    TASK_REPORT_APPROVED = 'TASK_REPORT_APPROVED',
+    TASK_REPORT_REJECTED = 'TASK_REPORT_REJECTED',
+    EXPENSE_CLAIM_SUBMITTED = 'EXPENSE_CLAIM_SUBMITTED',
+    EXPENSE_CLAIM_APPROVED = 'EXPENSE_CLAIM_APPROVED',
+    EXPENSE_CLAIM_REJECTED = 'EXPENSE_CLAIM_REJECTED',
+
+    // People operations
+    LEAVE_REQUESTED = 'LEAVE_REQUESTED',
+    LEAVE_APPROVED = 'LEAVE_APPROVED',
+    LEAVE_REJECTED = 'LEAVE_REJECTED',
+    LEAVE_CANCELLED = 'LEAVE_CANCELLED',
+    OVERTIME_REQUESTED = 'OVERTIME_REQUESTED',
+    OVERTIME_APPROVED = 'OVERTIME_APPROVED',
+    OVERTIME_REJECTED = 'OVERTIME_REJECTED',
+    WORK_REPORT_SUBMITTED = 'WORK_REPORT_SUBMITTED',
+    WORK_REPORT_APPROVED = 'WORK_REPORT_APPROVED',
+    WORK_REPORT_REJECTED = 'WORK_REPORT_REJECTED',
+    ATTENDANCE_FLAG_RAISED = 'ATTENDANCE_FLAG_RAISED',
+    ATTENDANCE_FLAG_WAIVED = 'ATTENDANCE_FLAG_WAIVED',
+    /** Cached balances recomputed from the ledger. Touches no journal. */
+    LEDGER_BALANCES_REPAIRED = 'LEDGER_BALANCES_REPAIRED',
+    WORK_SESSION_AUTO_CLOSED = 'WORK_SESSION_AUTO_CLOSED',
 
     // Time Tracking
     TIME_ENTRY_CREATED = 'TIME_ENTRY_CREATED',

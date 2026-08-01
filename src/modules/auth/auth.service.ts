@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
 import { AuthProvider } from '@prisma/client';
-import { config } from '../../config';
+import { config, superAdminEmails } from '../../config';
 import { AuthRepository } from './auth.repository';
 import {
     AuthenticationError,
@@ -50,7 +50,7 @@ export class AuthService {
                     passwordHash,
                     firstName: dto.firstName,
                     lastName: dto.lastName,
-                    isSuperAdmin: dto.email === config.SUPER_ADMIN_EMAIL,
+                    isSuperAdmin: superAdminEmails().includes(dto.email.toLowerCase()),
                 },
             });
 
@@ -95,6 +95,30 @@ export class AuthService {
     }
 
     // ─── Login ─────────────────────────────────────────
+
+    /**
+     * Reconcile one user's superadmin flag against the configured allow-list.
+     *
+     * Cheaper than a full reconcile on every login, and enough to make the env
+     * var authoritative from the user's point of view. The full sweep runs on
+     * boot and on demand from the platform page.
+     */
+    private async syncSuperAdminFlag(
+        userId: string,
+        email: string,
+        current: boolean,
+    ): Promise<boolean> {
+        const shouldBe = superAdminEmails().includes(email.toLowerCase());
+        if (shouldBe === current) return current;
+
+        await this.prisma.user.update({
+            where: { id: userId },
+            data: { isSuperAdmin: shouldBe },
+        });
+        logger.info('Superadmin status synced from configuration', { email, isSuperAdmin: shouldBe });
+        return shouldBe;
+    }
+
     async login(dto: LoginDto, ipAddress?: string, userAgent?: string) {
         const user = await this.authRepository.findUserByEmail(dto.email);
 
@@ -151,8 +175,13 @@ export class AuthService {
             throw new AuthenticationError('Invalid email or password');
         }
 
+        // Bring superadmin status in line with SUPER_ADMIN_EMAILS before minting
+        // the token, so adding or removing an address takes effect on next login
+        // rather than only for accounts created after the change.
+        const isSuperAdmin = await this.syncSuperAdminFlag(user.id, user.email, user.isSuperAdmin);
+
         // Generate tokens
-        const accessToken = this.generateAccessToken(user);
+        const accessToken = this.generateAccessToken({ ...user, isSuperAdmin });
         const { token: refreshToken, hash: refreshTokenHash } = this.generateRefreshToken();
 
         // Parse refresh expiry for DB
@@ -628,7 +657,7 @@ export class AuthService {
                     provider: AuthProvider.GOOGLE,
                     providerId: googleSub,
                     emailVerified: true,
-                    isSuperAdmin: email === config.SUPER_ADMIN_EMAIL,
+                    isSuperAdmin: superAdminEmails().includes(email.toLowerCase()),
                 },
             });
 

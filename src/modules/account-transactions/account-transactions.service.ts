@@ -7,12 +7,21 @@ import { AuditAction, EntryType } from '../../core/types';
 import { Decimal } from '@prisma/client/runtime/library';
 import { InventoryService } from '../inventory/inventory.service';
 import { walletBalanceDelta } from '../../core/finance';
+import { withFinancialTransaction } from '../../core/db/transaction';
+import { acquireLocks } from '../../core/db/locks';
+import { config } from '../../config';
+import { PostingService } from '../../core/ledger/posting.service';
+import {
+    buildDirectWalletJournal,
+    walletTxPostingKey,
+} from '../../core/ledger/rules/wallet.rules';
 
 @injectable()
 export class AccountTransactionsService {
     constructor(
         private repository: AccountTransactionsRepository,
         @inject('PrismaClient') private prisma: PrismaClient,
+        private postingService: PostingService,
         private inventoryService: InventoryService,
     ) { }
 
@@ -54,9 +63,8 @@ export class AccountTransactionsService {
         const chargeAmount = data.chargeAmount ? new Decimal(data.chargeAmount) : new Decimal(0);
         const walletDelta = walletBalanceDelta(data.type, amount, chargeAmount);
 
-        return this.prisma.$transaction(async (tx) => {
-            // Lock account row for updates
-            await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${accountId}::uuid FOR UPDATE`;
+        return withFinancialTransaction(this.prisma, async (tx) => {
+            await acquireLocks(tx, [{ target: 'WALLET_ACCOUNT', ids: [accountId] }]);
 
             const account = await tx.account.findUnique({ where: { id: accountId } });
 
@@ -87,12 +95,9 @@ export class AccountTransactionsService {
                 }
             }
 
-            await tx.account.update({
-                where: { id: accountId },
-                data: { balance: { increment: walletDelta } }
-            });
-
             const balanceAfter = balanceBefore.add(walletDelta);
+
+            const transactionDate = data.transactionDate ? new Date(data.transactionDate) : new Date();
 
             const transaction = await tx.accountTransaction.create({
                 data: {
@@ -103,9 +108,32 @@ export class AccountTransactionsService {
                     amount,
                     chargeAmount: chargeAmount.greaterThan(0) ? chargeAmount : null,
                     description: data.description,
-                    accountCategoryId: data.accountCategoryId
+                    accountCategoryId: data.accountCategoryId,
+                    transactionDate,
                 }
             });
+
+            // The journal is what moves Account.balance; PostingService is the
+            // sole writer of that column.
+            if (config.LEDGER_MODE !== 'off') {
+                await this.postingService.post(
+                    tx,
+                    buildDirectWalletJournal({
+                        workspaceId,
+                        accountId,
+                        transactionId: transaction.id,
+                        version: transaction.version,
+                        type: data.type as 'INCOME' | 'EXPENSE',
+                        amount,
+                        chargeAmount,
+                        description: data.description,
+                        transactionDate,
+                        currency: account.currency,
+                        createdById: userId,
+                    }),
+                    { applyCaches: config.LEDGER_MODE === 'on', onDuplicate: 'RETURN_EXISTING' },
+                );
+            }
 
             // Generic audit log
             await tx.auditLog.create({
@@ -172,8 +200,8 @@ export class AccountTransactionsService {
         userId: string,
         data: UpdateAccountTransactionBody
     ) {
-        return this.prisma.$transaction(async (tx) => {
-            await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${accountId}::uuid FOR UPDATE`;
+        return withFinancialTransaction(this.prisma, async (tx) => {
+            await acquireLocks(tx, [{ target: 'WALLET_ACCOUNT', ids: [accountId] }]);
             const account = await tx.account.findUnique({ where: { id: accountId } });
 
             if (!account || account.workspaceId !== workspaceId) {
@@ -212,12 +240,8 @@ export class AccountTransactionsService {
                 : (transaction.chargeAmount || new Decimal(0));
             const newWalletDelta = walletBalanceDelta(newType, newAmount, newChargeAmount);
 
-            // Reverse old effect, then apply new
-            await tx.account.update({
-                where: { id: accountId },
-                data: { balance: { increment: oldWalletDelta.negated() } }
-            });
-
+            // Overdraft is checked against the balance net of this transaction's
+            // old effect, since the repost reverses it before applying the new one.
             const balanceWithoutTx = balanceBefore.sub(oldWalletDelta);
 
             if (!account.allowNegative && newWalletDelta.lessThan(0)) {
@@ -226,11 +250,6 @@ export class AccountTransactionsService {
                     throw new AppError('Transaction exceeds account balance.', 400, 'INSUFFICIENT_FUNDS');
                 }
             }
-
-            await tx.account.update({
-                where: { id: accountId },
-                data: { balance: { increment: newWalletDelta } }
-            });
 
             const balanceAfter = balanceWithoutTx.add(newWalletDelta);
 
@@ -241,9 +260,34 @@ export class AccountTransactionsService {
                     ...(data.amount && { amount: newAmount }),
                     ...(data.chargeAmount !== undefined ? { chargeAmount: data.chargeAmount ? new Decimal(data.chargeAmount) : null } : {}),
                     ...(data.description && { description: data.description }),
-                    ...(data.accountCategoryId !== undefined && { accountCategoryId: data.accountCategoryId })
+                    ...(data.accountCategoryId !== undefined && { accountCategoryId: data.accountCategoryId }),
+                    ...(data.transactionDate && { transactionDate: new Date(data.transactionDate) }),
+                    version: { increment: 1 },
                 }
             });
+
+            // Reverse the previous version's journal and post the new one.
+            if (config.LEDGER_MODE !== 'off') {
+                await this.postingService.repost(tx, {
+                    originalPostingKey: walletTxPostingKey(id, transaction.version),
+                    reason: 'Wallet transaction updated',
+                    createdById: userId,
+                    applyCaches: config.LEDGER_MODE === 'on',
+                    next: buildDirectWalletJournal({
+                        workspaceId,
+                        accountId,
+                        transactionId: id,
+                        version: updatedTransaction.version,
+                        type: updatedTransaction.type as 'INCOME' | 'EXPENSE',
+                        amount: updatedTransaction.amount,
+                        chargeAmount: updatedTransaction.chargeAmount,
+                        description: updatedTransaction.description,
+                        transactionDate: updatedTransaction.transactionDate,
+                        currency: account.currency,
+                        createdById: userId,
+                    }),
+                });
+            }
 
             // Generic audit log
             await tx.auditLog.create({
@@ -312,8 +356,8 @@ export class AccountTransactionsService {
         accountId: string,
         userId: string
     ) {
-        return this.prisma.$transaction(async (tx) => {
-            await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${accountId}::uuid FOR UPDATE`;
+        return withFinancialTransaction(this.prisma, async (tx) => {
+            await acquireLocks(tx, [{ target: 'WALLET_ACCOUNT', ids: [accountId] }]);
             const account = await tx.account.findUnique({ where: { id: accountId } });
 
             if (!account || account.workspaceId !== workspaceId) {
@@ -346,12 +390,18 @@ export class AccountTransactionsService {
                 }
             }
 
-            await tx.account.update({
-                where: { id: accountId },
-                data: { balance: { increment: oldWalletDelta.negated() } }
-            });
-
             const balanceAfter = balanceBefore.sub(oldWalletDelta);
+
+            // Post the reversing journal; it is what moves the wallet balance back.
+            if (config.LEDGER_MODE !== 'off') {
+                await this.postingService.reverse(tx, {
+                    workspaceId,
+                    originalPostingKey: walletTxPostingKey(id, transaction.version),
+                    reason: 'Wallet transaction voided',
+                    createdById: userId,
+                    applyCaches: config.LEDGER_MODE === 'on',
+                });
+            }
 
             // ─── Inventory Integration (reverse on delete) ────────
             await this.inventoryService.reverseInventoryForReference(

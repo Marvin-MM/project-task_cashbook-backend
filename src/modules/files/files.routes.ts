@@ -3,7 +3,7 @@ import { container } from 'tsyringe';
 import { FilesController } from './files.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { CashbookPermission } from '../../core/types/permissions';
-import { requireCashbookMember } from '../../middlewares/authorize';
+import { requireCashbookMember, requireEntryAccess } from '../../middlewares/authorize';
 import { upload } from '../../middlewares/upload';
 
 const router = Router();
@@ -31,6 +31,10 @@ router.post(
  */
 router.get(
     '/entries/:entryId',
+    // The cashbook is derived from the entry: this route carries no cashbookId,
+    // and without a guard any authenticated user could list attachment metadata
+    // for any entry in any workspace.
+    requireEntryAccess(CashbookPermission.VIEW_ATTACHMENTS) as any,
     controller.getAll.bind(controller) as any
 );
 

@@ -10,9 +10,18 @@ import {
 import {
     AuditAction,
     CashbookRole,
+    WorkspaceRole,
     WorkspaceType,
 } from '../../core/types';
+import {
+    WorkspacePermission,
+    hasWorkspacePermission,
+} from '../../core/types/workspace-permissions';
 import { assertSameCurrency, normalizeCurrency } from '../../core/finance';
+import {
+    ensureCashbookLedgerAccount,
+    provisionWorkspaceAccounting,
+} from '../../core/ledger/coa.seed';
 import {
     CreateCashbookDto,
     UpdateCashbookDto,
@@ -27,7 +36,7 @@ export class CashbooksService {
         @inject('PrismaClient') private prisma: PrismaClient,
     ) { }
 
-    async getCashbooks(workspaceId: string, userId: string) {
+    async getCashbooks(workspaceId: string, userId: string, workspaceRole?: WorkspaceRole | null) {
         // Check workspace type
         const workspace = await this.prisma.workspace.findUnique({
             where: { id: workspaceId },
@@ -42,7 +51,16 @@ export class CashbooksService {
             return this.cashbooksRepository.findByWorkspaceId(workspaceId);
         }
 
-        // Business workspace: return only cashbooks the user has access to
+        // Owners, admins and accountants reach every book without an explicit
+        // membership row — requireCashbookMember grants them access to any one
+        // of them, so listing only their joined books would show an empty page
+        // for books they can in fact open.
+        if (hasWorkspacePermission(workspaceRole, WorkspacePermission.ACCESS_ALL_CASHBOOKS)) {
+            return this.cashbooksRepository.findByWorkspaceId(workspaceId);
+        }
+
+        // Everyone else — members and sub-accountants — sees only what they
+        // have been assigned to.
         return this.cashbooksRepository.findUserAccessibleCashbooks(workspaceId, userId);
     }
 
@@ -77,6 +95,18 @@ export class CashbooksService {
                     workspace: { connect: { id: workspaceId } },
                 },
                 include: { workspace: true },
+            });
+
+            // This book's private "unallocated book cash" account. Routing an
+            // unlinked entry's cash leg here — and a wallet-linked entry's leg to
+            // the wallet instead — is what preserves the rule that wallet-linked
+            // entries do not move the book balance.
+            await provisionWorkspaceAccounting(tx, workspaceId, workspaceCurrency);
+            await ensureCashbookLedgerAccount(tx, {
+                id: cb.id,
+                workspaceId,
+                name: cb.name,
+                currency: cb.currency,
             });
 
             // For business workspaces, add creator as PRIMARY_ADMIN

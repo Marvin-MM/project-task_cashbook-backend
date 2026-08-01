@@ -4,7 +4,7 @@ import { InventoryController } from './inventory.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate, validateMultiple } from '../../middlewares/validate';
 import { requireWorkspaceMember } from '../../middlewares/authorize';
-import { WorkspaceRole } from '../../core/types';
+import { WorkspacePermission } from '../../core/types/workspace-permissions';
 import {
     createInventoryItemSchema,
     updateInventoryItemSchema,
@@ -30,7 +30,7 @@ router.use(authenticate as any);
 // List inventory items
 router.get(
     '/items',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     validate(inventoryItemQuerySchema, 'query'),
     controller.getItems.bind(controller) as any
 );
@@ -38,7 +38,7 @@ router.get(
 // Get single inventory item
 router.get(
     '/items/:itemId',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     validate(itemIdParamSchema, 'params'),
     controller.getItem.bind(controller) as any
 );
@@ -46,7 +46,7 @@ router.get(
 // Item-level profit/loss analytics from stock movements
 router.get(
     '/items/:itemId/analytics',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     validate(itemIdParamSchema, 'params'),
     controller.getItemAnalytics.bind(controller) as any
 );
@@ -54,7 +54,7 @@ router.get(
 // Create inventory item
 router.post(
     '/items',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_INVENTORY) as any,
     validate(createInventoryItemSchema),
     controller.createItem.bind(controller) as any
 );
@@ -62,7 +62,7 @@ router.post(
 // Update inventory item
 router.patch(
     '/items/:itemId',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_INVENTORY) as any,
     validateMultiple({
         params: itemIdParamSchema,
         body: updateInventoryItemSchema,
@@ -73,7 +73,7 @@ router.patch(
 // Deactivate inventory item
 router.delete(
     '/items/:itemId',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_INVENTORY) as any,
     validate(itemIdParamSchema, 'params'),
     controller.deactivateItem.bind(controller) as any
 );
@@ -83,7 +83,7 @@ router.delete(
 // Create manual inventory transaction
 router.post(
     '/transactions',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_INVENTORY) as any,
     validate(createInventoryTransactionSchema),
     controller.createTransaction.bind(controller) as any
 );
@@ -91,7 +91,7 @@ router.post(
 // List inventory transactions
 router.get(
     '/transactions',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     validate(inventoryTransactionQuerySchema, 'query'),
     controller.getTransactions.bind(controller) as any
 );
@@ -101,21 +101,21 @@ router.get(
 // Current stock levels
 router.get(
     '/reports/stock-levels',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     controller.getStockLevels.bind(controller) as any
 );
 
 // Inventory valuation
 router.get(
     '/reports/valuation',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     controller.getValuation.bind(controller) as any
 );
 
 // Stock movement history for a specific item
 router.get(
     '/reports/movements/:itemId',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     validate(itemIdParamSchema, 'params'),
     controller.getMovements.bind(controller) as any
 );
@@ -123,7 +123,7 @@ router.get(
 // COGS summary
 router.get(
     '/reports/cogs',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     validate(cogsReportQuerySchema, 'query'),
     controller.getCogs.bind(controller) as any
 );
@@ -131,7 +131,7 @@ router.get(
 // Low stock alerts
 router.get(
     '/reports/low-stock',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     controller.getLowStock.bind(controller) as any
 );
 
@@ -140,7 +140,7 @@ router.get(
 // Analytics metrics
 router.get(
     '/analytics/metrics',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     validate(analyticsQuerySchema, 'query'),
     controller.getAnalyticsMetrics.bind(controller) as any
 );
@@ -148,7 +148,7 @@ router.get(
 // Analytics trends
 router.get(
     '/analytics/trends',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     validate(analyticsQuerySchema, 'query'),
     controller.getAnalyticsTrends.bind(controller) as any
 );
@@ -157,14 +157,14 @@ router.get(
 
 router.get(
     '/rentals',
-    requireWorkspaceMember() as any,
+    requireWorkspaceMember(WorkspacePermission.VIEW_INVENTORY) as any,
     validate(rentalQuerySchema, 'query'),
     controller.listRentals.bind(controller) as any
 );
 
 router.post(
     '/rentals/:rentalId/return',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_INVENTORY) as any,
     validateMultiple({
         params: z.object({ rentalId: z.string().uuid() }).passthrough(),
         body: returnRentalSchema,

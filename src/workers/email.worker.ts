@@ -1,6 +1,6 @@
 import { Worker, Job } from 'bullmq';
 import { bullmqConnection } from '../config/queues';
-import { getEmailTransporter } from '../config/email';
+import { getEmailTransporter, isEmailConfigured } from '../config/email';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 
@@ -26,6 +26,16 @@ export function createEmailWorker(): Worker<EmailJobData> {
             const { to, subject, html, attachments } = job.data;
 
             logger.info('Processing email job', { jobId: job.id, to, subject });
+
+            // A job queued while SMTP was configured can still be picked up
+            // after it was removed. Discard it with a clear reason instead of
+            // failing three times against blank credentials.
+            if (!isEmailConfigured()) {
+                logger.warn('Discarding email job: SMTP is not configured', {
+                    jobId: job.id, to, subject,
+                });
+                return;
+            }
 
             const transport = getEmailTransporter();
 

@@ -61,38 +61,8 @@ export class ReportsController {
     /**
      * Queue an async report job. Returns immediately with job ID.
      */
-    async queueReport(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
-        try {
-            const result = await this.reportsService.queueReport(
-                req.params.cashbookId as string,
-                req.user.userId,
-                req.user.email,
-                req.query as any
-            );
-
-            res.status(StatusCodes.ACCEPTED).json({
-                success: true,
-                message: 'Report generation queued. You will receive an email when ready.',
-                data: result,
-            });
-        } catch (error) {
-            next(error);
-        }
-    }
 
     /**
      * Check the status of a queued report job.
      */
-    async jobStatus(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
-        try {
-            const result = await this.reportsService.getJobStatus(req.params.jobId as string);
-
-            res.status(StatusCodes.OK).json({
-                success: true,
-                data: result,
-            });
-        } catch (error) {
-            next(error);
-        }
-    }
 }

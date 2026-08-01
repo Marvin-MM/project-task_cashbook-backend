@@ -4,7 +4,8 @@ import { AccountTransactionsController } from './account-transactions.controller
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
 import { requireWorkspaceMember } from '../../middlewares/authorize';
-import { WorkspaceRole } from '../../core/types';
+import { WorkspacePermission } from '../../core/types/workspace-permissions';
+import { idempotency } from '../../middlewares/idempotency';
 import { createAccountTransactionSchema, updateAccountTransactionSchema } from './account-transactions.dto';
 
 const router = Router({ mergeParams: true });
@@ -14,27 +15,30 @@ router.use(authenticate as any);
 
 router.get(
     '/',
-    requireWorkspaceMember() as any, // MEMBER+ can read
+    requireWorkspaceMember(WorkspacePermission.VIEW_WALLET_BALANCES) as any, // MEMBER+ can read
     controller.getAllTransactions.bind(controller) as any
 );
 
 router.post(
     '/',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
+    idempotency('POST /workspaces/:workspaceId/accounts/:accountId/transactions') as any,
     validate(createAccountTransactionSchema),
     controller.create.bind(controller) as any
 );
 
 router.patch(
     '/:id',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
+    idempotency('PATCH /workspaces/:workspaceId/accounts/:accountId/transactions/:id') as any,
     validate(updateAccountTransactionSchema),
     controller.update.bind(controller) as any
 );
 
 router.delete(
     '/:id',
-    requireWorkspaceMember([WorkspaceRole.OWNER, WorkspaceRole.ADMIN]) as any,
+    requireWorkspaceMember(WorkspacePermission.MANAGE_WALLETS) as any,
+    idempotency('DELETE /workspaces/:workspaceId/accounts/:accountId/transactions/:id') as any,
     controller.delete.bind(controller) as any
 );
 

@@ -5,6 +5,7 @@ import { NotFoundError, AuthorizationError, AppError } from '../../core/errors/A
 import { WorkspaceType, WorkspaceRole, AuditAction } from '../../core/types';
 import { CreateWorkspaceDto, UpdateWorkspaceDto } from './workspaces.dto';
 import { assertEastAfricanCurrency } from '../../core/finance';
+import { provisionWorkspaceAccounting } from '../../core/ledger/coa.seed';
 
 @injectable()
 export class WorkspacesService {
@@ -50,6 +51,11 @@ export class WorkspacesService {
                     role: WorkspaceRole.OWNER,
                 },
             });
+
+            // Chart of accounts + default wallet types. Without this the
+            // workspace cannot post a journal, and (before the ledger existed)
+            // could not even create a wallet, since nothing seeded AccountType.
+            await provisionWorkspaceAccounting(tx, ws.id, defaultCurrency);
 
             await tx.auditLog.create({
                 data: {

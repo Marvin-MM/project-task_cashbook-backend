@@ -8,6 +8,10 @@ import { getRedisClient } from './config/redis';
 import { ensureBucket } from './config/minio';
 import { startWorkers, stopWorkers } from './workers';
 import { startDeadlineScheduler } from './jobs/deadlineScheduler';
+import { startMaintenanceScheduler } from './jobs/maintenanceScheduler';
+import { startAttendanceScheduler } from './jobs/attendanceScheduler';
+import { verifyEmailTransport } from './config/email';
+import { PlatformService } from './modules/platform/platform.service';
 
 const PORT = config.PORT;
 
@@ -34,12 +38,34 @@ async function bootstrap() {
             logger.warn('⚠️  MinIO connection failed, file features may be degraded', { error: minioError });
         }
 
+        // Make superadmin grants match SUPER_ADMIN_EMAILS. Non-fatal: a failure
+        // here must not stop the API from serving.
+        try {
+            const { container } = await import('tsyringe');
+            const result = await container.resolve(PlatformService).reconcileSuperAdmins();
+            logger.info('Superadmin reconciliation complete', {
+                configured: result.configured.length,
+                promoted: result.promoted.length,
+                demoted: result.demoted.length,
+            });
+        } catch (error) {
+            logger.warn('⚠️  Superadmin reconciliation failed', { error });
+        }
+
         // Start BullMQ workers
         let workers: ReturnType<typeof startWorkers> | null = null;
         let schedulerInterval: NodeJS.Timeout | null = null;
+        let maintenanceInterval: NodeJS.Timeout | null = null;
+        let attendanceInterval: NodeJS.Timeout | null = null;
         try {
             workers = startWorkers();
+            // One clear line at boot beats discovering the problem from a user
+            // whose invite never arrived. Deliberately not awaited into the
+            // startup path — a slow SMTP host must not delay accepting traffic.
+            void verifyEmailTransport();
             schedulerInterval = startDeadlineScheduler();
+            maintenanceInterval = startMaintenanceScheduler();
+            attendanceInterval = startAttendanceScheduler();
         } catch (workerError) {
             logger.warn('⚠️  Failed to start workers, background jobs will not process', { error: workerError });
         }
@@ -73,6 +99,8 @@ async function bootstrap() {
 
                 // Stop BullMQ workers and scheduler
                 if (schedulerInterval) clearInterval(schedulerInterval);
+                if (maintenanceInterval) clearInterval(maintenanceInterval);
+                if (attendanceInterval) clearInterval(attendanceInterval);
                 if (workers) {
                     try {
                         await stopWorkers(workers);

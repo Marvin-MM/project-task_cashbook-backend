@@ -1,8 +1,13 @@
 import { injectable, inject } from 'tsyringe';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, WorkSessionStatus } from '@prisma/client';
 import { MembersRepository } from './members.repository';
 import { NotFoundError, ConflictError, AuthorizationError, AppError } from '../../core/errors/AppError';
-import { AuditAction } from '../../core/types';
+import { AuditAction, WorkspaceRole } from '../../core/types';
+import {
+    assignableRoles,
+    WorkspacePermission,
+    hasWorkspacePermission,
+} from '../../core/types/workspace-permissions';
 import { InviteMemberDto, UpdateMemberRoleDto, ImportMembersDto } from './members.dto';
 import { InvitesService } from '../invites/invites.service';
 import { sendEmail } from '../../config/email';
@@ -26,6 +31,72 @@ export class MembersService {
         return this.invitesService.getWorkspacePendingInvites(workspaceId);
     }
 
+
+    /**
+     * Decide whether `actor` may put someone in `targetRole`.
+     *
+     * Two grants reach this: MANAGE_MEMBERS (owner, admin, HR) and the narrower
+     * MANAGE_SUB_ACCOUNTANTS (accountant). Holding one is not enough on its own
+     * — assignableRoles() then caps what the actor may hand out:
+     *
+     *   ACCOUNTANT -> SUB_ACCOUNTANT, MEMBER
+     *   HR         -> MEMBER
+     *
+     * so neither can promote anyone to their own level or above. The
+     * currentTargetRole check below is the other half: without it an HR could
+     * "assign MEMBER" to an existing admin and demote them.
+     */
+    private async assertCanAssignRole(
+        workspaceId: string,
+        actorUserId: string,
+        targetRole: WorkspaceRole,
+        currentTargetRole?: WorkspaceRole,
+    ): Promise<void> {
+        const workspace = await this.prisma.workspace.findUnique({
+            where: { id: workspaceId },
+            select: { ownerId: true },
+        });
+
+        const actorRole: WorkspaceRole =
+            workspace?.ownerId === actorUserId
+                ? WorkspaceRole.OWNER
+                : ((
+                    await this.prisma.workspaceMember.findUnique({
+                        where: { workspaceId_userId: { workspaceId, userId: actorUserId } },
+                        select: { role: true },
+                    })
+                )?.role as WorkspaceRole);
+
+        if (!actorRole) {
+            throw new AuthorizationError('You are not a member of this workspace');
+        }
+
+        const canManageAnyone = hasWorkspacePermission(actorRole, WorkspacePermission.MANAGE_MEMBERS);
+        const canManageSubAccountants = hasWorkspacePermission(
+            actorRole,
+            WorkspacePermission.MANAGE_SUB_ACCOUNTANTS,
+        );
+
+        if (!canManageAnyone && !canManageSubAccountants) {
+            throw new AuthorizationError('You cannot manage members in this workspace');
+        }
+
+        const allowed = assignableRoles(actorRole);
+        if (!allowed.includes(targetRole)) {
+            throw new AuthorizationError(
+                `Your role (${actorRole}) can only assign: ${allowed.join(', ')}`,
+            );
+        }
+
+        // Changing someone's role also requires authority over the role they
+        // currently hold, so an accountant cannot demote an admin.
+        if (currentTargetRole && !allowed.includes(currentTargetRole)) {
+            throw new AuthorizationError(
+                `Your role (${actorRole}) cannot modify a member who is ${currentTargetRole}`,
+            );
+        }
+    }
+
     async inviteMember(workspaceId: string, invitedByUserId: string, dto: InviteMemberDto) {
         // Get workspace details for the email
         const workspace = await this.prisma.workspace.findUnique({
@@ -44,6 +115,8 @@ export class MembersService {
                 'INVALID_OPERATION'
             );
         }
+
+        await this.assertCanAssignRole(workspaceId, invitedByUserId, dto.role as WorkspaceRole);
 
         // Get inviter details for the email
         const inviter = await this.prisma.user.findUnique({
@@ -298,6 +371,13 @@ export class MembersService {
             throw new AppError('Cannot change the role of workspace owner', 400, 'INVALID_OPERATION');
         }
 
+        await this.assertCanAssignRole(
+            workspaceId,
+            updatedByUserId,
+            dto.role as WorkspaceRole,
+            membership.role as WorkspaceRole,
+        );
+
         const oldRole = membership.role;
         const updated = await this.membersRepository.updateRole(workspaceId, targetUserId, dto.role);
 
@@ -342,6 +422,41 @@ export class MembersService {
                 });
             }
 
+            // Close any session they left running here. A member may only have
+            // one open session across ALL workspaces, so leaving this one open
+            // would lock them out of clocking in anywhere else — in a workspace
+            // they can no longer even reach to close it.
+            const openSession = await tx.workSession.findFirst({
+                where: { workspaceId, userId: targetUserId, clockOut: null },
+            });
+            if (openSession) {
+                const closedAt = new Date();
+                await tx.workSessionPresence.updateMany({
+                    where: { sessionId: openSession.id, endedAt: null },
+                    data: { endedAt: closedAt },
+                });
+                await tx.workSession.update({
+                    where: { id: openSession.id },
+                    data: {
+                        clockOut: closedAt,
+                        totalMinutes: Math.max(
+                            0,
+                            Math.floor((closedAt.getTime() - openSession.clockIn.getTime()) / 60_000),
+                        ),
+                        workedMinutes: Math.max(
+                            0,
+                            Math.floor((closedAt.getTime() - openSession.clockIn.getTime()) / 60_000),
+                        ),
+                        status: WorkSessionStatus.ADMIN_CLOSED,
+                        // Presence exists only while a session is open; the
+                        // work_sessions_presence_matches_state CHECK enforces it.
+                        presenceStatus: null,
+                        closedById: removedByUserId,
+                        closureReason: 'MEMBERSHIP_ENDED',
+                    },
+                });
+            }
+
             await tx.workspaceMember.delete({
                 where: { workspaceId_userId: { workspaceId, userId: targetUserId } },
             });
@@ -352,7 +467,10 @@ export class MembersService {
                     workspaceId,
                     action: AuditAction.MEMBER_REMOVED,
                     resource: 'workspace_member',
-                    details: { targetUserId } as any,
+                    details: {
+                        targetUserId,
+                        closedOpenSessionId: openSession?.id ?? null,
+                    } as any,
                 },
             });
         });

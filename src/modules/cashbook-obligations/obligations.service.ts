@@ -1,5 +1,5 @@
 import { injectable, inject } from 'tsyringe';
-import { PrismaClient, ObligationStatus, ObligationType, InventoryReferenceType } from '@prisma/client';
+import { Prisma, PrismaClient, ObligationStatus, ObligationType, InventoryReferenceType } from '@prisma/client';
 import { ObligationsRepository } from './obligations.repository';
 import {
     CreateObligationDto,
@@ -10,6 +10,14 @@ import { NotFoundError, AppError } from '../../core/errors/AppError';
 import { AuditAction } from '../../core/types';
 import { Decimal } from '@prisma/client/runtime/library';
 import { InventoryService } from '../inventory/inventory.service';
+import { config } from '../../config';
+import { PostingService } from '../../core/ledger/posting.service';
+import {
+    buildObligationJournal,
+    buildObligationWriteOffJournal,
+} from '../../core/ledger/rules/obligation.rules';
+import { withFinancialTransaction } from '../../core/db/transaction';
+import { acquireLocks } from '../../core/db/locks';
 
 @injectable()
 export class ObligationsService {
@@ -17,6 +25,7 @@ export class ObligationsService {
         private obligationsRepo: ObligationsRepository,
         @inject('PrismaClient') private prisma: PrismaClient,
         private inventoryService: InventoryService,
+        private postingService: PostingService,
     ) { }
 
     // ─── List Obligations ──────────────────────────────
@@ -138,6 +147,31 @@ export class ObligationsService {
                 }
             });
 
+            // Put the receivable/payable on the balance sheet, offset by a
+            // deferred account so the P&L stays cash-basis. See obligation.rules.
+            if (config.LEDGER_MODE !== 'off') {
+                await this.postingService.post(
+                    tx,
+                    buildObligationJournal({
+                        workspaceId: cashbook.workspaceId,
+                        cashbookId,
+                        obligationId: newObligation.id,
+                        version: newObligation.version,
+                        type: newObligation.type as 'RECEIVABLE' | 'PAYABLE',
+                        totalAmount: amount,
+                        title: newObligation.title,
+                        entryDate: newObligation.dueDate ?? newObligation.createdAt,
+                        currency: cashbook.currency,
+                        createdById: userId,
+                        contactId: newObligation.contactId,
+                    }),
+                    {
+                        applyCaches: config.LEDGER_MODE === 'on',
+                        onDuplicate: 'RETURN_EXISTING',
+                    },
+                );
+            }
+
             // ─── Inventory Integration ──────────────────────────────
             // For PAYABLE obligations (goods purchases), stock-in the items
             if (dto.inventoryItems && dto.inventoryItems.length > 0 && dto.type === ObligationType.PAYABLE) {
@@ -199,6 +233,119 @@ export class ObligationsService {
     }
 
     // ─── Archive Obligation ────────────────────────────
+
+    /**
+     * Cancel an obligation and take whatever is still owed off the books.
+     *
+     * The write-off covers only the OUTSTANDING amount, not the original total:
+     * reversing the opening journal would undo the full amount and drive AR
+     * negative by whatever had already been collected. Amounts already settled —
+     * and the revenue recognized against them — stay exactly as they were.
+     *
+     * This is the single path used by both invoice voiding and obligation
+     * archiving, so a receivable can never be cancelled in one place while
+     * remaining on the balance sheet.
+     */
+    async cancelObligation(
+        obligationId: string,
+        cashbookId: string,
+        userId: string,
+        reason: string,
+    ) {
+        const existing = await this.prisma.cashbookObligation.findUnique({
+            where: { id: obligationId },
+            select: { cashbookId: true },
+        });
+        if (!existing || existing.cashbookId !== cashbookId) {
+            throw new NotFoundError('Obligation');
+        }
+
+        return withFinancialTransaction(this.prisma, async (tx) => {
+            await acquireLocks(tx, [{ target: 'OBLIGATION', ids: [obligationId] }]);
+            return this.cancelObligationInTx(tx, obligationId, userId, reason);
+        });
+    }
+
+    /**
+     * The cancellation core, for callers that already hold a transaction —
+     * notably invoice voiding, which must cancel the obligation and void the
+     * invoice atomically.
+     *
+     * Assumes the obligation row is already locked when called from a context
+     * where concurrent settlement is possible.
+     */
+    async cancelObligationInTx(
+        tx: Prisma.TransactionClient,
+        obligationId: string,
+        userId: string,
+        reason: string,
+    ) {
+        const obligation = await tx.cashbookObligation.findUniqueOrThrow({
+            where: { id: obligationId },
+        });
+
+        if (obligation.status === ObligationStatus.CANCELLED) {
+            return obligation;
+        }
+
+        const cashbook = await tx.cashbook.findUniqueOrThrow({
+            where: { id: obligation.cashbookId },
+            select: { currency: true },
+        });
+
+        const outstanding = new Decimal(obligation.outstandingAmount);
+
+        // Nothing owed means nothing to write off — cancelling a fully settled
+        // obligation is bookkeeping housekeeping only.
+        if (config.LEDGER_MODE !== 'off' && outstanding.greaterThan(0)) {
+            await this.postingService.post(
+                tx,
+                buildObligationWriteOffJournal({
+                    workspaceId: obligation.workspaceId,
+                    cashbookId: obligation.cashbookId,
+                    obligationId: obligation.id,
+                    type: obligation.type as 'RECEIVABLE' | 'PAYABLE',
+                    outstandingAmount: outstanding,
+                    title: obligation.title,
+                    entryDate: new Date(),
+                    currency: cashbook.currency,
+                    createdById: userId,
+                    contactId: obligation.contactId,
+                    reason,
+                }),
+                {
+                    applyCaches: config.LEDGER_MODE === 'on',
+                    onDuplicate: 'RETURN_EXISTING',
+                },
+            );
+        }
+
+        const updated = await tx.cashbookObligation.update({
+            where: { id: obligationId },
+            data: {
+                status: ObligationStatus.CANCELLED,
+                outstandingAmount: new Decimal(0),
+            },
+        });
+
+        await tx.auditLog.create({
+            data: {
+                userId,
+                workspaceId: obligation.workspaceId,
+                action: AuditAction.OBLIGATION_CANCELLED,
+                resource: 'obligation',
+                resourceId: obligationId,
+                details: {
+                    reason,
+                    writtenOff: outstanding.toString(),
+                    previousStatus: obligation.status,
+                } as any,
+            },
+        });
+
+        return updated;
+    }
+
     async archiveObligation(id: string, cashbookId: string, userId: string) {
         const existing = await this.obligationsRepo.findById(id);
         if (!existing) {
@@ -219,7 +366,17 @@ export class ObligationsService {
             throw new AppError('Obligation is already archived', 400, 'ALREADY_ARCHIVED');
         }
 
-        const updated = await this.prisma.$transaction(async (tx) => {
+        const updated = await withFinancialTransaction(this.prisma, async (tx) => {
+            await acquireLocks(tx, [{ target: 'OBLIGATION', ids: [id] }]);
+
+            // Archiving an OPEN obligation means we are not collecting it, so
+            // its receivable must come off the books too. Without this the
+            // balance sheet would keep an asset nobody expects to realize, and
+            // the AR control check would drift.
+            if (existing.status === ObligationStatus.OPEN) {
+                await this.cancelObligationInTx(tx, id, userId, 'Archived while still open');
+            }
+
             const obligation = await tx.cashbookObligation.update({
                 where: { id },
                 data: { archivedAt: new Date() }

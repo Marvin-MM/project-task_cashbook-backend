@@ -10,8 +10,10 @@ import contactsRoutes from '../modules/contacts/contacts.routes';
 import paymentModesRoutes from '../modules/payment-modes/payment-modes.routes';
 import filesRoutes from '../modules/files/files.routes';
 import reportsRoutes from '../modules/reports/reports.routes';
+import ledgerReportsRoutes from '../modules/ledger-reports/ledger-reports.routes';
+import chartOfAccountsRoutes from '../modules/chart-of-accounts/chart-of-accounts.routes';
 import auditRoutes from '../modules/audit/audit.routes';
-import adminRoutes from '../modules/admin/admin.routes';
+import platformRoutes from '../modules/platform/platform.routes';
 import invitesRoutes from '../modules/invites/invites.routes';
 import { obligationsRouter } from '../modules/cashbook-obligations/obligations.routes';
 import accountTypesRoutes from '../modules/account-types/account-types.routes';
@@ -24,6 +26,9 @@ import invoicingRoutes from '../modules/invoicing/invoicing.routes';
 import projectsRoutes from '../modules/projects/projects.routes';
 import tasksRoutes from '../modules/tasks/tasks.routes';
 import timeTrackingRoutes from '../modules/time-tracking/time-tracking.routes';
+import expenseClaimsRoutes from '../modules/expense-claims/expense-claims.routes';
+import attendanceRoutes from '../modules/attendance/attendance.routes';
+import meAttendanceRoutes from '../modules/time-tracking/me-attendance.routes';
 import notificationsRoutes from '../modules/notifications/notifications.routes';
 
 const router = Router();
@@ -42,7 +47,11 @@ router.use('/workspaces/:workspaceId/catalog', catalogRoutes);
 router.use('/workspaces/:workspaceId/invoices', invoicingRoutes);
 router.use('/workspaces/:workspaceId/projects', projectsRoutes);
 router.use('/workspaces/:workspaceId/tasks', tasksRoutes);
+router.use('/workspaces/:workspaceId/expense-claims', expenseClaimsRoutes);
+router.use('/workspaces/:workspaceId/attendance', attendanceRoutes);
 router.use('/workspaces/:workspaceId/time-tracking', timeTrackingRoutes);
+// Person-scoped, not workspace-scoped — see me-attendance.routes.ts.
+router.use('/me/attendance', meAttendanceRoutes);
 router.use('/workspaces/:workspaceId/notifications', notificationsRoutes);
 router.use('/cashbooks', cashbooksRoutes);
 router.use('/cashbooks/:cashbookId/obligations', obligationsRouter);
@@ -52,8 +61,12 @@ router.use('/contacts', contactsRoutes);
 router.use('/payment-modes', paymentModesRoutes);
 router.use('/files', filesRoutes);
 router.use('/reports', reportsRoutes);
+router.use('/workspaces/:workspaceId/ledger-reports', ledgerReportsRoutes);
+router.use('/workspaces/:workspaceId/chart-of-accounts', chartOfAccountsRoutes);
 router.use('/audit', auditRoutes);
-router.use('/admin', adminRoutes);
+// Superadmin surface. Replaced the old /admin module, which duplicated all of
+// this without audit logging.
+router.use('/platform', platformRoutes);
 router.use('/invites', invitesRoutes);
 
 export default router;

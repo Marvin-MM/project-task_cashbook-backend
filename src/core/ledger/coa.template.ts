@@ -1,0 +1,94 @@
+/**
+ * The chart of accounts every workspace is seeded with.
+ *
+ * Users never see most of this. The Accounts page continues to show only wallet
+ * accounts; the full chart is an accountant-only surface. Categories map onto
+ * the income/expense accounts optionally — unmapped categories fall back to
+ * SALES_REVENUE / GENERAL_EXPENSES, so the entry flow is unchanged.
+ */
+import { LedgerAccountClass, NormalBalance } from '@prisma/client';
+import type { SystemLedgerKey } from './ledger.types';
+
+export interface CoaTemplateRow {
+    code: string;
+    name: string;
+    class: LedgerAccountClass;
+    systemKey?: SystemLedgerKey;
+    parentCode?: string;
+    /** Counts toward the direct-method cash flow statement. */
+    isCashEquivalent?: boolean;
+    /** Roll-up parents are presentation-only and cannot be posted to. */
+    isPostable?: boolean;
+}
+
+/** Debit-normal: assets and expenses. Credit-normal: everything else. */
+export function normalBalanceFor(klass: LedgerAccountClass): NormalBalance {
+    return klass === LedgerAccountClass.ASSET || klass === LedgerAccountClass.EXPENSE
+        ? NormalBalance.DEBIT
+        : NormalBalance.CREDIT;
+}
+
+const { ASSET, LIABILITY, EQUITY, INCOME, EXPENSE } = LedgerAccountClass;
+
+export const CHART_OF_ACCOUNTS: readonly CoaTemplateRow[] = [
+    // ─── Assets ───────────────────────────────────────────────
+    { code: '1000', name: 'Assets', class: ASSET, isPostable: false },
+    // Parent of one child per Cashbook — its unallocated book cash.
+    { code: '1010', name: 'Book Cash', class: ASSET, parentCode: '1000', isPostable: false },
+    // Parent of one child per ASSET wallet.
+    { code: '1100', name: 'Wallets', class: ASSET, parentCode: '1000', isPostable: false },
+    { code: '1200', name: 'Accounts Receivable', class: ASSET, parentCode: '1000', systemKey: 'AR' },
+    { code: '1300', name: 'Inventory', class: ASSET, parentCode: '1000', systemKey: 'INVENTORY' },
+    { code: '1310', name: 'Inventory On Rent', class: ASSET, parentCode: '1000', systemKey: 'INVENTORY_ON_RENT' },
+    { code: '1900', name: 'Suspense', class: ASSET, parentCode: '1000', systemKey: 'SUSPENSE' },
+
+    // ─── Liabilities ──────────────────────────────────────────
+    { code: '2000', name: 'Liabilities', class: LIABILITY, isPostable: false },
+    { code: '2100', name: 'Accounts Payable', class: LIABILITY, parentCode: '2000', systemKey: 'AP' },
+    { code: '2200', name: 'Tax Payable', class: LIABILITY, parentCode: '2000', systemKey: 'TAX_PAYABLE' },
+    // The cash-basis offsets. A receivable is recognized as an asset against
+    // this liability rather than as revenue, so the balance sheet shows AR while
+    // the P&L stays strictly cash-basis. Revenue moves out of here when cash lands.
+    { code: '2400', name: 'Deferred Revenue (Cash-Basis Offset)', class: LIABILITY, parentCode: '2000', systemKey: 'DEFERRED_REVENUE' },
+    { code: '2450', name: 'Deferred Purchases (Cash-Basis Offset)', class: LIABILITY, parentCode: '2000', systemKey: 'DEFERRED_EXPENSE' },
+    // Parent of one child per LIABILITY wallet (credit cards, loans).
+    { code: '2900', name: 'Wallet Liabilities', class: LIABILITY, parentCode: '2000', isPostable: false },
+
+    // ─── Equity ───────────────────────────────────────────────
+    { code: '3000', name: 'Equity', class: EQUITY, isPostable: false },
+    { code: '3100', name: 'Opening Balance Equity', class: EQUITY, parentCode: '3000', systemKey: 'OPENING_BALANCE_EQUITY' },
+    { code: '3200', name: 'Retained Earnings', class: EQUITY, parentCode: '3000', systemKey: 'RETAINED_EARNINGS' },
+    { code: '3900', name: 'Owner Drawings', class: EQUITY, parentCode: '3000', systemKey: 'OWNER_DRAWINGS' },
+
+    // ─── Income ───────────────────────────────────────────────
+    { code: '4000', name: 'Income', class: INCOME, isPostable: false },
+    { code: '4100', name: 'Sales Revenue', class: INCOME, parentCode: '4000', systemKey: 'SALES_REVENUE' },
+    { code: '4200', name: 'Rental Income', class: INCOME, parentCode: '4000', systemKey: 'RENTAL_INCOME' },
+    { code: '4900', name: 'Other Income', class: INCOME, parentCode: '4000', systemKey: 'OTHER_INCOME' },
+
+    // ─── Expenses ─────────────────────────────────────────────
+    { code: '5000', name: 'Expenses', class: EXPENSE, isPostable: false },
+    { code: '5100', name: 'Cost of Goods Sold', class: EXPENSE, parentCode: '5000', systemKey: 'COGS' },
+    { code: '5200', name: 'General Expenses', class: EXPENSE, parentCode: '5000', systemKey: 'GENERAL_EXPENSES' },
+    // Charges on entries and transfer fees land here.
+    { code: '5300', name: 'Transaction Fees', class: EXPENSE, parentCode: '5000', systemKey: 'TRANSACTION_FEES' },
+    { code: '5400', name: 'Inventory Adjustments', class: EXPENSE, parentCode: '5000', systemKey: 'INVENTORY_ADJUSTMENT' },
+] as const;
+
+/** Parent codes the per-wallet and per-cashbook accounts hang from. */
+export const BOOK_CASH_PARENT_CODE = '1010';
+export const WALLET_ASSET_PARENT_CODE = '1100';
+export const WALLET_LIABILITY_PARENT_CODE = '2900';
+
+/**
+ * Default wallet types. AccountType was seeded NOWHERE before this, which meant
+ * a brand-new workspace could not create a wallet at all — createAccount
+ * requires an accountTypeId and nothing produced one.
+ */
+export const DEFAULT_ACCOUNT_TYPES = [
+    { name: 'Bank', classification: 'ASSET' },
+    { name: 'Cash', classification: 'ASSET' },
+    { name: 'Mobile Money', classification: 'ASSET' },
+    { name: 'Credit Card', classification: 'LIABILITY' },
+    { name: 'Loan', classification: 'LIABILITY' },
+] as const;
