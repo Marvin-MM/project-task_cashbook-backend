@@ -33,20 +33,32 @@ DEPLOYMENT="${DEPLOYMENT:-inchange-app}"
 
 if [ $# -lt 1 ]; then
     echo "usage: $0 <script.js> [args...]" >&2
+    echo "       $0 --exec <command> [args...]" >&2
     echo "  e.g. $0 backfill-ledger.js --apply" >&2
+    echo "       $0 --exec npx prisma migrate status" >&2
     exit 64
 fi
 
-SCRIPT="$1"; shift
-JOB_NAME="ops-$(echo "${SCRIPT%.js}" | tr '._' '--')-$(date +%s)"
+if [ "$1" = "--exec" ]; then
+    # Escape hatch for one-offs that are not scripts/ — `prisma migrate status`,
+    # `migrate resolve`, `migrate deploy`. Same pod, same env, same reasoning.
+    shift
+    LABEL="$(echo "$1" | tr -cd 'a-z0-9-')"
+    COMMAND_JSON=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
+    DESCRIPTION="$*"
+else
+    SCRIPT="$1"; shift
+    LABEL="$(echo "${SCRIPT%.js}" | tr '._' '--')"
+    COMMAND_JSON=$(printf '%s\n' node "dist-scripts/scripts/${SCRIPT}" "$@" \
+        | jq -R . | jq -sc .)
+    DESCRIPTION="node dist-scripts/scripts/${SCRIPT} $*"
+fi
 
-# node dist-scripts/scripts/<script> [args...] — as a JSON array for jq.
-COMMAND_JSON=$(printf '%s\n' node "dist-scripts/scripts/${SCRIPT}" "$@" \
-    | jq -R . | jq -sc .)
+JOB_NAME="ops-${LABEL}-$(date +%s)"
 
 echo "Namespace : ${NAMESPACE}"
 echo "Job       : ${JOB_NAME}"
-echo "Command   : node dist-scripts/scripts/${SCRIPT} $*"
+echo "Command   : ${DESCRIPTION}"
 echo
 
 # Build the Job from the Deployment's own pod spec.

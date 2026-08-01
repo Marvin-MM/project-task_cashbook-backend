@@ -240,6 +240,22 @@ UPDATE "work_sessions" SET "worked_minutes" = "total_minutes" WHERE "clock_out" 
 
 -- Presence exists exactly while the session is open. Makes "presence must clear
 -- on clock-out" structurally true rather than a rule the service remembers.
+--
+-- Backfill BOTH directions first. Sessions written before presence existed have
+-- presence_status NULL whatever their state, so on any database with attendance
+-- history the constraint would be violated the moment it is added — which is
+-- exactly what happened on a database carrying nine legacy sessions. A fresh
+-- database has no such rows, which is why the test suite never saw it.
+UPDATE "work_sessions"
+SET "presence_status" = 'AVAILABLE',
+    "presence_changed_at" = COALESCE("presence_changed_at", "clock_in")
+WHERE "clock_out" IS NULL AND "presence_status" IS NULL;
+
+-- The other direction: a closed session must carry no presence.
+UPDATE "work_sessions"
+SET "presence_status" = NULL
+WHERE "clock_out" IS NOT NULL AND "presence_status" IS NOT NULL;
+
 ALTER TABLE "work_sessions"
   ADD CONSTRAINT "work_sessions_presence_matches_state"
     CHECK (("clock_out" IS NULL) = ("presence_status" IS NOT NULL));

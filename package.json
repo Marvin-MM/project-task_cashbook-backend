@@ -20,6 +20,7 @@
     "repair:balances:apply": "tsx scripts/repair-financial-balances.ts --apply",
     "seed": "tsx prisma/seed.ts",
     "backfill:ledger": "tsx scripts/backfill-ledger.ts",
+    "preflight:baseline": "tsx scripts/preflight-baseline.ts",
     "build:scripts": "tsc -p tsconfig.scripts.json",
     "ops:backfill-ledger": "node dist-scripts/scripts/backfill-ledger.js",
     "ops:repair-balances": "node dist-scripts/scripts/repair-financial-balances.js",
