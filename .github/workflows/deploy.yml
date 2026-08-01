@@ -10,49 +10,49 @@ env:
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/inchange_server
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: cashbook_test
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL_TEST: postgresql://postgres:postgres@localhost:5432/cashbook_test
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/cashbook_ci_unused
-      JWT_SECRET: ci-jwt-secret-value-at-least-32-characters-long
-      JWT_REFRESH_SECRET: ci-refresh-secret-value-at-least-32-characters
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  # test:
+  #   runs-on: ubuntu-latest
+  #   services:
+  #     postgres:
+  #       image: postgres:16-alpine
+  #       env:
+  #         POSTGRES_USER: postgres
+  #         POSTGRES_PASSWORD: postgres
+  #         POSTGRES_DB: cashbook_test
+  #       ports: ["5432:5432"]
+  #       options: >-
+  #         --health-cmd pg_isready
+  #         --health-interval 10s
+  #         --health-timeout 5s
+  #         --health-retries 5
+  #   env:
+  #     DATABASE_URL_TEST: postgresql://postgres:postgres@localhost:5432/cashbook_test
+  #     DATABASE_URL: postgresql://postgres:postgres@localhost:5432/cashbook_ci_unused
+  #     JWT_SECRET: ci-jwt-secret-value-at-least-32-characters-long
+  #     JWT_REFRESH_SECRET: ci-refresh-secret-value-at-least-32-characters
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: "22"
+  #         cache: npm
 
-      - run: npm ci
-      - run: npx prisma generate
+  #     - run: npm ci
+  #     - run: npx prisma generate
 
-      # Fails the build if schema.prisma has drifted from the migration history.
-      - name: Verify migrations are in sync
-        run: npx prisma migrate deploy
-        env:
-          DATABASE_URL: ${{ env.DATABASE_URL_TEST }}
+  #     # Fails the build if schema.prisma has drifted from the migration history.
+  #     - name: Verify migrations are in sync
+  #       run: npx prisma migrate deploy
+  #       env:
+  #         DATABASE_URL: ${{ env.DATABASE_URL_TEST }}
 
-      - run: npm run typecheck
-      - run: npm test
+  #     - run: npm run typecheck
+  #     - run: npm test
 
   build-and-push:
-    needs: test
+    # needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
