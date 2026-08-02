@@ -325,11 +325,25 @@ export class AccountsService {
                 byCurrency[currency] = { assets: new Decimal(0), liabilities: new Decimal(0) };
             }
 
-            // Standard approach: Net Worth = Assets - Liabilities
+            // Net Worth = Assets − Liabilities, with one subtlety that had the
+            // sign inverted:
+            //
+            // `Account.balance` is Σ(debit − credit). Assets are debit-normal so
+            // they come out POSITIVE; liabilities are credit-normal so they come
+            // out NEGATIVE — owing 20,000 is a balance of −20,000. Summing those
+            // raw and then subtracting applied the minus twice: 15,000 held
+            // against 20,000 owed reported +35,000 instead of −5,000, calling a
+            // business solvent at the exact moment it is not.
+            //
+            // So liabilities are accumulated as a POSITIVE magnitude — which is
+            // also how every balance sheet prints what is owed — and the
+            // subtraction below then means what it says. An overpaid liability
+            // genuinely has a debit balance, and negating it keeps that case
+            // correct too rather than special-casing it.
             if (classification === 'ASSET') {
                 byCurrency[currency].assets = byCurrency[currency].assets.add(account.balance);
             } else if (classification === 'LIABILITY') {
-                byCurrency[currency].liabilities = byCurrency[currency].liabilities.add(account.balance);
+                byCurrency[currency].liabilities = byCurrency[currency].liabilities.sub(account.balance);
             }
         });
 
