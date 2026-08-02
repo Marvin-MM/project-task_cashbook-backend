@@ -99,3 +99,19 @@ export type UpdateEntryDto = z.infer<typeof updateEntrySchema>;
 export type DeleteEntryDto = z.infer<typeof deleteEntrySchema>;
 export type ReviewDeleteRequestDto = z.infer<typeof reviewDeleteRequestSchema>;
 export type EntryQueryDto = z.infer<typeof entryQuerySchema>;
+
+/**
+ * Moving an entry to another book.
+ *
+ * `reason` is required, not optional. Reattributing money between books is the
+ * kind of change that looks like tidying when you do it and like a discrepancy
+ * when someone else finds it six months later — the audit row is only useful if
+ * it says why.
+ */
+export const reassignEntrySchema = z.object({
+    targetCashbookId: z.string().uuid('Choose the book to move this entry into'),
+    reason: z.string().min(3, 'Say why this entry is moving').max(500),
+    expectedVersion: z.coerce.number().int().positive(),
+});
+
+export type ReassignEntryDto = z.infer<typeof reassignEntrySchema>;

@@ -6,6 +6,7 @@ import {
     NotFoundError,
     AppError,
     ConflictError,
+    AuthorizationError,
 } from '../../core/errors/AppError';
 import {
     AuditAction,
@@ -39,6 +40,9 @@ import { acquireLocks } from '../../core/db/locks';
 import { assertPeriodOpen, resolveReversalDate } from '../../core/ledger/period';
 import { config } from '../../config';
 import { PostingService } from '../../core/ledger/posting.service';
+import { resolveWorkspaceRole } from '../../core/authz/workspace-access';
+import { hasWorkspacePermission } from '../../core/types/workspace-permissions';
+import { WorkspacePermission } from '../../core/types/workspace-permissions';
 import {
     buildEntryJournal,
     entryPostingKey,
@@ -1490,6 +1494,87 @@ export class EntriesService {
     }
 
     // ─── Receipts ──────────────────────────────────────
+    /**
+     * The receipt as data, for the client to render and print.
+     *
+     * The same model the PDF generator is handed, so a printed receipt and an
+     * emailed one show identical facts. Building the document twice from two
+     * queries is how the printed copy quietly starts disagreeing with the
+     * emailed one.
+     *
+     * Emailing still renders server-side, because the recipient never loads our
+     * page. Printing renders client-side, because the person printing already
+     * has the page open and a browser prints better than we do.
+     */
+    async getReceiptModel(entryId: string) {
+        const entry = await this.prisma.entry.findUnique({
+            where: { id: entryId },
+            include: {
+                cashbook: { select: { workspaceId: true, currency: true, name: true } },
+                contact: { include: { customerProfile: true } },
+                paymentMode: true,
+                obligation: true,
+            },
+        });
+
+        if (!entry) throw new NotFoundError('Entry');
+        if (!entry.contact) {
+            throw new AppError(
+                'This entry is not linked to a customer, so there is nobody to receipt.',
+                400,
+                'NO_CONTACT',
+            );
+        }
+        if (entry.type !== 'INCOME') {
+            throw new AppError(
+                'Receipts acknowledge money received. This entry is money out.',
+                400,
+                'NOT_INCOME',
+            );
+        }
+
+        const workspaceId = entry.cashbook.workspaceId;
+        const [workspace, settings] = await Promise.all([
+            this.prisma.workspace.findUnique({ where: { id: workspaceId } }),
+            this.prisma.invoiceSettings.findUnique({ where: { workspaceId } }),
+        ]);
+
+        return {
+            receiptNumber: entry.id.split('-').pop() || entry.id,
+            paymentDate: entry.entryDate,
+            amountPaid: entry.amount.toString(),
+            currency: entry.cashbook.currency,
+            paymentMode: entry.paymentMode ? { name: entry.paymentMode.name } : null,
+            description: entry.description,
+            obligation: entry.obligation
+                ? {
+                    title: entry.obligation.title,
+                    totalAmount: entry.obligation.totalAmount.toString(),
+                    outstandingAmount: entry.obligation.outstandingAmount.toString(),
+                }
+                : null,
+            customer: {
+                name: entry.contact.name,
+                email: entry.contact.email,
+                phone: entry.contact.phone,
+                company: entry.contact.company,
+                billingAddress: entry.contact.customerProfile?.billingAddress ?? null,
+                taxId: entry.contact.customerProfile?.taxId ?? null,
+            },
+            // Only what InvoiceSettings actually models. Inventing address and
+            // phone fields here would print empty lines on every receipt.
+            business: {
+                name: workspace?.name ?? 'Business',
+                logoUrl: settings?.logoUrl ?? null,
+                accentColor: settings?.accentColor ?? null,
+                footer: settings?.defaultFooter ?? null,
+                notes: settings?.defaultNotes ?? null,
+            },
+            /** False means the Send button should explain itself rather than fail. */
+            canEmail: Boolean(entry.contact.email),
+        };
+    }
+
     async sendReceipt(entryId: string, userId: string) {
         const entry = await this.prisma.entry.findUnique({
             where: { id: entryId },
@@ -1502,8 +1587,31 @@ export class EntriesService {
         });
 
         if (!entry) throw new NotFoundError('Entry');
-        if (!entry.obligation) throw new AppError('Entry is not linked to an obligation', 400, 'NO_OBLIGATION');
-        if (!entry.contact || !entry.contact.email) throw new AppError('No contact email available to send receipt', 400, 'NO_EMAIL');
+        // An obligation is NOT required. A receipt acknowledges that money was
+        // received; most sales are paid on the spot and never become a
+        // receivable. Requiring one meant the commonest case — a walk-in
+        // customer paying cash — could not be given a receipt at all.
+        if (!entry.contact) {
+            throw new AppError(
+                'This entry is not linked to a customer, so there is nobody to receipt.',
+                400,
+                'NO_CONTACT',
+            );
+        }
+        if (!entry.contact.email) {
+            throw new AppError(
+                'That customer has no email address. Add one, or print the receipt instead.',
+                400,
+                'NO_EMAIL',
+            );
+        }
+        if (entry.type !== 'INCOME') {
+            throw new AppError(
+                'Receipts acknowledge money received. This entry is money out.',
+                400,
+                'NOT_INCOME',
+            );
+        }
 
         const workspaceId = entry.cashbook.workspaceId;
 
@@ -1520,11 +1628,19 @@ export class EntriesService {
             amountPaid: entry.amount,
             currency: entry.cashbook.currency,
             paymentMode: entry.paymentMode,
-            obligation: {
-                title: entry.obligation.title,
-                totalAmount: entry.obligation.totalAmount,
-                outstandingAmount: entry.obligation.outstandingAmount,
-            },
+            // Falls back to the entry itself when the payment does not settle a
+            // receivable: paid in full, nothing outstanding.
+            obligation: entry.obligation
+                ? {
+                    title: entry.obligation.title,
+                    totalAmount: entry.obligation.totalAmount,
+                    outstandingAmount: entry.obligation.outstandingAmount,
+                }
+                : {
+                    title: entry.description,
+                    totalAmount: entry.amount,
+                    outstandingAmount: new Decimal(0),
+                },
             customer: {
                 name: entry.contact.name,
                 email: entry.contact.email,
@@ -1538,14 +1654,15 @@ export class EntriesService {
 
         // Send Email
         const amountStr = entry.amount.toNumber().toLocaleString(undefined, { minimumFractionDigits: 2 });
-        const remainingStr = entry.obligation.outstandingAmount.toNumber().toLocaleString(undefined, { minimumFractionDigits: 2 });
+        const remainingStr = (entry.obligation?.outstandingAmount ?? new Decimal(0))
+            .toNumber().toLocaleString(undefined, { minimumFractionDigits: 2 });
         const paymentDateStr = new Date(entry.entryDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 
         const html = receiptEmailTemplate({
             customerName: entry.contact.name,
             businessName,
             receiptNumber: pdfModel.receiptNumber,
-            obligationName: entry.obligation.title,
+            obligationName: entry.obligation?.title ?? entry.description,
             currency: entry.cashbook.currency,
             amountPaid: amountStr,
             paymentDate: paymentDateStr,
@@ -1555,7 +1672,7 @@ export class EntriesService {
 
         await sendEmail({
             to: entry.contact.email,
-            subject: `Payment Receipt - ${entry.obligation.title}`,
+            subject: `Payment Receipt - ${entry.obligation?.title ?? entry.description}`,
             html,
             attachments: [{
                 filename: `Receipt_${pdfModel.receiptNumber}.pdf`,
@@ -1575,11 +1692,221 @@ export class EntriesService {
                 details: {
                     sentTo: entry.contact.email,
                     amount: entry.amount.toString(),
-                    remainingBalance: entry.obligation.outstandingAmount.toString(),
+                    remainingBalance: (entry.obligation?.outstandingAmount ?? new Decimal(0)).toString(),
                 } as any,
             }
         });
 
         return { success: true };
+    }
+
+    /**
+     * Move an entry from one book to another.
+     *
+     * The replacement for a "cashbook to cashbook transfer". Now that every
+     * entry names a wallet, books hold no cash, so there is nothing to transfer
+     * between them — the money never moves. What people actually want when they
+     * ask for that is this: the amount was filed against the wrong book.
+     *
+     * So this changes ATTRIBUTION, not money. The wallet is untouched, the
+     * amount is untouched, and the org-wide totals are unchanged; only which
+     * book's income/expense the entry counts toward changes.
+     *
+     * It is still a ledger operation, not a column update. The old book's
+     * journal is reversed and a fresh one posted against the new book, exactly
+     * as an edit does — so both books' totals move by the same amount in
+     * opposite directions, and the history shows where the entry used to live
+     * rather than silently rewriting it.
+     */
+    async reassignEntry(
+        entryId: string,
+        userId: string,
+        dto: { targetCashbookId: string; reason: string; expectedVersion: number },
+    ) {
+        const entry = await this.entriesRepository.findById(entryId);
+        if (!entry || entry.isDeleted) throw new NotFoundError('Entry');
+
+        if (entry.status === 'REVERSED') {
+            throw new AppError(
+                'This entry has been reversed. Reversed entries stay where they are as a record of what happened.',
+                400,
+                'ENTRY_REVERSED',
+            );
+        }
+
+        // Reconciliation is a statement about one book: "this entry matches a
+        // line on that book's statement". Moving it elsewhere would silently
+        // invalidate that, so it has to be undone deliberately first.
+        if (entry.isReconciled) {
+            throw new AppError(
+                'This entry is reconciled. Unreconcile it before moving it to another book.',
+                400,
+                'ENTRY_RECONCILED',
+            );
+        }
+
+        const source = await this.prisma.cashbook.findUnique({
+            where: { id: entry.cashbookId },
+            select: { id: true, name: true, workspaceId: true, currency: true },
+        });
+        if (!source) throw new NotFoundError('Cashbook');
+
+        if (dto.targetCashbookId === source.id) {
+            throw new AppError('That entry is already in this book.', 400, 'SAME_CASHBOOK');
+        }
+
+        // Must be able to post INTO the destination, checked the same way the
+        // route would if the id arrived in the path. Without this, write access
+        // to one book would be write access to every book in the workspace.
+        const target = await this.assertCanPostToCashbook(
+            dto.targetCashbookId,
+            source.workspaceId,
+            userId,
+        );
+
+        // No FX here, and inventing one silently would be worse than refusing.
+        if (target.currency !== source.currency) {
+            throw new AppError(
+                `Cannot move a ${source.currency} entry into a ${target.currency} book.`,
+                400,
+                'CURRENCY_MISMATCH',
+            );
+        }
+
+        return withFinancialTransaction(this.prisma, async (tx) => {
+            const walletProbe = await tx.accountTransaction.findFirst({
+                where: { sourceId: entryId },
+                select: { accountId: true },
+            });
+
+            // Both books, in a globally consistent order, plus the wallet the
+            // repost will touch.
+            await acquireLocks(tx, [
+                { target: 'CASHBOOK', ids: [source.id, target.id] },
+                { target: 'WALLET_ACCOUNT', ids: [walletProbe?.accountId] },
+                { target: 'OBLIGATION', ids: [entry.obligationId] },
+            ]);
+
+            const claimed = await tx.entry.updateMany({
+                where: { id: entryId, version: dto.expectedVersion, isDeleted: false },
+                data: { version: { increment: 1 }, cashbookId: target.id },
+            });
+            if (claimed.count === 0) {
+                throw new ConflictError(
+                    'This entry changed while you were looking at it. Reload and try again.',
+                );
+            }
+
+            const moved = await tx.entry.findUniqueOrThrow({ where: { id: entryId } });
+
+            if (this.ledgerEnabled) {
+                // One date, but it must be open in both books' shared workspace
+                // — moving an entry into closed books is what closing prevents.
+                await assertPeriodOpen(tx, source.workspaceId, entry.entryDate);
+
+                const obligation = moved.obligationId
+                    ? await tx.cashbookObligation.findUnique({
+                        where: { id: moved.obligationId },
+                        select: { id: true, type: true },
+                    })
+                    : null;
+
+                await this.postingService.repost(tx, {
+                    originalPostingKey: entryPostingKey(entryId, entry.version),
+                    reason: `Moved from ${source.name} to ${target.name}: ${dto.reason}`,
+                    createdById: userId,
+                    applyCaches: this.ledgerOwnsCaches,
+                    next: buildEntryJournal({
+                        workspaceId: source.workspaceId,
+                        cashbookId: target.id,
+                        entryId,
+                        version: moved.version,
+                        type: moved.type as 'INCOME' | 'EXPENSE',
+                        amount: moved.amount,
+                        chargeAmount: moved.chargeAmount,
+                        description: moved.description,
+                        entryDate: moved.entryDate,
+                        currency: target.currency,
+                        createdById: userId,
+                        accountId: walletProbe?.accountId ?? null,
+                        categoryId: moved.categoryId,
+                        contactId: moved.contactId,
+                        obligation: obligation
+                            ? { id: obligation.id, type: obligation.type as 'RECEIVABLE' | 'PAYABLE' }
+                            : null,
+                    }),
+                });
+            }
+
+            await tx.entryAudit.create({
+                data: {
+                    entryId,
+                    userId,
+                    action: 'UPDATED',
+                    changes: { cashbookId: { from: source.id, to: target.id } } as never,
+                    oldValues: { cashbookId: source.id, cashbookName: source.name } as never,
+                    newValues: {
+                        cashbookId: target.id,
+                        cashbookName: (target as { name?: string }).name ?? null,
+                        reason: dto.reason,
+                    } as never,
+                },
+            });
+
+            await tx.financialAuditLog.create({
+                data: {
+                    userId,
+                    workspaceId: source.workspaceId,
+                    cashbookId: target.id,
+                    entryId,
+                    action: AuditAction.ENTRY_UPDATED,
+                    amount: moved.amount,
+                    balanceBefore: new Decimal(0),
+                    balanceAfter: new Decimal(0),
+                    details: {
+                        movedFrom: source.name,
+                        movedTo: (target as { name?: string }).name ?? target.id,
+                        reason: dto.reason,
+                    } as never,
+                },
+            });
+
+            return moved;
+        });
+    }
+
+    /**
+     * Can this user post into that book?
+     *
+     * The same check `requireCashbookMember(CREATE_ENTRY)` performs, run
+     * in-service because the destination arrives in the body rather than the
+     * path. A role holding ACCESS_ALL_CASHBOOKS passes without an explicit
+     * membership row; everyone else needs one, which is what keeps a
+     * PROJECT_MANAGER confined to the books they were granted.
+     */
+    private async assertCanPostToCashbook(cashbookId: string, workspaceId: string, userId: string) {
+        const cashbook = await this.prisma.cashbook.findUnique({
+            where: { id: cashbookId },
+            select: { id: true, name: true, workspaceId: true, isActive: true, currency: true },
+        });
+        if (!cashbook || !cashbook.isActive || cashbook.workspaceId !== workspaceId) {
+            throw new NotFoundError('Cashbook');
+        }
+
+        const orgRole = await resolveWorkspaceRole(this.prisma, workspaceId, userId);
+        if (hasWorkspacePermission(orgRole, WorkspacePermission.ACCESS_ALL_CASHBOOKS)) {
+            return cashbook;
+        }
+
+        const membership = await this.prisma.cashbookMember.findUnique({
+            where: { cashbookId_userId: { cashbookId, userId } },
+            select: { role: true },
+        });
+        if (!membership || !hasPermission(membership.role as never, CashbookPermission.CREATE_ENTRY)) {
+            throw new AuthorizationError(
+                'You cannot record entries in that book. Choose one you have access to.',
+            );
+        }
+        return cashbook;
     }
 }

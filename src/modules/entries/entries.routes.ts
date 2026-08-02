@@ -12,6 +12,7 @@ import {
     deleteEntrySchema,
     reviewDeleteRequestSchema,
     entryQuerySchema,
+    reassignEntrySchema,
 } from './entries.dto';
 
 const router = Router({ mergeParams: true });
@@ -61,6 +62,21 @@ router.patch(
     entriesController.update.bind(entriesController) as any
 );
 
+/*
+ * Move an entry to another book.
+ *
+ * Gated on UPDATE_ENTRY in the SOURCE book (the path one). Authority over the
+ * DESTINATION is checked in the service, because that id arrives in the body —
+ * without it, write access to one book would be write access to all of them.
+ */
+router.patch(
+    '/:entryId/cashbook/:cashbookId/reassign',
+    requireCashbookMember(CashbookPermission.UPDATE_ENTRY) as any,
+    idempotency('PATCH /entries/:entryId/cashbook/:cashbookId/reassign') as any,
+    validate(reassignEntrySchema),
+    entriesController.reassign.bind(entriesController) as any
+);
+
 router.delete(
     '/:entryId/cashbook/:cashbookId',
     requireCashbookMember(CashbookPermission.DELETE_ENTRY) as any,
@@ -85,6 +101,20 @@ router.get(
 );
 
 // ─── Receipts ──────────────────────────────────────────
+/*
+ * The receipt as JSON, for on-screen preview and printing.
+ *
+ * Printing is the client's job — it already has the page open, and the browser
+ * prints better than we do. Emailing stays server-side below, because the
+ * recipient never loads our page. Both read the same model so the printed and
+ * emailed copies cannot disagree.
+ */
+router.get(
+    '/:entryId/receipt/cashbook/:cashbookId',
+    requireCashbookMember(CashbookPermission.VIEW_ENTRIES) as any,
+    entriesController.receiptModel.bind(entriesController) as any
+);
+
 router.post(
     '/:entryId/receipt/send/cashbook/:cashbookId',
     requireCashbookMember(CashbookPermission.VIEW_ENTRIES) as any,

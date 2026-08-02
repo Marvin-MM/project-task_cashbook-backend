@@ -116,13 +116,16 @@ export async function createOpenWorkSession(
 export async function createCashbook(
     workspaceId: string,
     _createdById: string,
-    overrides: { name?: string; allowBackdate?: boolean } = {},
+    overrides: { name?: string; allowBackdate?: boolean; currency?: string } = {},
 ) {
     return testPrisma.cashbook.create({
         data: {
             workspaceId,
             name: overrides.name ?? `Cashbook ${randomUUID().slice(0, 8)}`,
-            currency: CURRENCY,
+            // Overridable so cross-currency refusals can actually be tested.
+            // It silently ignored the override before, which made such a test
+            // pass for the wrong reason: both books were the same currency.
+            currency: overrides.currency ?? CURRENCY,
             allowBackdate: overrides.allowBackdate ?? true,
         },
     });

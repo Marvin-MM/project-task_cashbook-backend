@@ -68,6 +68,26 @@ export class EntriesController {
         }
     }
 
+    /**
+     * Move an entry into another book. Changes attribution, never money.
+     */
+    async reassign(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const entry = await this.entriesService.reassignEntry(
+                req.params.entryId as string,
+                req.user.userId,
+                req.body,
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Entry moved to the selected book',
+                data: entry,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
     async delete(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             const cashbookRole = (req as any).cashbookRole as CashbookRole;
@@ -132,6 +152,16 @@ export class EntriesController {
     }
 
     // ─── Receipts ──────────────────────────────────────
+    /** The receipt as data, so the client can render and print it. */
+    async receiptModel(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const data = await this.entriesService.getReceiptModel(req.params.entryId as string);
+            res.status(StatusCodes.OK).json({ success: true, message: 'Receipt', data });
+        } catch (error) {
+            next(error);
+        }
+    }
+
     async sendReceipt(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             await this.entriesService.sendReceipt(req.params.entryId as string, req.user.userId);
