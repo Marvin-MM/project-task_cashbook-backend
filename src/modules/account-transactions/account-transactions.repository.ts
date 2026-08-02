@@ -26,7 +26,19 @@ export class AccountTransactionsRepository {
                 orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
                 skip: pagination?.skip,
                 take: pagination?.take,
-                include: { accountCategory: true }
+                include: {
+                    accountCategory: true,
+                    // Which book this movement came from. Without it the wallet
+                    // statement shows an amount and a description with no way
+                    // to trace it back to the entry that caused it — the first
+                    // question anyone asks when reconciling a wallet.
+                    sourceEntry: {
+                        select: {
+                            id: true,
+                            cashbook: { select: { id: true, name: true } },
+                        },
+                    },
+                }
             })
         ]);
 

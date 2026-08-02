@@ -224,3 +224,44 @@ advisory lock, so the first applies and the rest wait and no-op. `db push` takes
 no such lock, and two concurrent pushes against one database can race — which is
 a second reason to switch, beyond it being the only one of the two that can add
 a NOT NULL column to a table that already has rows.
+
+---
+
+# Exporting all data before a reset
+
+The authoritative archive is a `pg_dump` — complete, restorable, and the only
+form that can bring the system back. The Excel export is the *human-readable
+rendering* of it, for people who want to read the numbers rather than restore
+them. Keep both; they answer different questions.
+
+**Do not build an endpoint for this.** An admin route returning every tenant's
+finances in one response is the highest-value target in the system, has to hold
+the result in a 512Mi pod, and "we will remove it after the export" is how such
+routes come to live in a codebase for years. A script reading a restored dump
+produces the identical spreadsheet with no auth surface and nothing left behind.
+
+```sh
+# 1. Fresh dump of current production
+kubectl exec -n inchange-app postgres-postgresql-0 -- \
+  env PGPASSWORD="$(kubectl get secret postgres-postgresql -n inchange-app \
+    -o jsonpath='{.data.postgres-password}' | base64 -d)" \
+  pg_dump -U postgres -Fc inchange_db > prod-$(date +%F).dump
+
+# 2. Restore it somewhere that is not production — your laptop is ideal
+createdb export_scratch
+pg_restore -d export_scratch --no-owner prod-$(date +%F).dump
+
+# 3. Render it
+DATABASE_URL=postgresql://localhost/export_scratch npm run export:data -- --out ./exports
+```
+
+Output is one workbook per workspace (`Summary`, `Cashbooks`, `Entries`,
+`Wallets`, `Wallet transactions`, `Contacts`, `Categories`, `Members`) plus
+`_index-all-workspaces.xlsx` listing every workspace with its row counts and
+filename. Amounts are written as numbers, not text, so they sum in Excel.
+
+If the restored copy predates the current schema, run `prisma migrate deploy`
+against the scratch database first — the script reads through the Prisma client,
+which expects today's columns.
+
+Reads only, re-runnable, and it never touches the live app.

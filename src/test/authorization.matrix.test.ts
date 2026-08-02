@@ -11,7 +11,7 @@ import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { Prisma, WorkspaceRole } from '@prisma/client';
 import { resetDatabase, testPrisma } from './setup';
-import { createUser, createWorkspace, createCashbook } from './factories';
+import { createUser, createWorkspace, createCashbook, createAccount } from './factories';
 import { provisionWorkspaceAccounting, ensureCashbookLedgerAccount } from '../core/ledger/coa.seed';
 
 // Imported lazily so setup.ts has redirected DATABASE_URL first.
@@ -184,6 +184,10 @@ describe('route authorization by workspace role', () => {
         });
 
         it('can create an entry in that book', async () => {
+            // Every entry must name the wallet the money moved through, so the
+            // member needs one they can post against.
+            const wallet = await createAccount(workspaceId, { name: 'Till' });
+
             const res = await request(app)
                 .post(`/api/v1/entries/cashbook/${cashbookId}`)
                 .set('Cookie', member.cookie)
@@ -192,8 +196,25 @@ describe('route authorization by workspace role', () => {
                     amount: '100',
                     description: 'member entry',
                     entryDate: new Date().toISOString(),
+                    accountId: wallet.id,
                 });
             expect(res.status).toBe(201);
+        });
+
+        it('refuses an entry that names no wallet', async () => {
+            // The rule itself: an entry that records money moving without
+            // recording where it moved is what lets a book's totals drift from
+            // the cash actually on hand, with nothing to reconcile against.
+            const res = await request(app)
+                .post(`/api/v1/entries/cashbook/${cashbookId}`)
+                .set('Cookie', member.cookie)
+                .send({
+                    type: 'INCOME',
+                    amount: '100',
+                    description: 'no wallet named',
+                    entryDate: new Date().toISOString(),
+                });
+            expect(res.status).toBe(400);
         });
     });
 

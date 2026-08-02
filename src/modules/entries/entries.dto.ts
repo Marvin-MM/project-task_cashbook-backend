@@ -5,6 +5,26 @@ const decimalString = z.string().regex(
     'Amount must be a valid decimal number with up to 4 decimal places'
 );
 
+/**
+ * Every entry must say WHERE the money moved.
+ *
+ * Cash, mobile money and bank are not descriptions of a payment — they are
+ * distinct pots with distinct balances, and an entry that names none of them
+ * records that something happened without recording where. That is the gap that
+ * lets a book's totals and the actual money on hand drift apart with nothing to
+ * reconcile against.
+ *
+ * With this required, a cashbook stops being a container of money and becomes
+ * what it always really was: a book of record for a branch or project. Money
+ * lives in wallets; the book classifies it. Hence the UI showing net in − out
+ * per book rather than a "balance" the book does not hold.
+ *
+ * Enforced here rather than by a NOT NULL column because `Entry` has no
+ * `accountId` — the link is the AccountTransaction posted alongside. Making it
+ * structural would mean denormalising the column onto Entry and backfilling the
+ * pre-existing unlinked entries; worth doing, but it is a migration, not a
+ * validation change.
+ */
 export const createEntrySchema = z.object({
     type: z.enum(['INCOME', 'EXPENSE']),
     amount: decimalString,
@@ -13,7 +33,7 @@ export const createEntrySchema = z.object({
     categoryId: z.string().uuid().optional(),
     contactId: z.string().uuid().optional(),
     paymentModeId: z.string().uuid().optional(),
-    accountId: z.string().uuid().optional(),
+    accountId: z.string().uuid({ message: 'Choose the wallet this money moved through' }),
     obligationId: z.string().uuid().optional(),
     entryDate: z.string().datetime({ message: 'Entry date must be a valid ISO date' }),
     inventoryItems: z.array(z.object({
@@ -32,7 +52,12 @@ export const updateEntrySchema = z.object({
     categoryId: z.string().uuid().nullable().optional(),
     contactId: z.string().uuid().nullable().optional(),
     paymentModeId: z.string().uuid().nullable().optional(),
-    accountId: z.string().uuid().nullable().optional(),
+    /**
+     * Changeable, but not clearable — nullable() is deliberately absent. An
+     * entry that once named a wallet must keep naming one, or an edit becomes a
+     * back door around the rule the create path enforces.
+     */
+    accountId: z.string().uuid().optional(),
     obligationId: z.string().uuid().nullable().optional(),
     entryDate: z.string().datetime().optional(),
     /** Optimistic concurrency: reject if entry.version does not match. */

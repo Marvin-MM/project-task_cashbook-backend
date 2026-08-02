@@ -45,10 +45,21 @@ export class AccountTransactionsService {
             invMap.get(it.referenceId).push(it);
         });
 
-        const mappedTransactions = transactions.map(tx => ({
-            ...tx,
-            inventoryItems: invMap.get(tx.id) || [],
-        }));
+        const mappedTransactions = transactions.map(tx => {
+            // Flattened so the client reads `sourceCashbookName` rather than
+            // reaching through two optional relations for every row.
+            const source = (tx as typeof tx & {
+                sourceEntry?: { id: string; cashbook: { id: string; name: string } | null } | null;
+            }).sourceEntry;
+
+            return {
+                ...tx,
+                inventoryItems: invMap.get(tx.id) || [],
+                sourceEntryId: source?.id ?? null,
+                sourceCashbookId: source?.cashbook?.id ?? null,
+                sourceCashbookName: source?.cashbook?.name ?? null,
+            };
+        });
 
         return [total, mappedTransactions] as const;
     }
