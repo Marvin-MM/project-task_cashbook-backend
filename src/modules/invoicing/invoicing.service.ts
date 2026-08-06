@@ -339,6 +339,10 @@ export class InvoicingService {
                     title: `Invoice ${invoice.invoiceNumber}`,
                     description: `Receivable for invoice ${invoice.invoiceNumber} — ${invoice.customer.name}`,
                     totalAmount: invoice.totalAmount,
+                    // An invoice is all principal. Interest is a lending
+                    // concept — what an invoice bills for is the goods or work,
+                    // and any late-payment charge would be a separate document.
+                    principalAmount: invoice.totalAmount,
                     outstandingAmount: invoice.amountDue,
                     status: ObligationStatus.OPEN,
                     dueDate: invoice.dueDate,

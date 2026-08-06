@@ -23,7 +23,7 @@ export class PaymentModesRepository {
         return this.prisma.paymentMode.create({ data });
     }
 
-    async update(id: string, data: { name?: string }) {
+    async update(id: string, data: { name?: string; isActive?: boolean }) {
         return this.prisma.paymentMode.update({ where: { id }, data });
     }
 

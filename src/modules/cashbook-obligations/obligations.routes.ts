@@ -24,6 +24,11 @@ obligationsRouter.get('/reports/payables',
     controller.getOutstandingPayables.bind(controller) as any
 );
 
+obligationsRouter.get('/reports/interest',
+    requireCashbookMember(CashbookPermission.VIEW_OBLIGATIONS) as any,
+    controller.getInterestSummary.bind(controller) as any
+);
+
 // Core CRUD
 obligationsRouter.get('/',
     requireCashbookMember(CashbookPermission.VIEW_OBLIGATIONS) as any,

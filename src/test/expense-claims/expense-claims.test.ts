@@ -404,6 +404,8 @@ describe('a claim can only post once', () => {
                 type: 'PAYABLE',
                 title: 'stub',
                 totalAmount: '1',
+                // No interest on a reimbursement — principal is the whole of it.
+                principalAmount: '1',
                 outstandingAmount: '1',
                 status: 'OPEN',
             },

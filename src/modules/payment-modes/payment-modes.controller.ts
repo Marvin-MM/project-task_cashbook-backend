@@ -22,6 +22,17 @@ export class PaymentModesController {
         } catch (error) { next(error); }
     }
 
+    async ensureForAccount(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const mode = await this.paymentModesService.ensurePaymentModeForAccount(
+                req.params.workspaceId as string,
+                req.params.accountId as string,
+                req.user.userId,
+            );
+            res.status(StatusCodes.OK).json({ success: true, message: 'Payment method ready', data: mode });
+        } catch (error) { next(error); }
+    }
+
     async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             const mode = await this.paymentModesService.updatePaymentMode(req.params.paymentModeId as string, req.user.userId, req.body);

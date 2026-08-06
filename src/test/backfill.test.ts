@@ -108,6 +108,9 @@ async function buildLegacyWorkspace(opts: { currency?: string } = {}) {
         data: {
             workspaceId: workspace.id, cashbookId: cashbook.id, type: 'RECEIVABLE',
             title: 'Legacy invoice', totalAmount: new Decimal('400'),
+            // A pre-ledger record: all principal, no interest — which is what
+            // the migration backfilled every existing obligation to.
+            principalAmount: new Decimal('400'),
             outstandingAmount: new Decimal('150'), status: 'PARTIAL',
             contactId: contact.id, dueDate: new Date('2026-03-01'),
         },

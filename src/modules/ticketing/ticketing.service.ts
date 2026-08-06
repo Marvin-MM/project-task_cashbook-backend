@@ -49,6 +49,7 @@ import {
     CloseShiftDto,
 } from './ticketing.dto';
 import { EntriesService } from '../entries/entries.service';
+import { PaymentModesService } from '../payment-modes/payment-modes.service';
 import { logger } from '../../utils/logger';
 
 /** Everything the desk needs about the caller, resolved once by the guard. */
@@ -66,6 +67,7 @@ export class TicketingService {
     constructor(
         @inject('PrismaClient') private prisma: PrismaClient,
         private entriesService: EntriesService,
+        private paymentModesService: PaymentModesService,
     ) { }
 
     // ─── Access ───────────────────────────────────────
@@ -220,72 +222,14 @@ export class TicketingService {
     /**
      * The payment method that goes with a wallet, get-or-create.
      *
-     * Choosing "Gate cash tin" should not also ask the attendant to separately
-     * pick "Cash" as the payment method — the wallet already says what kind of
-     * money it holds. So the desk asks for this the moment a wallet is chosen,
-     * names it after the wallet's `AccountType` ("Cash", "Mobile Money",
-     * "Bank"), and reuses whatever already carries that name in the workspace
-     * rather than growing a new payment mode per sale.
-     *
-     * Find-then-create with a race fallback, the same shape as `ensureDay` and
-     * `TicketingConfigService.createSession`: two attendants choosing the same
-     * never-before-used wallet type at the same instant both attempt the
-     * create, the `@@unique([workspaceId, name])` constraint lets exactly one
-     * through, and the loser reads the winner's row rather than erroring.
-     * A soft-deleted payment mode of the same name is reactivated rather than
-     * duplicated — the name is still spoken for.
+     * Delegates to PaymentModesService so the desk and the ordinary entry
+     * screens share one implementation — the alternative is two get-or-create
+     * routines that drift on naming or on how they handle a soft-deleted mode.
+     * The ticketing route wrapping this is gated on SELL_TICKETS; the general
+     * one on workspace membership. Same behaviour, different doors.
      */
     async ensurePaymentModeForAccount(workspaceId: string, accountId: string, userId: string) {
-        const account = await this.prisma.account.findUnique({
-            where: { id: accountId },
-            include: { accountType: { select: { name: true } } },
-        });
-        if (!account || account.workspaceId !== workspaceId) {
-            throw new NotFoundError('Wallet');
-        }
-
-        const name = account.accountType.name;
-
-        const existing = await this.prisma.paymentMode.findUnique({
-            where: { workspaceId_name: { workspaceId, name } },
-            select: { id: true, name: true, isActive: true },
-        });
-
-        if (existing) {
-            if (existing.isActive) return { id: existing.id, name: existing.name };
-            const reactivated = await this.prisma.paymentMode.update({
-                where: { id: existing.id },
-                data: { isActive: true },
-                select: { id: true, name: true },
-            });
-            return reactivated;
-        }
-
-        try {
-            const created = await this.prisma.paymentMode.create({
-                data: { workspaceId, name },
-                select: { id: true, name: true },
-            });
-            await this.prisma.auditLog.create({
-                data: {
-                    userId,
-                    workspaceId,
-                    action: AuditAction.PAYMENT_MODE_CREATED,
-                    resource: 'payment_mode',
-                    resourceId: created.id,
-                    details: { name, source: 'ticketing_wallet_link', accountId } as any,
-                },
-            });
-            return created;
-        } catch (error: any) {
-            if (error?.code === 'P2002') {
-                return this.prisma.paymentMode.findUniqueOrThrow({
-                    where: { workspaceId_name: { workspaceId, name } },
-                    select: { id: true, name: true },
-                });
-            }
-            throw error;
-        }
+        return this.paymentModesService.ensurePaymentModeForAccount(workspaceId, accountId, userId);
     }
 
     // ─── Create sale ──────────────────────────────────

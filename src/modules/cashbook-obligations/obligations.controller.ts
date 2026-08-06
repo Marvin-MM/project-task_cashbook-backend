@@ -102,4 +102,19 @@ export class ObligationsController {
             next(error);
         }
     }
+
+    async getInterestSummary(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const result = await this.obligationsService.getInterestSummary(
+                req.params.cashbookId as string,
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: 'Interest summary retrieved successfully',
+                data: result,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
 }

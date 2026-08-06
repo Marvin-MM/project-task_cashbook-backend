@@ -6,6 +6,12 @@ import {
     UpdateObligationDto,
     ObligationQueryDto,
 } from './obligations.dto';
+import {
+    resolveInterest,
+    obligationBreakdown,
+    emptyPosition,
+    accumulate,
+} from '../../core/finance/obligation-interest';
 import { NotFoundError, AppError } from '../../core/errors/AppError';
 import { AuditAction } from '../../core/types';
 import { Decimal } from '@prisma/client/runtime/library';
@@ -53,6 +59,7 @@ export class ObligationsService {
         const mappedObligations = obligations.map(o => ({
             ...o,
             inventoryItems: invMap.get(o.id) || [],
+            interest: serializeBreakdown(o),
         }));
 
         return {
@@ -91,6 +98,7 @@ export class ObligationsService {
         return {
             ...obligation,
             inventoryItems: inventoryTransactions,
+            interest: serializeBreakdown(obligation),
         };
     }
 
@@ -114,7 +122,19 @@ export class ObligationsService {
             }
         }
 
-        const amount = new Decimal(dto.totalAmount);
+        /*
+         * Whichever way the amount arrived — a plain total, or a principal with
+         * interest on top — is resolved here into the three figures that get
+         * stored. `totalAmount` remains the one number every settlement,
+         * overpayment guard and journal works from; principal and interest are
+         * additional facts about how it was arrived at.
+         */
+        const resolved = resolveInterest({
+            principalAmount: dto.principalAmount ?? dto.totalAmount!,
+            interestRate: dto.interestRate ?? null,
+            interestAmount: dto.interestAmount ?? null,
+        });
+        const amount = resolved.totalAmount;
 
         const obligation = await this.prisma.$transaction(async (tx) => {
             const newObligation = await tx.cashbookObligation.create({
@@ -125,6 +145,9 @@ export class ObligationsService {
                     title: dto.title,
                     description: dto.description || null,
                     totalAmount: amount,
+                    principalAmount: resolved.principalAmount,
+                    interestAmount: resolved.interestAmount,
+                    interestRate: resolved.interestRate,
                     outstandingAmount: amount, // Initialize to total amount
                     status: ObligationStatus.OPEN,
                     dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
@@ -141,7 +164,13 @@ export class ObligationsService {
                     resourceId: newObligation.id,
                     details: {
                         type: dto.type,
-                        totalAmount: dto.totalAmount,
+                        // The resolved figures, not what was typed: an audit row
+                        // that records "10%" without the amount it came to is
+                        // unreadable a year later.
+                        totalAmount: amount.toString(),
+                        principalAmount: resolved.principalAmount.toString(),
+                        interestAmount: resolved.interestAmount.toString(),
+                        interestRate: resolved.interestRate?.toString() ?? null,
                         title: dto.title
                     } as any
                 }
@@ -433,4 +462,93 @@ export class ObligationsService {
             count: aggregations._count.id
         };
     }
+
+    /**
+     * The lending position: capital out, capital back, and what it earned.
+     *
+     * Receivables and payables are reported separately rather than netted.
+     * Interest earned on money lent and interest owed on money borrowed are two
+     * different facts about a business — a single blended figure hides both, and
+     * a lender who also has debts would read it as neither.
+     *
+     * Cancelled obligations are excluded: their unpaid balance was written off,
+     * so counting their interest as "pending" would report income from a debt
+     * already given up on.
+     */
+    async getInterestSummary(cashbookId: string) {
+        const obligations = await this.prisma.cashbookObligation.findMany({
+            where: {
+                cashbookId,
+                archivedAt: null,
+                status: { not: ObligationStatus.CANCELLED },
+            },
+            select: {
+                type: true,
+                totalAmount: true,
+                principalAmount: true,
+                interestAmount: true,
+                outstandingAmount: true,
+            },
+        });
+
+        let receivable = emptyPosition();
+        let payable = emptyPosition();
+
+        for (const obligation of obligations) {
+            const breakdown = obligationBreakdown(obligation);
+            if (obligation.type === ObligationType.RECEIVABLE) {
+                receivable = accumulate(receivable, breakdown);
+            } else {
+                payable = accumulate(payable, breakdown);
+            }
+        }
+
+        return {
+            /** Money lent out. `interestRealized` here is profit already earned. */
+            receivable: serializePosition(receivable),
+            /** Money borrowed. `interestRealized` here is cost already incurred. */
+            payable: serializePosition(payable),
+            /**
+             * Earned minus incurred. Provided because it is the one number an
+             * owner asks for, with both sides above kept intact so it can be
+             * taken apart again.
+             */
+            netInterestRealized: receivable.interestRealized
+                .sub(payable.interestRealized)
+                .toFixed(4),
+        };
+    }
+}
+
+/** Decimals cross the wire as strings, as everywhere else in this API. */
+function serializeBreakdown(obligation: {
+    totalAmount: Decimal;
+    principalAmount: Decimal;
+    interestAmount: Decimal;
+    interestRate: Decimal | null;
+    outstandingAmount: Decimal;
+}) {
+    const breakdown = obligationBreakdown(obligation);
+    return {
+        principalAmount: obligation.principalAmount.toFixed(4),
+        interestAmount: obligation.interestAmount.toFixed(4),
+        interestRate: obligation.interestRate?.toFixed(4) ?? null,
+        hasInterest: breakdown.hasInterest,
+        amountSettled: breakdown.amountSettled.toFixed(4),
+        principalRecovered: breakdown.principalRecovered.toFixed(4),
+        principalAtRisk: breakdown.principalAtRisk.toFixed(4),
+        interestRealized: breakdown.interestRealized.toFixed(4),
+        interestPending: breakdown.interestPending.toFixed(4),
+        isCapitalRecovered: breakdown.isCapitalRecovered,
+    };
+}
+
+function serializePosition(position: ReturnType<typeof emptyPosition>) {
+    return {
+        count: position.count,
+        principalOutstanding: position.principalOutstanding.toFixed(4),
+        principalRecovered: position.principalRecovered.toFixed(4),
+        interestRealized: position.interestRealized.toFixed(4),
+        interestPending: position.interestPending.toFixed(4),
+    };
 }

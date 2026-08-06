@@ -12,17 +12,52 @@ const inventoryLineItem = z.object({
     unitCost: decimalString.optional(),
 });
 
+/**
+ * Creating a receivable or payable, with or without interest.
+ *
+ * Two ways to say the same thing, and the schema accepts both:
+ *
+ *   totalAmount: '110000'                          — no interest, as before
+ *   principalAmount: '100000', interestRate: '10'  — lend 100k at 10%
+ *   principalAmount: '100000', interestAmount: '10000'
+ *
+ * `totalAmount` stays optional-but-supported so every existing caller keeps
+ * working untouched; the service resolves whichever form arrived into the same
+ * three stored figures.
+ *
+ * A rate AND a flat amount together is refused rather than silently preferring
+ * one — that is how a form ends up charging a number nobody typed.
+ */
 export const createObligationSchema = z.object({
     type: z.nativeEnum(ObligationType).refine((val) => val !== undefined, { message: 'Invalid obligation type' }),
     contactId: z.string().uuid('Invalid contact ID').optional().nullable(),
     title: z.string().min(1, 'Title is required').max(200, 'Title is too long'),
     description: z.string().max(1000, 'Description is too long').optional(),
-    totalAmount: decimalString,
+    totalAmount: decimalString.optional(),
+    principalAmount: decimalString.optional(),
+    /** Flat percentage of the principal, charged once. Not per-annum. */
+    interestRate: z.string()
+        .regex(/^\d+(\.\d{1,4})?$/, 'Interest rate must be a positive number')
+        .refine((v) => Number(v) <= 1000, 'Interest rate looks too large')
+        .optional(),
+    interestAmount: decimalString.optional(),
     dueDate: z.string()
         .refine((val) => !isNaN(Date.parse(val)), { message: 'Invalid date format' })
         .optional(),
     inventoryItems: z.array(inventoryLineItem).optional(),
-});
+}).refine(
+    (v) => Boolean(v.totalAmount) || Boolean(v.principalAmount),
+    { message: 'Give an amount, or a principal to charge interest on', path: ['totalAmount'] },
+).refine(
+    (v) => !(v.interestRate && v.interestAmount),
+    { message: 'Set the interest as a rate or as an amount, not both', path: ['interestRate'] },
+).refine(
+    (v) => !((v.interestRate || v.interestAmount) && !v.principalAmount),
+    {
+        message: 'Interest needs a principal to be charged on',
+        path: ['principalAmount'],
+    },
+);
 
 export const updateObligationSchema = z.object({
     title: z.string().min(1, 'Title is required').max(200, 'Title is too long').optional(),

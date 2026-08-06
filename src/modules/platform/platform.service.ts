@@ -8,7 +8,7 @@ import { injectable, inject } from 'tsyringe';
 import { PrismaClient } from '@prisma/client';
 import { superAdminEmails } from '../../config';
 import { AppError, NotFoundError } from '../../core/errors/AppError';
-import { AuditAction, FeatureKey } from '../../core/types';
+import { AuditAction, FeatureKey, WorkspaceType } from '../../core/types';
 import { logger } from '../../utils/logger';
 
 export interface SuperAdminReconciliation {
@@ -256,9 +256,31 @@ export class PlatformService {
     }) {
         const workspace = await this.prisma.workspace.findUnique({
             where: { id: params.workspaceId },
-            select: { id: true, name: true },
+            select: { id: true, name: true, type: true },
         });
         if (!workspace) throw new NotFoundError('Workspace');
+
+        /*
+         * Business workspaces only.
+         *
+         * A personal workspace is one person's own books: it has no staff to
+         * tag, no attendants, no shifts to reconcile, and `requireTicketing`
+         * refuses everyone but the owner in one anyway. Unlocking a gate desk
+         * there produces a module that cannot be staffed and a nav entry that
+         * leads nowhere.
+         *
+         * Enforced here rather than only hiding the button, because a hidden
+         * button is not a restriction — this endpoint is reachable directly.
+         * Disabling is always allowed, so a flag set before this rule existed
+         * can still be cleared.
+         */
+        if (params.enabled && workspace.type !== WorkspaceType.BUSINESS) {
+            throw new AppError(
+                `${params.feature} is a business module and cannot be enabled for a personal workspace.`,
+                400,
+                'PERSONAL_WORKSPACE_UNSUPPORTED',
+            );
+        }
 
         if (params.enabled) {
             await this.prisma.workspaceFeature.upsert({
