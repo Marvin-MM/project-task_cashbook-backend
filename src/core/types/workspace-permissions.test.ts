@@ -13,7 +13,9 @@ import {
     hasWorkspacePermission,
 } from './workspace-permissions';
 
-const { OWNER, ADMIN, ACCOUNTANT, SUB_ACCOUNTANT, PROJECT_MANAGER, HR, MEMBER } = WorkspaceRole;
+const {
+    OWNER, ADMIN, GENERAL_MANAGER, ACCOUNTANT, SUB_ACCOUNTANT, PROJECT_MANAGER, HR, MEMBER,
+} = WorkspaceRole;
 
 /**
  * The whole point of both new roles: they run people and delivery, and see no
@@ -281,6 +283,95 @@ describe('WORKSPACE_PERMISSION_MATRIX', () => {
         });
     });
 
+    /*
+     * The general manager runs the operation. The interesting half of this role
+     * is what it CANNOT do: everything that changes what the organisation is, or
+     * what its books mean, stays with the owner, the admin and the accountant.
+     */
+    describe('GENERAL_MANAGER', () => {
+        it('runs the whole ticketing surface', () => {
+            for (const permission of [
+                P.VIEW_TICKETING, P.SELL_TICKETS, P.VOID_TICKET_SALE, P.MANAGE_TICKETING,
+                P.RECONCILE_TICKET_SHIFT, P.MANAGE_MEMBERSHIPS, P.VIEW_TICKET_ANALYTICS,
+            ]) {
+                expect(hasWorkspacePermission(GENERAL_MANAGER, permission)).toBe(true);
+            }
+        });
+
+        it('reaches the books as far as an admin does', () => {
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.ACCESS_ALL_CASHBOOKS)).toBe(true);
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.VIEW_WALLET_BALANCES)).toBe(true);
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.VIEW_FINANCIAL_REPORTS)).toBe(true);
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.MANAGE_INVOICING)).toBe(true);
+        });
+
+        it('runs delivery and people operations', () => {
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.MANAGE_TASKS)).toBe(true);
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.APPROVE_LEAVE)).toBe(true);
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.MANAGE_MEMBERS)).toBe(true);
+        });
+
+        it('cannot change what the organisation is', () => {
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.DELETE_WORKSPACE)).toBe(false);
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.UPDATE_WORKSPACE)).toBe(false);
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.IMPORT_MEMBERS)).toBe(false);
+        });
+
+        it('cannot change what its books mean', () => {
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.MANAGE_CHART_OF_ACCOUNTS)).toBe(false);
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.CLOSE_PERIOD)).toBe(false);
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.POST_MANUAL_JOURNAL)).toBe(false);
+        });
+
+        it('cannot appoint finance staff', () => {
+            expect(hasWorkspacePermission(GENERAL_MANAGER, P.MANAGE_SUB_ACCOUNTANTS)).toBe(false);
+            expect(assignableRoles(GENERAL_MANAGER)).not.toContain(ACCOUNTANT);
+            expect(assignableRoles(GENERAL_MANAGER)).not.toContain(SUB_ACCOUNTANT);
+            expect(assignableRoles(GENERAL_MANAGER)).not.toContain(ADMIN);
+            // Nor another general manager: no self-replication.
+            expect(assignableRoles(GENERAL_MANAGER)).not.toContain(GENERAL_MANAGER);
+        });
+
+        it('staffs the operation', () => {
+            expect(assignableRoles(GENERAL_MANAGER).sort())
+                .toEqual([MEMBER, PROJECT_MANAGER, HR].sort());
+        });
+    });
+
+    /*
+     * Ticketing must not widen anybody else. A tagged attendant reaches the desk
+     * through ticketDeskCapabilities, never through this matrix.
+     */
+    describe('ticketing does not leak into other roles', () => {
+        it('gives a plain MEMBER nothing at the desk', () => {
+            for (const permission of [
+                P.VIEW_TICKETING, P.SELL_TICKETS, P.VOID_TICKET_SALE,
+                P.MANAGE_TICKETING, P.RECONCILE_TICKET_SHIFT, P.MANAGE_MEMBERSHIPS,
+            ]) {
+                expect(hasWorkspacePermission(MEMBER, permission)).toBe(false);
+            }
+        });
+
+        it('lets accountants read the takings without being able to sell', () => {
+            for (const role of [ACCOUNTANT, SUB_ACCOUNTANT]) {
+                expect(hasWorkspacePermission(role, P.VIEW_TICKETING)).toBe(true);
+                expect(hasWorkspacePermission(role, P.VIEW_TICKET_ANALYTICS)).toBe(true);
+                expect(hasWorkspacePermission(role, P.SELL_TICKETS)).toBe(false);
+                expect(hasWorkspacePermission(role, P.MANAGE_TICKETING)).toBe(false);
+            }
+        });
+
+        it('keeps HR and project managers out entirely', () => {
+            for (const role of [HR, PROJECT_MANAGER]) {
+                for (const permission of [
+                    P.VIEW_TICKETING, P.SELL_TICKETS, P.MANAGE_TICKETING, P.MANAGE_MEMBERSHIPS,
+                ]) {
+                    expect(hasWorkspacePermission(role, permission)).toBe(false);
+                }
+            }
+        });
+    });
+
     it('denies everything for an unknown or absent role', () => {
         expect(hasWorkspacePermission(null, P.VIEW_WORKSPACE)).toBe(false);
         expect(hasWorkspacePermission(undefined, P.VIEW_WORKSPACE)).toBe(false);
@@ -314,7 +405,10 @@ describe('assignableRoles', () => {
     it('every assignable role is accepted by the invite DTO', () => {
         // members.dto.ts has its own z.enum, which the compiler does NOT check
         // against this list. A role missing there is unassignable by anybody.
-        const dtoRoles = ['ADMIN', 'ACCOUNTANT', 'SUB_ACCOUNTANT', 'PROJECT_MANAGER', 'HR', 'MEMBER'];
+        const dtoRoles = [
+            'ADMIN', 'GENERAL_MANAGER', 'ACCOUNTANT', 'SUB_ACCOUNTANT',
+            'PROJECT_MANAGER', 'HR', 'MEMBER',
+        ];
         for (const role of assignableRoles(OWNER)) {
             expect(dtoRoles).toContain(role);
         }

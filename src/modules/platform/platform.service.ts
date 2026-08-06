@@ -7,8 +7,8 @@
 import { injectable, inject } from 'tsyringe';
 import { PrismaClient } from '@prisma/client';
 import { superAdminEmails } from '../../config';
-import { AppError } from '../../core/errors/AppError';
-import { AuditAction } from '../../core/types';
+import { AppError, NotFoundError } from '../../core/errors/AppError';
+import { AuditAction, FeatureKey } from '../../core/types';
 import { logger } from '../../utils/logger';
 
 export interface SuperAdminReconciliation {
@@ -220,6 +220,7 @@ export class PlatformService {
                     id: true, name: true, type: true, defaultCurrency: true,
                     isActive: true, createdAt: true,
                     revenueBasis: true, inventoryValuation: true,
+                    features: { select: { feature: true, enabledAt: true } },
                     owner: { select: { id: true, email: true, firstName: true, lastName: true } },
                     _count: {
                         select: { members: true, cashbooks: true, accounts: true, journalEntries: true },
@@ -232,6 +233,79 @@ export class PlatformService {
         ]);
 
         return { data, total, page: params.page, limit: params.limit };
+    }
+
+    /**
+     * Unlock or lock a module for one organisation.
+     *
+     * The first mutation this module has ever had on a workspace —
+     * ADMIN_WORKSPACE_ACTION was defined and never emitted until now.
+     *
+     * Enabling only unlocks the module; it does not configure it. The org still
+     * has to choose which book ticket money lands in and which category it
+     * counts as, because that is a chart-of-accounts decision nobody outside the
+     * organisation is in a position to make. Disabling is non-destructive: the
+     * sales, days and tickets stay exactly where they are and the entries they
+     * posted are untouched — the desk simply stops answering.
+     */
+    async setWorkspaceFeature(params: {
+        workspaceId: string;
+        feature: FeatureKey;
+        enabled: boolean;
+        actorId: string;
+    }) {
+        const workspace = await this.prisma.workspace.findUnique({
+            where: { id: params.workspaceId },
+            select: { id: true, name: true },
+        });
+        if (!workspace) throw new NotFoundError('Workspace');
+
+        if (params.enabled) {
+            await this.prisma.workspaceFeature.upsert({
+                where: {
+                    workspaceId_feature: {
+                        workspaceId: params.workspaceId,
+                        feature: params.feature,
+                    },
+                },
+                // Already on stays on, with its original grant intact: re-enabling
+                // should not rewrite who first turned it on.
+                update: {},
+                create: {
+                    workspaceId: params.workspaceId,
+                    feature: params.feature,
+                    enabledById: params.actorId,
+                },
+            });
+        } else {
+            await this.prisma.workspaceFeature.deleteMany({
+                where: { workspaceId: params.workspaceId, feature: params.feature },
+            });
+        }
+
+        await this.prisma.auditLog.create({
+            data: {
+                userId: params.actorId,
+                workspaceId: params.workspaceId,
+                action: params.enabled
+                    ? AuditAction.WORKSPACE_FEATURE_ENABLED
+                    : AuditAction.WORKSPACE_FEATURE_DISABLED,
+                resource: 'workspace_feature',
+                resourceId: params.workspaceId,
+                details: {
+                    feature: params.feature,
+                    workspaceName: workspace.name,
+                    platformAction: AuditAction.ADMIN_WORKSPACE_ACTION,
+                } as any,
+            },
+        });
+
+        const features = await this.prisma.workspaceFeature.findMany({
+            where: { workspaceId: params.workspaceId },
+            select: { feature: true, enabledAt: true },
+        });
+
+        return { workspaceId: params.workspaceId, features };
     }
 
     /** Platform-wide audit trail. The old admin module had no way to read this. */

@@ -25,6 +25,7 @@ import catalogRoutes from '../modules/catalog/catalog.routes';
 import invoicingRoutes from '../modules/invoicing/invoicing.routes';
 import projectsRoutes from '../modules/projects/projects.routes';
 import tasksRoutes from '../modules/tasks/tasks.routes';
+import ticketingRoutes from '../modules/ticketing/ticketing.routes';
 import timeTrackingRoutes from '../modules/time-tracking/time-tracking.routes';
 import expenseClaimsRoutes from '../modules/expense-claims/expense-claims.routes';
 import attendanceRoutes from '../modules/attendance/attendance.routes';
@@ -47,6 +48,8 @@ router.use('/workspaces/:workspaceId/catalog', catalogRoutes);
 router.use('/workspaces/:workspaceId/invoices', invoicingRoutes);
 router.use('/workspaces/:workspaceId/projects', projectsRoutes);
 router.use('/workspaces/:workspaceId/tasks', tasksRoutes);
+// Answers 404 unless a superadmin has unlocked TICKETING for the workspace.
+router.use('/workspaces/:workspaceId/ticketing', ticketingRoutes);
 router.use('/workspaces/:workspaceId/expense-claims', expenseClaimsRoutes);
 router.use('/workspaces/:workspaceId/attendance', attendanceRoutes);
 router.use('/workspaces/:workspaceId/time-tracking', timeTrackingRoutes);

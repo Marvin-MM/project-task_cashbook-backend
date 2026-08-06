@@ -140,9 +140,55 @@ export class EntriesService {
     }
 
     // ─── Create Entry ─────────────────────────────────
+    /**
+     * Record money moving, and everything that follows from it.
+     *
+     * The body lives in `createEntryWithin` so that another module can post an
+     * entry as part of ITS transaction. Ticketing is the first: a ticket sale
+     * and the entry it posts have to commit or fail together, and a nested
+     * `withFinancialTransaction` would not give that — the sale would be
+     * durable while the money it recorded was not.
+     */
     async createEntry(cashbookId: string, userId: string, dto: CreateEntryDto) {
-        // Get cashbook for backdate check
-        const cashbook = await this.prisma.cashbook.findUnique({
+        const entry = await withFinancialTransaction(this.prisma, (tx) =>
+            this.createEntryWithin(tx, cashbookId, userId, dto));
+
+        // Background Hook: Send Automatic Receipt if paying an Obligation.
+        // Deliberately outside the transaction, and deliberately not awaited:
+        // the entry is already committed, and an SMTP failure must not undo it.
+        if (dto.obligationId && dto.type === EntryType.INCOME) {
+            this.sendReceipt(entry.id, userId).catch(err => {
+                logger.error(`Failed to send background receipt for entry ${entry.id}:`, err);
+            });
+        }
+
+        return entry;
+    }
+
+    /**
+     * The whole of entry creation, inside a transaction the caller owns.
+     *
+     * @internal Not routed and not part of the public surface. Callers take on
+     * two obligations the wrapper above would otherwise discharge for them:
+     *
+     *   1. AUTHORITY. This method does not check whether the caller may post to
+     *      this book. `createEntry` is reached through requireCashbookMember;
+     *      anything else calling in must have made its own check first.
+     *   2. LOCK ORDER. It acquires CASHBOOK, WALLET_ACCOUNT and OBLIGATION. A
+     *      caller holding locks already must have taken them at a LOWER rank
+     *      (see core/db/locks.ts) or it reintroduces the deadlock that module
+     *      exists to prevent. TICKET_DAY and TICKET_SHIFT rank above cashbook
+     *      for exactly this reason.
+     */
+    async createEntryWithin(
+        tx: Prisma.TransactionClient,
+        cashbookId: string,
+        userId: string,
+        dto: CreateEntryDto,
+    ) {
+        // Reading through `tx` rather than `this.prisma` so validation sees the
+        // same snapshot the write does.
+        const cashbook = await tx.cashbook.findUnique({
             where: { id: cashbookId },
         });
 
@@ -165,7 +211,7 @@ export class EntriesService {
 
         // Account Logic - Pre-validation
         if (dto.accountId) {
-            const account = await this.prisma.account.findUnique({
+            const account = await tx.account.findUnique({
                 where: { id: dto.accountId }
             });
 
@@ -193,7 +239,7 @@ export class EntriesService {
 
         // Obligation Pre-validation requirements
         if (dto.obligationId) {
-            const obligation = await this.prisma.cashbookObligation.findUnique({
+            const obligation = await tx.cashbookObligation.findUnique({
                 where: { id: dto.obligationId }
             });
 
@@ -231,239 +277,226 @@ export class EntriesService {
             }
         }
 
-        // Use transaction for concurrency safety
-        const entry = await withFinancialTransaction(this.prisma, async (tx) => {
-            // Take every lock this write needs, once, in a globally consistent
-            // order. Locking the cashbook is what makes balanceBefore/balanceAfter
-            // in the audit log truthful under concurrency.
-            await acquireLocks(tx, [
-                { target: 'CASHBOOK', ids: [cashbookId] },
-                { target: 'WALLET_ACCOUNT', ids: [dto.accountId] },
-                { target: 'OBLIGATION', ids: [dto.obligationId] },
-            ]);
+        // Take every lock this write needs, once, in a globally consistent
+        // order. Locking the cashbook is what makes balanceBefore/balanceAfter
+        // in the audit log truthful under concurrency.
+        await acquireLocks(tx, [
+            { target: 'CASHBOOK', ids: [cashbookId] },
+            { target: 'WALLET_ACCOUNT', ids: [dto.accountId] },
+            { target: 'OBLIGATION', ids: [dto.obligationId] },
+        ]);
 
-            const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
-                where: { id: cashbookId },
-            });
-
-            // Create entry
-            const newEntry = await tx.entry.create({
-                data: {
-                    cashbookId,
-                    type: dto.type as any,
-                    amount,
-                    chargeAmount: dto.chargeAmount ? new Decimal(dto.chargeAmount) : null,
-                    description: dto.description,
-                    categoryId: dto.categoryId || null,
-                    contactId: dto.contactId || null,
-                    paymentModeId: dto.paymentModeId || null,
-                    obligationId: dto.obligationId || null,
-                    entryDate,
-                    createdById: userId,
-                },
-                include: {
-                    category: true,
-                    contact: true,
-                    paymentMode: true,
-                    createdBy: {
-                        select: { id: true, email: true, firstName: true, lastName: true },
-                    },
-                },
-            });
-
-            // Balances are written by PostingService from the journal legs (see
-            // the posting call at the end of this transaction). The legacy
-            // cashbookIncrementPayload / account.update arithmetic that used to
-            // live here was deleted once shadow mode proved the two agree.
-            const balanceBefore = lockedCashbook.balance;
-            const chargeAmount = dto.chargeAmount ? new Decimal(dto.chargeAmount) : new Decimal(0);
-            const hasWalletLink = Boolean(dto.accountId);
-
-            const balanceAfter = hasWalletLink
-                ? balanceBefore
-                : balanceBefore.add(walletBalanceDelta(dto.type, amount, chargeAmount));
-
-            if (dto.accountId) {
-                // Already locked by acquireLocks above.
-                const lockedAccount = await tx.account.findUniqueOrThrow({
-                    where: { id: dto.accountId }
-                });
-
-                // Overdraft is a business rule, not a bookkeeping one, so it is
-                // still checked here — the ledger would happily post a negative
-                // wallet balance.
-                const walletDelta = walletBalanceDelta(dto.type, amount, chargeAmount);
-                if (!lockedAccount.allowNegative && walletDelta.lessThan(0)) {
-                    const newAccountBalance = lockedAccount.balance.add(walletDelta);
-                    if (newAccountBalance.lessThan(0)) {
-                        throw new AppError(`Transaction exceeds account balance. Current balance is ${lockedAccount.balance.toString()}`, 400, 'INSUFFICIENT_FUNDS');
-                    }
-                }
-
-                // The wallet subledger row the frontend reads. It carries
-                // accountCategoryId, which the GL does not, so it stays — but as
-                // a projection alongside the journal, not a source of truth.
-                await this.upsertCashbookAccountTransaction(tx, {
-                    workspaceId: cashbook.workspaceId,
-                    accountId: dto.accountId,
-                    sourceId: newEntry.id,
-                    type: dto.type,
-                    amount,
-                    chargeAmount: chargeAmount.greaterThan(0) ? chargeAmount : null,
-                    description: newEntry.description,
-                    transactionDate: entryDate,
-                });
-            }
-
-            if (dto.obligationId) {
-                // Block inventory on payment entries if obligation already stocked goods
-                if (dto.inventoryItems && dto.inventoryItems.length > 0) {
-                    const existingOblInv = await tx.inventoryTransaction.count({
-                        where: {
-                            referenceType: InventoryReferenceType.OBLIGATION,
-                            referenceId: dto.obligationId,
-                        },
-                    });
-                    if (existingOblInv > 0) {
-                        throw new AppError(
-                            'This obligation already has inventory stock movements. Do not attach inventoryItems on the payment entry (avoids double stock-in).',
-                            400,
-                            'INVENTORY_DOUBLE_APPLY',
-                        );
-                    }
-                }
-
-                // Already locked by acquireLocks above.
-                const lockedObligation = await tx.cashbookObligation.findUniqueOrThrow({
-                    where: { id: dto.obligationId }
-                });
-
-                if (amount.greaterThan(lockedObligation.outstandingAmount)) {
-                    throw new AppError(`Concurrent payment exceeded outstanding balance`, 400, 'OVERPAYMENT');
-                }
-
-                const newOutstanding = lockedObligation.outstandingAmount.sub(amount);
-                const newStatus = obligationStatusFromAmounts(
-                    lockedObligation.totalAmount,
-                    newOutstanding,
-                    lockedObligation.status,
-                ) as ObligationStatus;
-
-                await tx.cashbookObligation.update({
-                    where: { id: dto.obligationId },
-                    data: {
-                        outstandingAmount: newOutstanding,
-                        status: newStatus
-                    }
-                });
-
-                await tx.auditLog.create({
-                    data: {
-                        userId,
-                        workspaceId: cashbook.workspaceId,
-                        action: AuditAction.OBLIGATION_PAYMENT_APPLIED,
-                        resource: 'obligation',
-                        resourceId: dto.obligationId,
-                        details: {
-                            entryId: newEntry.id,
-                            appliedAmount: amount,
-                            previousOutstanding: lockedObligation.outstandingAmount,
-                            newOutstanding,
-                            statusBefore: lockedObligation.status,
-                            statusAfter: newStatus
-                        } as any
-                    }
-                });
-
-                const { InvoicingService } = await import('../invoicing/invoicing.service');
-                await InvoicingService.syncInvoiceFromObligation(tx, {
-                    referenceType: lockedObligation.referenceType,
-                    referenceId: lockedObligation.referenceId,
-                    outstandingAmount: newOutstanding,
-                });
-            }
-
-            // Create entry audit
-            await tx.entryAudit.create({
-                data: {
-                    entryId: newEntry.id,
-                    userId,
-                    action: 'CREATED',
-                    newValues: {
-                        type: dto.type,
-                        amount: dto.amount,
-                        chargeAmount: dto.chargeAmount || null,
-                        description: dto.description,
-                        entryDate: dto.entryDate,
-                    },
-                },
-            });
-
-            // Financial audit log
-            await tx.financialAuditLog.create({
-                data: {
-                    userId,
-                    workspaceId: cashbook.workspaceId,
-                    cashbookId,
-                    entryId: newEntry.id,
-                    action: AuditAction.ENTRY_CREATED,
-                    amount,
-                    balanceBefore,
-                    balanceAfter,
-                    details: {
-                        type: dto.type,
-                        description: dto.description,
-                        chargeAmount: dto.chargeAmount || null,
-                    },
-                },
-            });
-
-            // ─── Inventory Integration (non-intrusive) ─────────────
-            if (dto.inventoryItems && dto.inventoryItems.length > 0) {
-                await this.inventoryService.processEntryInventory(
-                    tx,
-                    cashbook.workspaceId,
-                    newEntry.id,
-                    dto.type,
-                    amount,
-                    dto.inventoryItems,
-                    userId,
-                    dto.description,
-                    cashbook.currency,
-                );
-            }
-
-            // ─── Double-entry posting ──────────────────────────────
-            await this.postEntryJournal(tx, {
-                workspaceId: cashbook.workspaceId,
-                cashbookId,
-                entryId: newEntry.id,
-                version: newEntry.version,
-                type: dto.type as 'INCOME' | 'EXPENSE',
-                amount,
-                chargeAmount,
-                description: dto.description,
-                entryDate,
-                currency: cashbook.currency,
-                createdById: userId,
-                accountId: dto.accountId ?? null,
-                categoryId: dto.categoryId ?? null,
-                contactId: dto.contactId ?? null,
-                obligation: obligationForPosting,
-            });
-
-            return newEntry;
+        const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
+            where: { id: cashbookId },
         });
 
-        // Background Hook: Send Automatic Receipt if paying an Obligation
-        if (dto.obligationId && dto.type === EntryType.INCOME) {
-            // Unawaited intentionally to preserve API speed and avoid rollback on email failure
-            this.sendReceipt(entry.id, userId).catch(err => {
-                logger.error(`Failed to send background receipt for entry ${entry.id}:`, err);
+        // Create entry
+        const newEntry = await tx.entry.create({
+            data: {
+                cashbookId,
+                type: dto.type as any,
+                amount,
+                chargeAmount: dto.chargeAmount ? new Decimal(dto.chargeAmount) : null,
+                description: dto.description,
+                categoryId: dto.categoryId || null,
+                contactId: dto.contactId || null,
+                paymentModeId: dto.paymentModeId || null,
+                obligationId: dto.obligationId || null,
+                entryDate,
+                createdById: userId,
+            },
+            include: {
+                category: true,
+                contact: true,
+                paymentMode: true,
+                createdBy: {
+                    select: { id: true, email: true, firstName: true, lastName: true },
+                },
+            },
+        });
+
+        // Balances are written by PostingService from the journal legs (see
+        // the posting call at the end of this transaction). The legacy
+        // cashbookIncrementPayload / account.update arithmetic that used to
+        // live here was deleted once shadow mode proved the two agree.
+        const balanceBefore = lockedCashbook.balance;
+        const chargeAmount = dto.chargeAmount ? new Decimal(dto.chargeAmount) : new Decimal(0);
+        const hasWalletLink = Boolean(dto.accountId);
+
+        const balanceAfter = hasWalletLink
+            ? balanceBefore
+            : balanceBefore.add(walletBalanceDelta(dto.type, amount, chargeAmount));
+
+        if (dto.accountId) {
+            // Already locked by acquireLocks above.
+            const lockedAccount = await tx.account.findUniqueOrThrow({
+                where: { id: dto.accountId }
+            });
+
+            // Overdraft is a business rule, not a bookkeeping one, so it is
+            // still checked here — the ledger would happily post a negative
+            // wallet balance.
+            const walletDelta = walletBalanceDelta(dto.type, amount, chargeAmount);
+            if (!lockedAccount.allowNegative && walletDelta.lessThan(0)) {
+                const newAccountBalance = lockedAccount.balance.add(walletDelta);
+                if (newAccountBalance.lessThan(0)) {
+                    throw new AppError(`Transaction exceeds account balance. Current balance is ${lockedAccount.balance.toString()}`, 400, 'INSUFFICIENT_FUNDS');
+                }
+            }
+
+            // The wallet subledger row the frontend reads. It carries
+            // accountCategoryId, which the GL does not, so it stays — but as
+            // a projection alongside the journal, not a source of truth.
+            await this.upsertCashbookAccountTransaction(tx, {
+                workspaceId: cashbook.workspaceId,
+                accountId: dto.accountId,
+                sourceId: newEntry.id,
+                type: dto.type,
+                amount,
+                chargeAmount: chargeAmount.greaterThan(0) ? chargeAmount : null,
+                description: newEntry.description,
+                transactionDate: entryDate,
             });
         }
 
-        return entry;
+        if (dto.obligationId) {
+            // Block inventory on payment entries if obligation already stocked goods
+            if (dto.inventoryItems && dto.inventoryItems.length > 0) {
+                const existingOblInv = await tx.inventoryTransaction.count({
+                    where: {
+                        referenceType: InventoryReferenceType.OBLIGATION,
+                        referenceId: dto.obligationId,
+                    },
+                });
+                if (existingOblInv > 0) {
+                    throw new AppError(
+                        'This obligation already has inventory stock movements. Do not attach inventoryItems on the payment entry (avoids double stock-in).',
+                        400,
+                        'INVENTORY_DOUBLE_APPLY',
+                    );
+                }
+            }
+
+            // Already locked by acquireLocks above.
+            const lockedObligation = await tx.cashbookObligation.findUniqueOrThrow({
+                where: { id: dto.obligationId }
+            });
+
+            if (amount.greaterThan(lockedObligation.outstandingAmount)) {
+                throw new AppError(`Concurrent payment exceeded outstanding balance`, 400, 'OVERPAYMENT');
+            }
+
+            const newOutstanding = lockedObligation.outstandingAmount.sub(amount);
+            const newStatus = obligationStatusFromAmounts(
+                lockedObligation.totalAmount,
+                newOutstanding,
+                lockedObligation.status,
+            ) as ObligationStatus;
+
+            await tx.cashbookObligation.update({
+                where: { id: dto.obligationId },
+                data: {
+                    outstandingAmount: newOutstanding,
+                    status: newStatus
+                }
+            });
+
+            await tx.auditLog.create({
+                data: {
+                    userId,
+                    workspaceId: cashbook.workspaceId,
+                    action: AuditAction.OBLIGATION_PAYMENT_APPLIED,
+                    resource: 'obligation',
+                    resourceId: dto.obligationId,
+                    details: {
+                        entryId: newEntry.id,
+                        appliedAmount: amount,
+                        previousOutstanding: lockedObligation.outstandingAmount,
+                        newOutstanding,
+                        statusBefore: lockedObligation.status,
+                        statusAfter: newStatus
+                    } as any
+                }
+            });
+
+            const { InvoicingService } = await import('../invoicing/invoicing.service');
+            await InvoicingService.syncInvoiceFromObligation(tx, {
+                referenceType: lockedObligation.referenceType,
+                referenceId: lockedObligation.referenceId,
+                outstandingAmount: newOutstanding,
+            });
+        }
+
+        // Create entry audit
+        await tx.entryAudit.create({
+            data: {
+                entryId: newEntry.id,
+                userId,
+                action: 'CREATED',
+                newValues: {
+                    type: dto.type,
+                    amount: dto.amount,
+                    chargeAmount: dto.chargeAmount || null,
+                    description: dto.description,
+                    entryDate: dto.entryDate,
+                },
+            },
+        });
+
+        // Financial audit log
+        await tx.financialAuditLog.create({
+            data: {
+                userId,
+                workspaceId: cashbook.workspaceId,
+                cashbookId,
+                entryId: newEntry.id,
+                action: AuditAction.ENTRY_CREATED,
+                amount,
+                balanceBefore,
+                balanceAfter,
+                details: {
+                    type: dto.type,
+                    description: dto.description,
+                    chargeAmount: dto.chargeAmount || null,
+                },
+            },
+        });
+
+        // ─── Inventory Integration (non-intrusive) ─────────────
+        if (dto.inventoryItems && dto.inventoryItems.length > 0) {
+            await this.inventoryService.processEntryInventory(
+                tx,
+                cashbook.workspaceId,
+                newEntry.id,
+                dto.type,
+                amount,
+                dto.inventoryItems,
+                userId,
+                dto.description,
+                cashbook.currency,
+            );
+        }
+
+        // ─── Double-entry posting ──────────────────────────────
+        await this.postEntryJournal(tx, {
+            workspaceId: cashbook.workspaceId,
+            cashbookId,
+            entryId: newEntry.id,
+            version: newEntry.version,
+            type: dto.type as 'INCOME' | 'EXPENSE',
+            amount,
+            chargeAmount,
+            description: dto.description,
+            entryDate,
+            currency: cashbook.currency,
+            createdById: userId,
+            accountId: dto.accountId ?? null,
+            categoryId: dto.categoryId ?? null,
+            contactId: dto.contactId ?? null,
+            obligation: obligationForPosting,
+        });
+
+        return newEntry;
     }
 
     // ─── Update Entry ─────────────────────────────────
@@ -1140,6 +1173,33 @@ export class EntriesService {
 
     // ─── Internal: Perform Deletion ────────────────────
     private async performDeletion(entry: any, userId: string, reason: string) {
+        await withFinancialTransaction(this.prisma, (tx) =>
+            this.reverseEntryWithin(tx, entry, userId, reason));
+    }
+
+    /**
+     * Reverse an entry inside a transaction the caller owns.
+     *
+     * @internal Not routed. Split out of `performDeletion` for the same reason
+     * `createEntryWithin` was split out of `createEntry`: ticketing has to void
+     * a sale and reverse the entry it posted atomically.
+     *
+     * This does the MECHANICS of a reversal and none of the authority. The
+     * cashbook's own path decides who may reverse via the DELETE_ENTRY /
+     * APPROVE_DELETE maker-checker in `deleteEntry`; ticketing decides via its
+     * own own-sale / supervisor / open-day rules. Both then land here, so there
+     * is exactly one implementation of what reversing actually does — the
+     * journal, the wallet, the obligation, the attachments and the audit trail.
+     *
+     * Callers must respect the lock ranks in core/db/locks.ts: this acquires
+     * CASHBOOK, WALLET_ACCOUNT and OBLIGATION.
+     */
+    async reverseEntryWithin(
+        tx: Prisma.TransactionClient,
+        entry: any,
+        userId: string,
+        reason: string,
+    ) {
         if (entry.isReconciled) {
             throw new AppError(
                 'This entry is reconciled and cannot be deleted. Unreconcile it first.',
@@ -1148,7 +1208,7 @@ export class EntriesService {
             );
         }
 
-        const cashbook = await this.prisma.cashbook.findUnique({
+        const cashbook = await tx.cashbook.findUnique({
             where: { id: entry.cashbookId },
         });
 
@@ -1156,8 +1216,11 @@ export class EntriesService {
             throw new NotFoundError('Cashbook');
         }
 
-        // Unlocked probe, used only to select wallet locks; see updateEntry.
-        const walletProbe = await this.prisma.accountTransaction.findFirst({
+        // Unlocked probe, used only to select wallet locks; see updateEntry. The
+        // re-read after locking below is what catches a link that changed in
+        // between, which is why this stays a separate read rather than being
+        // folded into the locked one.
+        const walletProbe = await tx.accountTransaction.findFirst({
             where: {
                 sourceId: entry.id,
                 sourceType: TransactionSourceType.CASHBOOK_ENTRY,
@@ -1166,211 +1229,209 @@ export class EntriesService {
             select: { accountId: true },
         });
 
-        await withFinancialTransaction(this.prisma, async (tx) => {
-            await acquireLocks(tx, [
-                { target: 'CASHBOOK', ids: [entry.cashbookId] },
-                { target: 'WALLET_ACCOUNT', ids: [walletProbe?.accountId] },
-                { target: 'OBLIGATION', ids: [entry.obligationId] },
-            ]);
+        await acquireLocks(tx, [
+            { target: 'CASHBOOK', ids: [entry.cashbookId] },
+            { target: 'WALLET_ACCOUNT', ids: [walletProbe?.accountId] },
+            { target: 'OBLIGATION', ids: [entry.obligationId] },
+        ]);
 
-            const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
-                where: { id: entry.cashbookId },
+        const lockedCashbook = await tx.cashbook.findUniqueOrThrow({
+            where: { id: entry.cashbookId },
+        });
+
+        const balanceBefore = lockedCashbook.balance;
+        const amount = entry.amount;
+        const chargeAmount = entry.chargeAmount || new Decimal(0);
+
+        // Check if there's a linked non-voided account FIRST
+        const existingTx = await tx.accountTransaction.findFirst({
+            where: {
+                sourceId: entry.id,
+                sourceType: TransactionSourceType.CASHBOOK_ENTRY,
+                voidedAt: null,
+            }
+        });
+
+        if ((existingTx?.accountId ?? null) !== (walletProbe?.accountId ?? null)) {
+            throw new ConflictError('Entry wallet link changed concurrently; retry the delete.');
+        }
+
+        let balanceAfter = balanceBefore;
+
+        // Cashbook and wallet balances are rewritten by the reversing
+        // journal posted below; the hand-written reversal arithmetic is gone.
+        if (!existingTx) {
+            balanceAfter = balanceBefore.sub(walletBalanceDelta(entry.type, amount, chargeAmount));
+        }
+
+        if (existingTx) {
+            // Already locked by acquireLocks above.
+            const lockedAccount = await tx.account.findUniqueOrThrow({
+                where: { id: existingTx.accountId },
             });
+            const oldWalletDelta = walletBalanceDelta(entry.type, amount, chargeAmount);
+            const reversalDelta = oldWalletDelta.negated();
 
-            const balanceBefore = lockedCashbook.balance;
-            const amount = entry.amount;
-            const chargeAmount = entry.chargeAmount || new Decimal(0);
-
-            // Check if there's a linked non-voided account FIRST
-            const existingTx = await tx.accountTransaction.findFirst({
-                where: {
-                    sourceId: entry.id,
-                    sourceType: TransactionSourceType.CASHBOOK_ENTRY,
-                    voidedAt: null,
+            // Deleting an INCOME entry withdraws money from the wallet, which
+            // can overdraw it. Every other wallet-debiting path guards this;
+            // this one did not.
+            if (!lockedAccount.allowNegative && reversalDelta.lessThan(0)) {
+                if (lockedAccount.balance.add(reversalDelta).lessThan(0)) {
+                    throw new AppError(
+                        `Deleting this entry would overdraw account "${lockedAccount.name}" ` +
+                        `(balance ${lockedAccount.balance.toString()}, reversal ${reversalDelta.toString()}). ` +
+                        'Allow a negative balance on the account, or reverse the offsetting entries first.',
+                        400,
+                        'INSUFFICIENT_FUNDS',
+                    );
                 }
+            }
+
+            // Void wallet ledger row (retain audit history)
+            await tx.accountTransaction.update({
+                where: { id: existingTx.id },
+                data: { voidedAt: new Date() },
             });
+        }
 
-            if ((existingTx?.accountId ?? null) !== (walletProbe?.accountId ?? null)) {
-                throw new ConflictError('Entry wallet link changed concurrently; retry the delete.');
-            }
+        if (entry.obligationId) {
+            // Already locked by acquireLocks above.
+            const lockedObligation = await tx.cashbookObligation.findUniqueOrThrow({ where: { id: entry.obligationId } });
 
-            let balanceAfter = balanceBefore;
+            const newOutstanding = lockedObligation.outstandingAmount.add(amount);
+            const cappedOutstanding = newOutstanding.greaterThan(lockedObligation.totalAmount)
+                ? lockedObligation.totalAmount
+                : newOutstanding;
+            const newStatus = obligationStatusFromAmounts(
+                lockedObligation.totalAmount,
+                cappedOutstanding,
+                lockedObligation.status,
+            ) as ObligationStatus;
 
-            // Cashbook and wallet balances are rewritten by the reversing
-            // journal posted below; the hand-written reversal arithmetic is gone.
-            if (!existingTx) {
-                balanceAfter = balanceBefore.sub(walletBalanceDelta(entry.type, amount, chargeAmount));
-            }
-
-            if (existingTx) {
-                // Already locked by acquireLocks above.
-                const lockedAccount = await tx.account.findUniqueOrThrow({
-                    where: { id: existingTx.accountId },
-                });
-                const oldWalletDelta = walletBalanceDelta(entry.type, amount, chargeAmount);
-                const reversalDelta = oldWalletDelta.negated();
-
-                // Deleting an INCOME entry withdraws money from the wallet, which
-                // can overdraw it. Every other wallet-debiting path guards this;
-                // this one did not.
-                if (!lockedAccount.allowNegative && reversalDelta.lessThan(0)) {
-                    if (lockedAccount.balance.add(reversalDelta).lessThan(0)) {
-                        throw new AppError(
-                            `Deleting this entry would overdraw account "${lockedAccount.name}" ` +
-                            `(balance ${lockedAccount.balance.toString()}, reversal ${reversalDelta.toString()}). ` +
-                            'Allow a negative balance on the account, or reverse the offsetting entries first.',
-                            400,
-                            'INSUFFICIENT_FUNDS',
-                        );
-                    }
-                }
-
-                // Void wallet ledger row (retain audit history)
-                await tx.accountTransaction.update({
-                    where: { id: existingTx.id },
-                    data: { voidedAt: new Date() },
-                });
-            }
-
-            if (entry.obligationId) {
-                // Already locked by acquireLocks above.
-                const lockedObligation = await tx.cashbookObligation.findUniqueOrThrow({ where: { id: entry.obligationId } });
-
-                const newOutstanding = lockedObligation.outstandingAmount.add(amount);
-                const cappedOutstanding = newOutstanding.greaterThan(lockedObligation.totalAmount)
-                    ? lockedObligation.totalAmount
-                    : newOutstanding;
-                const newStatus = obligationStatusFromAmounts(
-                    lockedObligation.totalAmount,
-                    cappedOutstanding,
-                    lockedObligation.status,
-                ) as ObligationStatus;
-
-                await tx.cashbookObligation.update({
-                    where: { id: entry.obligationId },
-                    data: {
-                        outstandingAmount: cappedOutstanding,
-                        status: newStatus
-                    }
-                });
-
-                await tx.auditLog.create({
-                    data: {
-                        userId,
-                        workspaceId: cashbook.workspaceId,
-                        action: AuditAction.OBLIGATION_PAYMENT_REVERSED,
-                        resource: 'obligation',
-                        resourceId: entry.obligationId,
-                        details: {
-                            entryId: entry.id,
-                            reason,
-                            reversedAmount: amount,
-                            newOutstanding: cappedOutstanding
-                        } as any
-                    }
-                });
-
-                const { InvoicingService } = await import('../invoicing/invoicing.service');
-                await InvoicingService.syncInvoiceFromObligation(tx, {
-                    referenceType: lockedObligation.referenceType,
-                    referenceId: lockedObligation.referenceId,
+            await tx.cashbookObligation.update({
+                where: { id: entry.obligationId },
+                data: {
                     outstandingAmount: cappedOutstanding,
-                });
-            }
-
-            // ─── Inventory Integration (reverse on delete) ────────
-            await this.inventoryService.reverseInventoryForReference(
-                tx,
-                InventoryReferenceType.ENTRY,
-                entry.id,
-            );
-
-            // ─── Double-entry: post the reversing journal ──────────
-            // The original journal is never removed. It is marked REVERSED and a
-            // mirror-image REVERSING journal is appended, so the books stay in
-            // balance and the history of the correction is itself auditable.
-            await this.reverseEntryJournal(tx, {
-                workspaceId: cashbook.workspaceId,
-                entryId: entry.id,
-                version: entry.version,
-                reason,
-                userId,
-                originalDate: entry.entryDate,
+                    status: newStatus
+                }
             });
 
-            // Mark the entry reversed. `isDeleted` is kept in step so the
-            // existing repository filters and list queries keep working; it is
-            // retired once every read path uses `status`.
-            await tx.entry.update({
-                where: { id: entry.id },
-                data: {
-                    status: 'REVERSED',
-                    reversedAt: new Date(),
-                    reversedById: userId,
-                    reversalReason: reason,
-                    isDeleted: true,
-                    deletedAt: new Date(),
-                    deletedReason: reason,
-                    // Attachments are soft-deleted, not destroyed: a reversed
-                    // entry keeps its supporting documents for audit. The old
-                    // deleteMany here removed them permanently.
-                    attachments: {
-                        updateMany: {
-                            where: { isDeleted: false },
-                            data: { isDeleted: true, deletedAt: new Date() },
-                        },
-                    },
-                },
-            });
-
-            // Entry audit
-            await tx.entryAudit.create({
-                data: {
-                    entryId: entry.id,
-                    userId,
-                    action: 'DELETED',
-                    oldValues: {
-                        type: entry.type,
-                        amount: entry.amount,
-                        description: entry.description,
-                    } as any,
-                    newValues: {} as any,
-                },
-            });
-
-            // Workspace/Cashbook Audit
             await tx.auditLog.create({
                 data: {
                     userId,
                     workspaceId: cashbook.workspaceId,
-                    action: AuditAction.ENTRY_DELETED,
-                    resource: 'entry',
-                    resourceId: entry.id,
+                    action: AuditAction.OBLIGATION_PAYMENT_REVERSED,
+                    resource: 'obligation',
+                    resourceId: entry.obligationId,
                     details: {
-                        amount: entry.amount,
-                        type: entry.type,
+                        entryId: entry.id,
                         reason,
+                        reversedAmount: amount,
+                        newOutstanding: cappedOutstanding
                     } as any
                 }
             });
-            // Financial audit log
-            await tx.financialAuditLog.create({
-                data: {
-                    userId,
-                    workspaceId: cashbook.workspaceId,
-                    cashbookId: entry.cashbookId,
-                    entryId: entry.id,
-                    action: AuditAction.ENTRY_DELETED,
-                    amount,
-                    balanceBefore,
-                    balanceAfter,
-                    reason,
-                    details: {
-                        type: entry.type,
-                        description: entry.description,
+
+            const { InvoicingService } = await import('../invoicing/invoicing.service');
+            await InvoicingService.syncInvoiceFromObligation(tx, {
+                referenceType: lockedObligation.referenceType,
+                referenceId: lockedObligation.referenceId,
+                outstandingAmount: cappedOutstanding,
+            });
+        }
+
+        // ─── Inventory Integration (reverse on delete) ────────
+        await this.inventoryService.reverseInventoryForReference(
+            tx,
+            InventoryReferenceType.ENTRY,
+            entry.id,
+        );
+
+        // ─── Double-entry: post the reversing journal ──────────
+        // The original journal is never removed. It is marked REVERSED and a
+        // mirror-image REVERSING journal is appended, so the books stay in
+        // balance and the history of the correction is itself auditable.
+        await this.reverseEntryJournal(tx, {
+            workspaceId: cashbook.workspaceId,
+            entryId: entry.id,
+            version: entry.version,
+            reason,
+            userId,
+            originalDate: entry.entryDate,
+        });
+
+        // Mark the entry reversed. `isDeleted` is kept in step so the
+        // existing repository filters and list queries keep working; it is
+        // retired once every read path uses `status`.
+        await tx.entry.update({
+            where: { id: entry.id },
+            data: {
+                status: 'REVERSED',
+                reversedAt: new Date(),
+                reversedById: userId,
+                reversalReason: reason,
+                isDeleted: true,
+                deletedAt: new Date(),
+                deletedReason: reason,
+                // Attachments are soft-deleted, not destroyed: a reversed
+                // entry keeps its supporting documents for audit. The old
+                // deleteMany here removed them permanently.
+                attachments: {
+                    updateMany: {
+                        where: { isDeleted: false },
+                        data: { isDeleted: true, deletedAt: new Date() },
                     },
                 },
-            });
+            },
+        });
+
+        // Entry audit
+        await tx.entryAudit.create({
+            data: {
+                entryId: entry.id,
+                userId,
+                action: 'DELETED',
+                oldValues: {
+                    type: entry.type,
+                    amount: entry.amount,
+                    description: entry.description,
+                } as any,
+                newValues: {} as any,
+            },
+        });
+
+        // Workspace/Cashbook Audit
+        await tx.auditLog.create({
+            data: {
+                userId,
+                workspaceId: cashbook.workspaceId,
+                action: AuditAction.ENTRY_DELETED,
+                resource: 'entry',
+                resourceId: entry.id,
+                details: {
+                    amount: entry.amount,
+                    type: entry.type,
+                    reason,
+                } as any
+            }
+        });
+        // Financial audit log
+        await tx.financialAuditLog.create({
+            data: {
+                userId,
+                workspaceId: cashbook.workspaceId,
+                cashbookId: entry.cashbookId,
+                entryId: entry.id,
+                action: AuditAction.ENTRY_DELETED,
+                amount,
+                balanceBefore,
+                balanceAfter,
+                reason,
+                details: {
+                    type: entry.type,
+                    description: entry.description,
+                },
+            },
         });
     }
 

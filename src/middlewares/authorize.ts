@@ -10,12 +10,14 @@ import {
     WorkspaceRole,
     CashbookRole,
     WorkspaceType,
+    StaffTag,
 } from '../core/types';
 import { CashbookPermission, hasPermission } from '../core/types/permissions';
 import {
     WorkspacePermission,
     hasWorkspacePermission,
 } from '../core/types/workspace-permissions';
+import { ticketDeskCapabilities, isTicketingEnabled } from '../core/authz/ticketing-access';
 import { logger } from '../utils/logger';
 
 const prisma = getPrismaClient();
@@ -186,6 +188,95 @@ export function requireWorkspaceMember(
 
             (req as any).workspace = workspace;
             (req as any).workspaceRole = userRole;
+            next();
+        } catch (error) {
+            next(error);
+        }
+    };
+}
+
+// ─── Ticket Desk Guard ─────────────────────────────────
+/**
+ * Ticketing routes, which are gated on two things the other guards do not check.
+ *
+ * First the module must exist for this organisation at all — a superadmin
+ * unlocks it per org. A workspace without the feature gets a 404 rather than a
+ * 403, deliberately: an org that was never granted ticketing should not be able
+ * to discover that other orgs have it.
+ *
+ * Second, authority comes from `ticketDeskCapabilities(role, staffTag)` rather
+ * than from the role matrix alone, because a ticket attendant is a plain MEMBER
+ * carrying the TICKETING staff tag. See core/authz/ticketing-access.ts for why
+ * that lives outside the matrix.
+ *
+ * Row-level authority — may you void THIS sale, on THIS day — stays in the
+ * service, following the same split the tasks module documents: routes gate the
+ * module, services gate the row.
+ */
+export function requireTicketing(requiredPermission?: WorkspacePermission) {
+    return async (req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const workspaceId = req.params.workspaceId as string;
+            const userId = req.user.userId;
+
+            if (!workspaceId) {
+                throw new AuthorizationError('Workspace ID is required');
+            }
+
+            const workspace = await prisma.workspace.findUnique({
+                where: { id: workspaceId },
+            });
+
+            if (!workspace || !workspace.isActive) {
+                throw new NotFoundError('Workspace');
+            }
+
+            const enabled = await isTicketingEnabled(prisma, workspaceId);
+            if (!enabled) {
+                throw new NotFoundError('Ticketing');
+            }
+
+            // A personal workspace has no staff to tag and no gate to run, but
+            // the owner is still the owner if somebody unlocked the feature.
+            let userRole: WorkspaceRole;
+            let staffTag: StaffTag | null = null;
+
+            if (workspace.ownerId === userId) {
+                userRole = WorkspaceRole.OWNER;
+            } else if (workspace.type === WorkspaceType.PERSONAL) {
+                await logPermissionDenied(userId, 'TICKETING_ACCESS', 'workspace', workspaceId);
+                throw new AuthorizationError('Access denied to this workspace');
+            } else {
+                const membership = await prisma.workspaceMember.findUnique({
+                    where: { workspaceId_userId: { workspaceId, userId } },
+                    select: { role: true, staffTag: true },
+                });
+
+                if (!membership) {
+                    await logPermissionDenied(userId, 'TICKETING_ACCESS', 'workspace', workspaceId);
+                    throw new AuthorizationError('You are not a member of this workspace');
+                }
+
+                userRole = membership.role as WorkspaceRole;
+                staffTag = (membership.staffTag as StaffTag | null) ?? null;
+            }
+
+            const capabilities = ticketDeskCapabilities(userRole, staffTag);
+
+            if (requiredPermission && !capabilities.has(requiredPermission)) {
+                await logPermissionDenied(userId, requiredPermission, 'ticketing', workspaceId, {
+                    userRole,
+                    staffTag,
+                });
+                throw new AuthorizationError(
+                    `You do not have the '${requiredPermission}' permission at the ticket desk`,
+                );
+            }
+
+            (req as any).workspace = workspace;
+            (req as any).workspaceRole = userRole;
+            (req as any).staffTag = staffTag;
+            (req as any).ticketCapabilities = capabilities;
             next();
         } catch (error) {
             next(error);

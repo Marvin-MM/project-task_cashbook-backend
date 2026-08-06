@@ -108,6 +108,36 @@ export enum WorkspacePermission {
     LOG_TIME_ON_BEHALF = 'LOG_TIME_ON_BEHALF',
     /** Edit or delete a time entry belonging to someone else. */
     EDIT_OTHERS_TIME = 'EDIT_OTHERS_TIME',
+
+    // ─── Ticketing ───
+    //
+    // Gated twice over: the org must have the TICKETING feature unlocked by a
+    // superadmin, AND the caller must hold the permission. See
+    // src/core/authz/ticketing-access.ts, which is also where the TICKETING
+    // staff tag is turned into the three desk permissions — the matrix below is
+    // keyed by role alone and must stay that way.
+    /** See the portal and the current day's sales. */
+    VIEW_TICKETING = 'VIEW_TICKETING',
+    /** Ring up a sale, which posts a cashbook entry. */
+    SELL_TICKETS = 'SELL_TICKETS',
+    /**
+     * Reverse a sale. Held alone this only reaches your OWN sale on the current
+     * open day — the narrowing is in the service, because it depends on the row.
+     * MANAGE_TICKETING widens it to any sale on any open day.
+     */
+    VOID_TICKET_SALE = 'VOID_TICKET_SALE',
+    /**
+     * Configure the desk: sessions, price tiers, offers, settings, opening and
+     * closing days — and assigning the TICKETING staff tag, which is why this
+     * cannot sit with plain MANAGE_MEMBERS.
+     */
+    MANAGE_TICKETING = 'MANAGE_TICKETING',
+    /** Close a shift, count the drawer, reconcile a day. */
+    RECONCILE_TICKET_SHIFT = 'RECONCILE_TICKET_SHIFT',
+    /** Issue and edit loyalty memberships and their tiers. */
+    MANAGE_MEMBERSHIPS = 'MANAGE_MEMBERSHIPS',
+    /** Ticket volumes, revenue, discounts given, attendant performance. */
+    VIEW_TICKET_ANALYTICS = 'VIEW_TICKET_ANALYTICS',
 }
 
 const P = WorkspacePermission;
@@ -180,6 +210,23 @@ const ACCOUNTING: WorkspacePermission[] = [
     P.POST_MANUAL_JOURNAL,
 ];
 
+/**
+ * The whole ticketing surface, for whoever runs the venue.
+ *
+ * A ticket attendant holds none of this by role — they are a plain MEMBER with
+ * the TICKETING staff tag, which grants exactly VIEW_TICKETING, SELL_TICKETS
+ * and VOID_TICKET_SALE and nothing else. See ticketing-access.ts.
+ */
+const TICKETING_ADMIN: WorkspacePermission[] = [
+    P.VIEW_TICKETING,
+    P.SELL_TICKETS,
+    P.VOID_TICKET_SALE,
+    P.MANAGE_TICKETING,
+    P.RECONCILE_TICKET_SHIFT,
+    P.MANAGE_MEMBERSHIPS,
+    P.VIEW_TICKET_ANALYTICS,
+];
+
 export const WORKSPACE_PERMISSION_MATRIX: Record<WorkspaceRole, Set<WorkspacePermission>> = {
     [WorkspaceRole.OWNER]: new Set(Object.values(WorkspacePermission)),
 
@@ -188,6 +235,7 @@ export const WORKSPACE_PERMISSION_MATRIX: Record<WorkspaceRole, Set<WorkspacePer
         ...ACCOUNTING,
         ...PROJECT_DELIVERY,
         ...PEOPLE_OPS,
+        ...TICKETING_ADMIN,
         P.UPDATE_WORKSPACE,
         P.MANAGE_MEMBERS,
         P.MANAGE_SUB_ACCOUNTANTS,
@@ -197,6 +245,41 @@ export const WORKSPACE_PERMISSION_MATRIX: Record<WorkspaceRole, Set<WorkspacePer
         P.VIEW_AUDIT_LOG,
         P.WAIVE_ATTENDANCE_FLAG,
         // Not DELETE_WORKSPACE, not IMPORT_MEMBERS.
+    ]),
+
+    /**
+     * Runs the operation day to day.
+     *
+     * Reaches as far into the books as an admin — every cashbook, the wallets,
+     * invoicing, reports — and owns the ticketing surface outright. What is
+     * withheld is everything that changes what the organisation IS or what its
+     * books MEAN, and each omission is deliberate:
+     *
+     *   UPDATE_WORKSPACE / DELETE_WORKSPACE  the org's identity and existence
+     *   MANAGE_CHART_OF_ACCOUNTS             what the accounts mean
+     *   CLOSE_PERIOD / POST_MANUAL_JOURNAL   the accountant's lock and pen
+     *   MANAGE_SUB_ACCOUNTANTS               appointing finance staff
+     *   IMPORT_MEMBERS                       bulk-onboarding without review
+     *
+     * MANAGE_MEMBERS is held, but assignableRoles(GENERAL_MANAGER) stops at
+     * PROJECT_MANAGER — they staff the operation, they do not mint peers or
+     * accountants, and members.service checks the target's current role too, so
+     * they cannot demote an admin by "assigning" them something lower.
+     */
+    [WorkspaceRole.GENERAL_MANAGER]: new Set([
+        ...COLLABORATION,
+        // The accounting surface MINUS the accountant's own pen. POST_MANUAL_JOURNAL
+        // is part of the ACCOUNTING bundle, so it has to be subtracted rather than
+        // simply left out — spreading the bundle and trusting the omission is how
+        // this role would silently gain the ability to write the books by hand.
+        ...ACCOUNTING.filter((p) => p !== P.POST_MANUAL_JOURNAL),
+        ...PROJECT_DELIVERY,
+        ...PEOPLE_OPS,
+        ...TICKETING_ADMIN,
+        P.MANAGE_MEMBERS,
+        P.ACCESS_ALL_CASHBOOKS,
+        P.VIEW_AUDIT_LOG,
+        P.WAIVE_ATTENDANCE_FLAG,
     ]),
 
     /**
@@ -237,11 +320,17 @@ export const WORKSPACE_PERMISSION_MATRIX: Record<WorkspaceRole, Set<WorkspacePer
         // Can add sub-accountants, and only sub-accountants — enforced in
         // members.service, which checks the target role as well as this grant.
         P.MANAGE_SUB_ACCOUNTANTS,
+        // Reads the desk, sells nothing. Ticket takings are theirs to reconcile
+        // and report on; ringing up admissions is not an accounting job.
+        P.VIEW_TICKETING,
+        P.VIEW_TICKET_ANALYTICS,
     ]),
 
     [WorkspaceRole.SUB_ACCOUNTANT]: new Set([
         ...COLLABORATION,
         ...ACCOUNTING,
+        P.VIEW_TICKETING,
+        P.VIEW_TICKET_ANALYTICS,
         // Deliberately absent: ACCESS_ALL_CASHBOOKS. A sub-accountant reaches
         // only the books they have an explicit CashbookMember row for.
         // Also absent: member management, period close, chart-of-accounts edits.
@@ -270,6 +359,7 @@ export function assignableRoles(actor: WorkspaceRole): WorkspaceRole[] {
         case WorkspaceRole.OWNER:
             return [
                 WorkspaceRole.ADMIN,
+                WorkspaceRole.GENERAL_MANAGER,
                 WorkspaceRole.ACCOUNTANT,
                 WorkspaceRole.SUB_ACCOUNTANT,
                 WorkspaceRole.PROJECT_MANAGER,
@@ -278,8 +368,18 @@ export function assignableRoles(actor: WorkspaceRole): WorkspaceRole[] {
             ];
         case WorkspaceRole.ADMIN:
             return [
+                WorkspaceRole.GENERAL_MANAGER,
                 WorkspaceRole.ACCOUNTANT,
                 WorkspaceRole.SUB_ACCOUNTANT,
+                WorkspaceRole.PROJECT_MANAGER,
+                WorkspaceRole.HR,
+                WorkspaceRole.MEMBER,
+            ];
+        case WorkspaceRole.GENERAL_MANAGER:
+            // Staffs the operation. Cannot mint a peer, an admin, or anyone who
+            // touches the chart of accounts — so no GENERAL_MANAGER, no
+            // ACCOUNTANT and no SUB_ACCOUNTANT in this list.
+            return [
                 WorkspaceRole.PROJECT_MANAGER,
                 WorkspaceRole.HR,
                 WorkspaceRole.MEMBER,
@@ -305,6 +405,7 @@ export function assignableRoles(actor: WorkspaceRole): WorkspaceRole[] {
 export const FINANCE_ROLES: WorkspaceRole[] = [
     WorkspaceRole.OWNER,
     WorkspaceRole.ADMIN,
+    WorkspaceRole.GENERAL_MANAGER,
     WorkspaceRole.ACCOUNTANT,
     WorkspaceRole.SUB_ACCOUNTANT,
 ];

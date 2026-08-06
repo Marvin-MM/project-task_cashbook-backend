@@ -82,6 +82,28 @@ export class PlatformController {
         }
     }
 
+    async setWorkspaceFeature(
+        req: AuthenticatedRequest, res: Response, next: NextFunction,
+    ): Promise<void> {
+        try {
+            const data = await this.service.setWorkspaceFeature({
+                workspaceId: req.params.workspaceId as string,
+                feature: req.body.feature,
+                enabled: req.body.enabled,
+                actorId: req.user.userId,
+            });
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: req.body.enabled
+                    ? `${req.body.feature} enabled for this workspace`
+                    : `${req.body.feature} disabled for this workspace`,
+                data,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
     async listAuditLogs(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             const result = await this.service.listAuditLogs({

@@ -8,6 +8,7 @@ import {
     WorkspacePermission,
     hasWorkspacePermission,
 } from '../../core/types/workspace-permissions';
+import { workspaceUserCan } from '../../core/authz/workspace-access';
 import { InviteMemberDto, UpdateMemberRoleDto, ImportMembersDto } from './members.dto';
 import { InvitesService } from '../invites/invites.service';
 import { sendEmail } from '../../config/email';
@@ -93,6 +94,43 @@ export class MembersService {
         if (currentTargetRole && !allowed.includes(currentTargetRole)) {
             throw new AuthorizationError(
                 `Your role (${actorRole}) cannot modify a member who is ${currentTargetRole}`,
+            );
+        }
+    }
+
+    /**
+     * Decide whether `actor` may put (or remove) a staff tag on someone.
+     *
+     * Tags are ordinarily just labels — "this person works the bar" — and ride
+     * on MANAGE_MEMBERS along with everything else about a membership.
+     *
+     * TICKETING is the exception, and the reason this method is separate. That
+     * tag admits its holder to the ticket desk, where confirming a sale posts a
+     * cashbook entry and moves a wallet. HR holds MANAGE_MEMBERS and no
+     * financial permission whatsoever; without this check, HR could grant the
+     * ability to post money by "labelling" somebody, which is precisely the kind
+     * of sideways escalation assignableRoles() exists to prevent on the role
+     * axis. So setting or clearing TICKETING requires MANAGE_TICKETING.
+     */
+    private async assertCanAssignStaffTag(
+        workspaceId: string,
+        actorUserId: string,
+        nextTag: string | null,
+        currentTag: string | null,
+    ): Promise<void> {
+        const touchesTicketing = nextTag === 'TICKETING' || currentTag === 'TICKETING';
+        if (!touchesTicketing) return;
+
+        const canManageTicketing = await workspaceUserCan(
+            this.prisma,
+            workspaceId,
+            actorUserId,
+            WorkspacePermission.MANAGE_TICKETING,
+        );
+
+        if (!canManageTicketing) {
+            throw new AuthorizationError(
+                'Only someone who can manage ticketing may put a member on the ticket desk',
             );
         }
     }
@@ -371,26 +409,63 @@ export class MembersService {
             throw new AppError('Cannot change the role of workspace owner', 400, 'INVALID_OPERATION');
         }
 
-        await this.assertCanAssignRole(
-            workspaceId,
-            updatedByUserId,
-            dto.role as WorkspaceRole,
-            membership.role as WorkspaceRole,
-        );
+        const oldRole = membership.role as WorkspaceRole;
+        const oldTag = (membership as { staffTag?: string | null }).staffTag ?? null;
 
-        const oldRole = membership.role;
-        const updated = await this.membersRepository.updateRole(workspaceId, targetUserId, dto.role);
-
-        await this.prisma.auditLog.create({
-            data: {
-                userId: updatedByUserId,
+        // Authority is checked per axis. Changing the role runs the
+        // assignableRoles ceiling; changing the tag runs the ticket-desk check.
+        // A request that changes only one must not be gated on the other.
+        if (dto.role !== undefined) {
+            await this.assertCanAssignRole(
                 workspaceId,
-                action: AuditAction.MEMBER_ROLE_CHANGED,
-                resource: 'workspace_member',
-                resourceId: membership.id,
-                details: { oldRole, newRole: dto.role, targetUserId } as any,
-            },
+                updatedByUserId,
+                dto.role as WorkspaceRole,
+                oldRole,
+            );
+        }
+
+        if (dto.staffTag !== undefined) {
+            // Retagging someone still requires authority over the role they
+            // hold — otherwise HR could relabel an admin.
+            await this.assertCanAssignRole(workspaceId, updatedByUserId, oldRole, oldRole);
+            await this.assertCanAssignStaffTag(
+                workspaceId,
+                updatedByUserId,
+                dto.staffTag,
+                oldTag,
+            );
+        }
+
+        const updated = await this.membersRepository.updateMembership(workspaceId, targetUserId, {
+            ...(dto.role !== undefined ? { role: dto.role } : {}),
+            ...(dto.staffTag !== undefined ? { staffTag: dto.staffTag } : {}),
         });
+
+        if (dto.role !== undefined && dto.role !== oldRole) {
+            await this.prisma.auditLog.create({
+                data: {
+                    userId: updatedByUserId,
+                    workspaceId,
+                    action: AuditAction.MEMBER_ROLE_CHANGED,
+                    resource: 'workspace_member',
+                    resourceId: membership.id,
+                    details: { oldRole, newRole: dto.role, targetUserId } as any,
+                },
+            });
+        }
+
+        if (dto.staffTag !== undefined && dto.staffTag !== oldTag) {
+            await this.prisma.auditLog.create({
+                data: {
+                    userId: updatedByUserId,
+                    workspaceId,
+                    action: AuditAction.MEMBER_STAFF_TAG_CHANGED,
+                    resource: 'workspace_member',
+                    resourceId: membership.id,
+                    details: { oldStaffTag: oldTag, newStaffTag: dto.staffTag, targetUserId } as any,
+                },
+            });
+        }
 
         return updated;
     }

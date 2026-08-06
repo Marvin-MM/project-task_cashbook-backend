@@ -23,23 +23,33 @@ import { Prisma } from '@prisma/client';
  * `processStockIn`/`processStockOut` take their own `FOR UPDATE` on
  * inventory_stock while already inside an entry transaction — keeping them last
  * means that nested lock stays legal.
+ *
+ * TICKET_DAY and TICKET_SHIFT rank ABOVE cashbook for the same reason: a ticket
+ * sale locks the day (to allocate a serial and check capacity) and then calls
+ * into the entry path, which locks the cashbook and the wallet. Ranking the day
+ * first means those two lock acquisitions compose into one globally consistent
+ * order rather than racing each other.
  */
 export const LOCK_RANK = {
     WORKSPACE: 0,
-    CASHBOOK: 1,
-    LEDGER_ACCOUNT: 2,
-    WALLET_ACCOUNT: 3,
-    OBLIGATION: 4,
-    INVOICE: 5,
-    INVENTORY_STOCK: 6,
-    INVENTORY_LOT: 7,
-    ENTRY: 8,
+    TICKET_DAY: 1,
+    TICKET_SHIFT: 2,
+    CASHBOOK: 3,
+    LEDGER_ACCOUNT: 4,
+    WALLET_ACCOUNT: 5,
+    OBLIGATION: 6,
+    INVOICE: 7,
+    INVENTORY_STOCK: 8,
+    INVENTORY_LOT: 9,
+    ENTRY: 10,
 } as const;
 
 export type LockTarget = keyof typeof LOCK_RANK;
 
 const TABLE: Record<LockTarget, string> = {
     WORKSPACE: 'workspaces',
+    TICKET_DAY: 'ticket_days',
+    TICKET_SHIFT: 'ticket_shifts',
     CASHBOOK: 'cashbooks',
     LEDGER_ACCOUNT: 'ledger_accounts',
     WALLET_ACCOUNT: 'accounts',

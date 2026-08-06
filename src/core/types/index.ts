@@ -51,6 +51,15 @@ export enum WorkspaceType {
 export enum WorkspaceRole {
     OWNER = 'OWNER',
     ADMIN = 'ADMIN',
+    /**
+     * Runs the operation day to day: staff, delivery, people ops and the whole
+     * ticketing surface, reaching the books as far as an admin does.
+     *
+     * Cannot rename or delete the workspace, edit the chart of accounts, close a
+     * period, post a manual journal, bulk-import members, or appoint
+     * accountants — see the matrix docstring for why each is withheld.
+     */
+    GENERAL_MANAGER = 'GENERAL_MANAGER',
     /** Full accounting access across every book; may add sub-accountants only. */
     ACCOUNTANT = 'ACCOUNTANT',
     /** Org-level accounting access; book data limited to explicit grants. */
@@ -67,6 +76,33 @@ export enum WorkspaceRole {
     HR = 'HR',
     /** No org-financial access. Assigned books, projects, tasks, time tracking. */
     MEMBER = 'MEMBER',
+}
+
+/**
+ * What job somebody does, as distinct from what they may do.
+ *
+ * Roles carry authority; tags carry assignment. A bar attendant, a maintenance
+ * hand and a social media manager all hold exactly MEMBER's permissions, so
+ * they are tags rather than five near-identical rows in the permission matrix.
+ *
+ * TICKETING is the sole exception and the sole tag that grants anything — see
+ * src/core/authz/ticketing-access.ts.
+ */
+export enum StaffTag {
+    BAR = 'BAR',
+    RESTAURANT = 'RESTAURANT',
+    KITCHEN = 'KITCHEN',
+    TICKETING = 'TICKETING',
+    MAINTENANCE = 'MAINTENANCE',
+    SOCIAL_MEDIA = 'SOCIAL_MEDIA',
+    SUPERVISOR = 'SUPERVISOR',
+    SECURITY = 'SECURITY',
+    OTHER = 'OTHER',
+}
+
+/** Modules a superadmin unlocks per organisation. */
+export enum FeatureKey {
+    TICKETING = 'TICKETING',
 }
 
 // ─── Cashbook Types ────────────────────────────────────
@@ -288,4 +324,32 @@ export enum AuditAction {
     // Notifications
     NOTIFICATION_SENT = 'NOTIFICATION_SENT',
     RECEIPT_SENT = 'RECEIPT_SENT',
+
+    // Ticketing
+    WORKSPACE_FEATURE_ENABLED = 'WORKSPACE_FEATURE_ENABLED',
+    WORKSPACE_FEATURE_DISABLED = 'WORKSPACE_FEATURE_DISABLED',
+    MEMBER_STAFF_TAG_CHANGED = 'MEMBER_STAFF_TAG_CHANGED',
+    TICKET_SETTINGS_UPDATED = 'TICKET_SETTINGS_UPDATED',
+    TICKET_SESSION_CREATED = 'TICKET_SESSION_CREATED',
+    TICKET_SESSION_UPDATED = 'TICKET_SESSION_UPDATED',
+    TICKET_SESSION_DELETED = 'TICKET_SESSION_DELETED',
+    TICKET_TYPE_CREATED = 'TICKET_TYPE_CREATED',
+    TICKET_TYPE_UPDATED = 'TICKET_TYPE_UPDATED',
+    TICKET_TYPE_DELETED = 'TICKET_TYPE_DELETED',
+    TICKET_RULE_CREATED = 'TICKET_RULE_CREATED',
+    TICKET_RULE_UPDATED = 'TICKET_RULE_UPDATED',
+    TICKET_RULE_DELETED = 'TICKET_RULE_DELETED',
+    TICKET_SALE_CREATED = 'TICKET_SALE_CREATED',
+    TICKET_SALE_VOIDED = 'TICKET_SALE_VOIDED',
+    TICKET_DAY_OPENED = 'TICKET_DAY_OPENED',
+    TICKET_DAY_CLOSED = 'TICKET_DAY_CLOSED',
+    TICKET_DAY_REOPENED = 'TICKET_DAY_REOPENED',
+    TICKET_SHIFT_OPENED = 'TICKET_SHIFT_OPENED',
+    TICKET_SHIFT_CLOSED = 'TICKET_SHIFT_CLOSED',
+    MEMBERSHIP_TIER_CREATED = 'MEMBERSHIP_TIER_CREATED',
+    MEMBERSHIP_TIER_UPDATED = 'MEMBERSHIP_TIER_UPDATED',
+    MEMBERSHIP_ISSUED = 'MEMBERSHIP_ISSUED',
+    MEMBERSHIP_UPDATED = 'MEMBERSHIP_UPDATED',
+    MEMBERSHIP_RENEWED = 'MEMBERSHIP_RENEWED',
+    MEMBERSHIP_REDEEMED = 'MEMBERSHIP_REDEEMED',
 }

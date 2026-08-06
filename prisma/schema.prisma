@@ -24,49 +24,57 @@ model User {
   createdAt     DateTime     @default(now()) @map("created_at")
   updatedAt     DateTime     @updatedAt @map("updated_at")
 
-  refreshTokens        RefreshToken[]
-  loginHistory         LoginHistory[]
-  ownedWorkspaces      Workspace[]         @relation("WorkspaceOwner")
-  workspaceMemberships WorkspaceMember[]
-  cashbookMemberships  CashbookMember[]
-  entries              Entry[]
-  entryAudits          EntryAudit[]
-  deleteRequests       DeleteRequest[]     @relation("DeleteRequester")
-  deleteReviews        DeleteRequest[]     @relation("DeleteReviewer")
-  auditLogs            AuditLog[]
-  financialAuditLogs   FinancialAuditLog[]
-  sentInvites          PendingInvite[]     @relation("InviteSender")
-  projectsCreated      Project[]           @relation("ProjectCreator")
-  projectMemberships   ProjectMember[]
-  tasksCreated         Task[]              @relation("TaskCreator")
-  taskAssignments      TaskAssignment[]    @relation("TaskAssignee")
-  taskAssigned         TaskAssignment[]    @relation("TaskAssigner")
-  taskComments         TaskComment[]
-  checklistItemsDone   TaskChecklistItem[] @relation("ChecklistCompleter")
-  taskRequestsMade     TaskAssignmentRequest[] @relation("TaskRequestRequester")
-  taskRequestsReviewed TaskAssignmentRequest[] @relation("TaskRequestReviewer")
-  taskReportsWritten   TaskReport[]        @relation("TaskReportAuthor")
-  expenseClaimsMade    TaskExpenseClaim[]  @relation("ExpenseClaimant")
-  expenseClaimsReviewed TaskExpenseClaim[] @relation("ExpenseReviewer")
-  staffContacts        Contact[]
-  taskReportsReviewed  TaskReport[]        @relation("TaskReportReviewer")
-  timeEntries          TimeEntry[]
-  timeEntriesCreated   TimeEntry[]         @relation("TimeEntryCreator")
-  workSessions         WorkSession[]
-  workSchedules        WorkSchedule[]
-  attendanceDays       AttendanceDay[]
-  leaveRequests        LeaveRequest[]      @relation("LeaveRequester")
-  leaveReviewed        LeaveRequest[]      @relation("LeaveReviewer")
-  overtimeRequests     OvertimeRequest[]   @relation("OvertimeRequester")
-  overtimeReviewed     OvertimeRequest[]   @relation("OvertimeReviewer")
-  attendanceFlags      AttendanceFlag[]    @relation("FlaggedUser")
-  flagsWaived          AttendanceFlag[]    @relation("FlagWaiver")
-  workReports          WorkReport[]        @relation("WorkReportAuthor")
-  workReportsReviewed  WorkReport[]        @relation("WorkReportReviewer")
-  workSessionsAdjusted WorkSession[]       @relation("WorkSessionAdjuster")
-  workSessionsClosed   WorkSession[]       @relation("WorkSessionCloser")
-  notifications        Notification[]
-  journalEntries       JournalEntry[]
+  refreshTokens         RefreshToken[]
+  loginHistory          LoginHistory[]
+  ownedWorkspaces       Workspace[]             @relation("WorkspaceOwner")
+  workspaceMemberships  WorkspaceMember[]
+  cashbookMemberships   CashbookMember[]
+  entries               Entry[]
+  entryAudits           EntryAudit[]
+  deleteRequests        DeleteRequest[]         @relation("DeleteRequester")
+  deleteReviews         DeleteRequest[]         @relation("DeleteReviewer")
+  auditLogs             AuditLog[]
+  financialAuditLogs    FinancialAuditLog[]
+  sentInvites           PendingInvite[]         @relation("InviteSender")
+  projectsCreated       Project[]               @relation("ProjectCreator")
+  projectMemberships    ProjectMember[]
+  tasksCreated          Task[]                  @relation("TaskCreator")
+  taskAssignments       TaskAssignment[]        @relation("TaskAssignee")
+  taskAssigned          TaskAssignment[]        @relation("TaskAssigner")
+  taskComments          TaskComment[]
+  checklistItemsDone    TaskChecklistItem[]     @relation("ChecklistCompleter")
+  taskRequestsMade      TaskAssignmentRequest[] @relation("TaskRequestRequester")
+  taskRequestsReviewed  TaskAssignmentRequest[] @relation("TaskRequestReviewer")
+  taskReportsWritten    TaskReport[]            @relation("TaskReportAuthor")
+  expenseClaimsMade     TaskExpenseClaim[]      @relation("ExpenseClaimant")
+  expenseClaimsReviewed TaskExpenseClaim[]      @relation("ExpenseReviewer")
+  staffContacts         Contact[]
+  taskReportsReviewed   TaskReport[]            @relation("TaskReportReviewer")
+  timeEntries           TimeEntry[]
+  timeEntriesCreated    TimeEntry[]             @relation("TimeEntryCreator")
+  workSessions          WorkSession[]
+  workSchedules         WorkSchedule[]
+  attendanceDays        AttendanceDay[]
+  leaveRequests         LeaveRequest[]          @relation("LeaveRequester")
+  leaveReviewed         LeaveRequest[]          @relation("LeaveReviewer")
+  overtimeRequests      OvertimeRequest[]       @relation("OvertimeRequester")
+  overtimeReviewed      OvertimeRequest[]       @relation("OvertimeReviewer")
+  attendanceFlags       AttendanceFlag[]        @relation("FlaggedUser")
+  flagsWaived           AttendanceFlag[]        @relation("FlagWaiver")
+  workReports           WorkReport[]            @relation("WorkReportAuthor")
+  workReportsReviewed   WorkReport[]            @relation("WorkReportReviewer")
+  workSessionsAdjusted  WorkSession[]           @relation("WorkSessionAdjuster")
+  workSessionsClosed    WorkSession[]           @relation("WorkSessionCloser")
+  notifications         Notification[]
+  journalEntries        JournalEntry[]
+  featuresEnabled       WorkspaceFeature[]      @relation("FeatureEnabler")
+  ticketDaysOpened      TicketDay[]             @relation("TicketDayOpener")
+  ticketDaysClosed      TicketDay[]             @relation("TicketDayCloser")
+  ticketShifts          TicketShift[]           @relation("ShiftAttendant")
+  ticketShiftsClosed    TicketShift[]           @relation("ShiftCloser")
+  ticketSales           TicketSale[]            @relation("TicketSeller")
+  ticketSalesVoided     TicketSale[]            @relation("TicketVoider")
+  membershipsIssued     Membership[]            @relation("MembershipIssuer")
 
   @@unique([provider, providerId])
   @@map("users")
@@ -96,7 +104,7 @@ model LoginHistory {
   userId    String   @map("user_id") @db.Uuid
   ipAddress String?  @map("ip_address")
   userAgent String?  @map("user_agent")
-  status    String 
+  status    String
   reason    String?
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -110,72 +118,72 @@ model LoginHistory {
 // ─── Workspace ─────────────────────────────────────────
 
 model Workspace {
-  id              String        @id @default(uuid()) @db.Uuid
-  name            String
-  type            WorkspaceType
-  ownerId         String        @map("owner_id") @db.Uuid
+  id                      String                 @id @default(uuid()) @db.Uuid
+  name                    String
+  type                    WorkspaceType
+  ownerId                 String                 @map("owner_id") @db.Uuid
   /// Workspace base currency. The app does not perform FX conversion.
-  defaultCurrency String        @default("UGX") @map("default_currency")
-  attendanceLocationName  String? @map("attendance_location_name")
-  attendanceLatitude      Float?  @map("attendance_latitude")
-  attendanceLongitude     Float?  @map("attendance_longitude")
-  attendanceRadiusMeters  Int?    @map("attendance_radius_meters")
+  defaultCurrency         String                 @default("UGX") @map("default_currency")
+  attendanceLocationName  String?                @map("attendance_location_name")
+  attendanceLatitude      Float?                 @map("attendance_latitude")
+  attendanceLongitude     Float?                 @map("attendance_longitude")
+  attendanceRadiusMeters  Int?                   @map("attendance_radius_meters")
   /// Earliest clock-in (workspace-local HH:MM, 24h). Null = no restriction.
-  attendanceClockInStart  String? @map("attendance_clock_in_start")
+  attendanceClockInStart  String?                @map("attendance_clock_in_start")
   /// Latest clock-in (workspace-local HH:MM, 24h). Null = no restriction.
-  attendanceClockInEnd    String? @map("attendance_clock_in_end")
+  attendanceClockInEnd    String?                @map("attendance_clock_in_end")
   /// Earliest clock-out (workspace-local HH:MM, 24h). Advisory: leaving before
   /// this raises an EARLY_OUT flag, it does not refuse the clock-out.
-  attendanceClockOutStart String? @map("attendance_clock_out_start")
+  attendanceClockOutStart String?                @map("attendance_clock_out_start")
   /// Whether the clock-in window REFUSES a late arrival rather than flagging it.
   /// Off by default: refusing means a late employee records no attendance at
   /// all, which is worse than recording it as late.
-  enforceClockWindows     Boolean @default(false) @map("enforce_clock_windows")
+  enforceClockWindows     Boolean                @default(false) @map("enforce_clock_windows")
   /// IANA zone every wall-clock attendance policy is evaluated in. Before this
   /// existed the comparison used the server container's zone, so a Kampala
   /// workspace allowing 08:00-09:30 really allowed 11:00-12:30 local.
-  timezone                String  @default("Africa/Kampala")
-  isActive        Boolean       @default(true) @map("is_active")
+  timezone                String                 @default("Africa/Kampala")
+  isActive                Boolean                @default(true) @map("is_active")
   /// CASH: revenue recognized when cash lands (obligations post via a deferred
   /// offset so AR still appears on the balance sheet). ACCRUAL is reserved and
   /// not implemented — switching it would decouple Cashbook.totalIncome from
   /// ledger income.
-  revenueBasis    RevenueBasis  @default(CASH) @map("revenue_basis")
+  revenueBasis            RevenueBasis           @default(CASH) @map("revenue_basis")
   /// How many incomplete tasks a member may hold at once. Null = unlimited.
   /// Checked when a task assignment is REQUESTED and again when it is APPROVED
   /// — without the second check a member requests five while free and a manager
   /// approves all five.
-  maxConcurrentOpenTasks Int? @default(1) @map("max_concurrent_open_tasks")
+  maxConcurrentOpenTasks  Int?                   @default(1) @map("max_concurrent_open_tasks")
   /// OFF: inventory is an operational subledger only and COGS is not posted to
   /// the GL, matching cash-basis totalExpense. PERPETUAL capitalizes purchases
   /// and recognizes COGS at sale, which changes what totalExpense means.
-  inventoryValuation InventoryValuationMode @default(OFF) @map("inventory_valuation")
-  createdAt       DateTime      @default(now()) @map("created_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
+  inventoryValuation      InventoryValuationMode @default(OFF) @map("inventory_valuation")
+  createdAt               DateTime               @default(now()) @map("created_at")
+  updatedAt               DateTime               @updatedAt @map("updated_at")
 
-  owner              User                 @relation("WorkspaceOwner", fields: [ownerId], references: [id])
-  members            WorkspaceMember[]
-  cashbooks          Cashbook[]
-  categories         Category[]
-  contacts           Contact[]
-  paymentModes       PaymentMode[]
-  obligations        CashbookObligation[]
-  auditLogs          AuditLog[]
-  financialAuditLogs FinancialAuditLog[]
-  pendingInvites     PendingInvite[]
-  accountTypes       AccountType[]
-  accounts           Account[]
-  accountCategories  AccountCategory[]
-  inventoryItems     InventoryItem[]
-  inventoryRentals   InventoryRental[]
-  taxes              Tax[]
-  productsServices   ProductService[]
-  invoices           Invoice[]
-  invoiceSettings    InvoiceSettings?
-  projects           Project[]
-  tasks              Task[]
-  workSessions       WorkSession[]
-  timeEntries        TimeEntry[]
+  owner                  User                    @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  members                WorkspaceMember[]
+  cashbooks              Cashbook[]
+  categories             Category[]
+  contacts               Contact[]
+  paymentModes           PaymentMode[]
+  obligations            CashbookObligation[]
+  auditLogs              AuditLog[]
+  financialAuditLogs     FinancialAuditLog[]
+  pendingInvites         PendingInvite[]
+  accountTypes           AccountType[]
+  accounts               Account[]
+  accountCategories      AccountCategory[]
+  inventoryItems         InventoryItem[]
+  inventoryRentals       InventoryRental[]
+  taxes                  Tax[]
+  productsServices       ProductService[]
+  invoices               Invoice[]
+  invoiceSettings        InvoiceSettings?
+  projects               Project[]
+  tasks                  Task[]
+  workSessions           WorkSession[]
+  timeEntries            TimeEntry[]
   taskAssignmentRequests TaskAssignmentRequest[]
   taskReports            TaskReport[]
   expenseClaims          TaskExpenseClaim[]
@@ -189,10 +197,21 @@ model Workspace {
   overtimeRequests       OvertimeRequest[]
   attendanceFlags        AttendanceFlag[]
   workReports            WorkReport[]
-  notifications      Notification[]
-  ledgerAccounts     LedgerAccount[]
-  journalEntries     JournalEntry[]
-  fiscalPeriods      FiscalPeriod[]
+  notifications          Notification[]
+  ledgerAccounts         LedgerAccount[]
+  journalEntries         JournalEntry[]
+  fiscalPeriods          FiscalPeriod[]
+  features               WorkspaceFeature[]
+  ticketSettings         TicketSettings?
+  ticketSessions         TicketSession[]
+  ticketTypes            TicketType[]
+  ticketDiscountRules    TicketDiscountRule[]
+  ticketDays             TicketDay[]
+  ticketShifts           TicketShift[]
+  ticketSales            TicketSale[]
+  tickets                Ticket[]
+  membershipTiers        MembershipTier[]
+  memberships            Membership[]
 
   @@index([ownerId])
   @@index([type])
@@ -200,20 +219,23 @@ model Workspace {
 }
 
 model WorkspaceMember {
-  id          String        @id @default(uuid()) @db.Uuid
+  id                  String        @id @default(uuid()) @db.Uuid
   /// Employment bounds and opt-out for attendance.
   ///
   /// Without these the absence rollup invents absences for the owner, for
   /// contractors, and for anyone hired mid-month — every day before they
   /// started would show as ABSENT.
-  employmentStartDate DateTime? @map("employment_start_date") @db.Date
-  employmentEndDate   DateTime? @map("employment_end_date") @db.Date
-  attendanceTracked   Boolean   @default(true) @map("attendance_tracked")
-  workspaceId String        @map("workspace_id") @db.Uuid
-  userId      String        @map("user_id") @db.Uuid
-  role        WorkspaceRole @default(MEMBER)
-  joinedAt    DateTime      @default(now()) @map("joined_at")
-  updatedAt   DateTime      @updatedAt @map("updated_at")
+  employmentStartDate DateTime?     @map("employment_start_date") @db.Date
+  employmentEndDate   DateTime?     @map("employment_end_date") @db.Date
+  attendanceTracked   Boolean       @default(true) @map("attendance_tracked")
+  workspaceId         String        @map("workspace_id") @db.Uuid
+  userId              String        @map("user_id") @db.Uuid
+  role                WorkspaceRole @default(MEMBER)
+  /// Which job this person does. Descriptive for every value except TICKETING —
+  /// see the StaffTag docstring.
+  staffTag            StaffTag?     @map("staff_tag")
+  joinedAt            DateTime      @default(now()) @map("joined_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -221,38 +243,60 @@ model WorkspaceMember {
   @@unique([workspaceId, userId])
   @@index([workspaceId])
   @@index([userId])
+  @@index([workspaceId, staffTag])
   @@map("workspace_members")
+}
+
+/// A module unlocked for one organisation by a superadmin.
+///
+/// Absence of a row means the module does not exist for that org — its routes
+/// answer 404 rather than 403, so an org that was never granted ticketing does
+/// not learn it is there.
+model WorkspaceFeature {
+  id          String     @id @default(uuid()) @db.Uuid
+  workspaceId String     @map("workspace_id") @db.Uuid
+  feature     FeatureKey
+  enabledAt   DateTime   @default(now()) @map("enabled_at")
+  enabledById String     @map("enabled_by_id") @db.Uuid
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  enabledBy User      @relation("FeatureEnabler", fields: [enabledById], references: [id])
+
+  @@unique([workspaceId, feature])
+  @@index([workspaceId])
+  @@map("workspace_features")
 }
 
 // ─── Cashbook ──────────────────────────────────────────
 
 model Cashbook {
-  id            String   @id @default(uuid()) @db.Uuid
-  workspaceId   String   @map("workspace_id") @db.Uuid
-  name          String
-  description   String?
-  currency      String   @default("UGX")
-  balance       Decimal  @default(0) @db.Decimal(20, 4)
-  totalIncome   Decimal  @default(0) @map("total_income") @db.Decimal(20, 4)
-  totalExpense  Decimal  @default(0) @map("total_expense") @db.Decimal(20, 4)
-  allowBackdate Boolean  @default(false) @map("allow_backdate")
-  isActive      Boolean  @default(true) @map("is_active")
+  id                  String   @id @default(uuid()) @db.Uuid
+  workspaceId         String   @map("workspace_id") @db.Uuid
+  name                String
+  description         String?
+  currency            String   @default("UGX")
+  balance             Decimal  @default(0) @db.Decimal(20, 4)
+  totalIncome         Decimal  @default(0) @map("total_income") @db.Decimal(20, 4)
+  totalExpense        Decimal  @default(0) @map("total_expense") @db.Decimal(20, 4)
+  allowBackdate       Boolean  @default(false) @map("allow_backdate")
+  isActive            Boolean  @default(true) @map("is_active")
   /// This book's private "unallocated book cash" ASSET account. Nullable only so
   /// the ledger can be introduced without a destructive migration; every
   /// cashbook created after Phase 1 has one.
-  cashLedgerAccountId String? @unique @map("cash_ledger_account_id") @db.Uuid
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  cashLedgerAccountId String?  @unique @map("cash_ledger_account_id") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
 
-  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  members     CashbookMember[]
-  entries     Entry[]
-  obligations CashbookObligation[]
-  attachments Attachment[]
-  expenseClaims TaskExpenseClaim[]
-  invoices    Invoice[]
-  cashLedgerAccount LedgerAccount? @relation(fields: [cashLedgerAccountId], references: [id], onDelete: Restrict)
+  workspace         Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members           CashbookMember[]
+  entries           Entry[]
+  obligations       CashbookObligation[]
+  attachments       Attachment[]
+  expenseClaims     TaskExpenseClaim[]
+  invoices          Invoice[]
+  cashLedgerAccount LedgerAccount?       @relation(fields: [cashLedgerAccountId], references: [id], onDelete: Restrict)
   journalEntries    JournalEntry[]
+  ticketSettings    TicketSettings?
 
   @@index([workspaceId])
   @@map("cashbooks")
@@ -278,33 +322,33 @@ model CashbookMember {
 // ─── Entry (Ledger) ────────────────────────────────────
 
 model Entry {
-  id            String    @id @default(uuid()) @db.Uuid
-  cashbookId    String    @map("cashbook_id") @db.Uuid
-  type          EntryType
-  amount        Decimal   @db.Decimal(20, 4)
-  chargeAmount  Decimal?  @map("charge_amount") @db.Decimal(20, 4)
-  description   String
-  categoryId    String?   @map("category_id") @db.Uuid
-  contactId     String?   @map("contact_id") @db.Uuid
-  paymentModeId String?   @map("payment_mode_id") @db.Uuid
-  obligationId  String?   @map("obligation_id") @db.Uuid
-  entryDate     DateTime  @map("entry_date")
-  createdById   String    @map("created_by_id") @db.Uuid
+  id             String      @id @default(uuid()) @db.Uuid
+  cashbookId     String      @map("cashbook_id") @db.Uuid
+  type           EntryType
+  amount         Decimal     @db.Decimal(20, 4)
+  chargeAmount   Decimal?    @map("charge_amount") @db.Decimal(20, 4)
+  description    String
+  categoryId     String?     @map("category_id") @db.Uuid
+  contactId      String?     @map("contact_id") @db.Uuid
+  paymentModeId  String?     @map("payment_mode_id") @db.Uuid
+  obligationId   String?     @map("obligation_id") @db.Uuid
+  entryDate      DateTime    @map("entry_date")
+  createdById    String      @map("created_by_id") @db.Uuid
   /// Mirrors (status == REVERSED). Retained so existing repository filters keep
   /// working through the cutover; dropped once every read path uses `status`.
-  isDeleted     Boolean   @default(false) @map("is_deleted")
-  deletedAt     DateTime? @map("deleted_at")
-  deletedReason String?   @map("deleted_reason")
+  isDeleted      Boolean     @default(false) @map("is_deleted")
+  deletedAt      DateTime?   @map("deleted_at")
+  deletedReason  String?     @map("deleted_reason")
   /// Entries are never destroyed. A "delete" posts a reversing journal and flips
   /// this to REVERSED; the row and its journals stay for audit.
-  status        EntryStatus @default(POSTED)
-  reversedAt    DateTime? @map("reversed_at")
-  reversedById  String?   @map("reversed_by_id") @db.Uuid
-  reversalReason String?  @map("reversal_reason")
-  version       Int       @default(1)
-  isReconciled  Boolean   @default(false) @map("is_reconciled")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+  status         EntryStatus @default(POSTED)
+  reversedAt     DateTime?   @map("reversed_at")
+  reversedById   String?     @map("reversed_by_id") @db.Uuid
+  reversalReason String?     @map("reversal_reason")
+  version        Int         @default(1)
+  isReconciled   Boolean     @default(false) @map("is_reconciled")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
 
   cashbook            Cashbook             @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
   category            Category?            @relation(fields: [categoryId], references: [id], onDelete: SetNull)
@@ -317,6 +361,8 @@ model Entry {
   attachments         Attachment[]
   expenseClaim        TaskExpenseClaim?
   accountTransactions AccountTransaction[]
+  ticketSale          TicketSale?
+  membership          Membership?
 
   @@index([cashbookId])
   @@index([entryDate])
@@ -332,8 +378,8 @@ model EntryAudit {
   id        String   @id @default(uuid()) @db.Uuid
   entryId   String   @map("entry_id") @db.Uuid
   userId    String   @map("user_id") @db.Uuid
-  action    String 
-  changes   Json? 
+  action    String
+  changes   Json?
   oldValues Json?    @map("old_values")
   newValues Json?    @map("new_values")
   createdAt DateTime @default(now()) @map("created_at")
@@ -408,10 +454,10 @@ model CashbookObligation {
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  cashbook  Cashbook  @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
-  contact   Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  entries   Entry[]
+  workspace    Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  cashbook     Cashbook          @relation(fields: [cashbookId], references: [id], onDelete: Cascade)
+  contact      Contact?          @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  entries      Entry[]
   expenseClaim TaskExpenseClaim?
 
   @@index([workspaceId])
@@ -438,9 +484,11 @@ model Category {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  entries   Entry[]
-  glAccount LedgerAccount? @relation(fields: [glAccountId], references: [id], onDelete: SetNull)
+  workspace      Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entries        Entry[]
+  glAccount      LedgerAccount?   @relation(fields: [glAccountId], references: [id], onDelete: SetNull)
+  ticketSettings TicketSettings[]
+  ticketTypes    TicketType[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -476,21 +524,22 @@ model Contact {
   /// Set when this contact stands for a member of the workspace. Lets a
   /// reimbursement find (or create) the same counterparty every time instead of
   /// making a new "Jane Doe" per claim.
-  userId      String?     @map("user_id") @db.Uuid
+  userId String? @map("user_id") @db.Uuid
 
-  workspace       Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  user            User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
-  entries         Entry[]
-  customerProfile CustomerProfile?
-  obligations     CashbookObligation[]
-  invoices        Invoice[]
+  workspace        Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user             User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  entries          Entry[]
+  customerProfile  CustomerProfile?
+  obligations      CashbookObligation[]
+  invoices         Invoice[]
   inventoryRentals InventoryRental[]
   projects         Project[]
+  memberships      Membership[]
 
-  @@index([workspaceId])
-  @@index([type])
   /// One staff contact per person per workspace.
   @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([type])
   @@map("contacts")
 }
 
@@ -522,8 +571,10 @@ model PaymentMode {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  entries   Entry[]
+  workspace      Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entries        Entry[]
+  ticketSettings TicketSettings[]
+  ticketSales    TicketSale[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -636,22 +687,22 @@ model FinancialAuditLog {
 /// re-executing. Scoped by workspace so a key cannot leak across tenants, and by
 /// endpoint so it cannot be reused for a different operation.
 model IdempotencyRecord {
-  id             String   @id @default(uuid()) @db.Uuid
-  workspaceId    String?  @map("workspace_id") @db.Uuid
-  userId         String   @map("user_id") @db.Uuid
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String?   @map("workspace_id") @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
   key            String
   /// Route template, e.g. "POST /entries/cashbook/:cashbookId".
   endpoint       String
   /// sha256 of the canonicalized request body. A different hash under the same
   /// key is a client bug, not a retry, and is rejected rather than replayed.
-  requestHash    String   @map("request_hash")
-  state          String   @default("IN_PROGRESS")
-  responseStatus Int?     @map("response_status")
-  responseBody   Json?    @map("response_body")
-  resourceId     String?  @map("resource_id") @db.Uuid
-  claimedAt      DateTime @default(now()) @map("claimed_at")
+  requestHash    String    @map("request_hash")
+  state          String    @default("IN_PROGRESS")
+  responseStatus Int?      @map("response_status")
+  responseBody   Json?     @map("response_body")
+  resourceId     String?   @map("resource_id") @db.Uuid
+  claimedAt      DateTime  @default(now()) @map("claimed_at")
   completedAt    DateTime? @map("completed_at")
-  expiresAt      DateTime @map("expires_at")
+  expiresAt      DateTime  @map("expires_at")
 
   @@unique([workspaceId, endpoint, key])
   @@index([expiresAt])
@@ -671,6 +722,15 @@ enum WorkspaceRole {
   OWNER
   /// Everything except deleting the workspace.
   ADMIN
+  /// Runs the operation day to day: staff, delivery, people ops and the full
+  /// ticketing surface, with the same reach into books as an admin.
+  ///
+  /// Deliberately cannot do the things that change what the organisation IS or
+  /// what its books MEAN: delete or rename the workspace, edit the chart of
+  /// accounts, close a period, post a manual journal, bulk-import members, or
+  /// appoint accountants. Those stay with the owner, the admin and the
+  /// accountant.
+  GENERAL_MANAGER
   /// Full accounting access across every book. Can add sub-accountants, and
   /// only sub-accountants.
   ACCOUNTANT
@@ -701,6 +761,39 @@ enum CashbookRole {
   BOOK_ADMIN
   DATA_OPERATOR
   VIEWER
+}
+
+/// What job somebody actually does, as distinct from what they are allowed to
+/// do. Roles carry authority; tags carry assignment.
+///
+/// The reason this is a separate axis and not more roles: a bar attendant, a
+/// maintenance hand and a social media manager all hold exactly MEMBER's
+/// permissions. Minting a role per job title would have grown the permission
+/// matrix by five entries that differ only in their name.
+///
+/// One exception, and it is deliberate: TICKETING is the only tag that grants
+/// anything. It admits its holder to the ticket desk, so assigning it requires
+/// MANAGE_TICKETING rather than plain MANAGE_MEMBERS — otherwise HR, who can
+/// manage members, could hand out the ability to post money.
+enum StaffTag {
+  BAR
+  RESTAURANT
+  KITCHEN
+  TICKETING
+  MAINTENANCE
+  SOCIAL_MEDIA
+  SUPERVISOR
+  SECURITY
+  OTHER
+}
+
+/// Modules a superadmin unlocks per organisation.
+///
+/// Generic rather than a boolean column on Workspace so the next gated module
+/// reuses the mechanism instead of adding another migration, and so there is a
+/// record of who unlocked what and when.
+enum FeatureKey {
+  TICKETING
 }
 
 enum EntryType {
@@ -770,13 +863,14 @@ model Account {
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  workspace       Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  accountType     AccountType          @relation(fields: [accountTypeId], references: [id])
-  ledgerAccount   LedgerAccount?       @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
-  transactions    AccountTransaction[]
-  expenseClaims   TaskExpenseClaim[]
-  transfersFrom   AccountTransfer[]    @relation("TransferFrom")
-  transfersTo     AccountTransfer[]    @relation("TransferTo")
+  workspace     Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  accountType   AccountType          @relation(fields: [accountTypeId], references: [id])
+  ledgerAccount LedgerAccount?       @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+  transactions  AccountTransaction[]
+  expenseClaims TaskExpenseClaim[]
+  transfersFrom AccountTransfer[]    @relation("TransferFrom")
+  transfersTo   AccountTransfer[]    @relation("TransferTo")
+  ticketSales   TicketSale[]
 
   @@index([workspaceId])
   @@index([accountTypeId])
@@ -931,25 +1025,25 @@ enum InvoiceLineType {
 }
 
 model InventoryItem {
-  id                     String                  @id @default(uuid()) @db.Uuid
-  workspaceId            String                  @map("workspace_id") @db.Uuid
-  name                   String
-  sku                    String?
-  unit                   String
-  category               String?
+  id                      String                  @id @default(uuid()) @db.Uuid
+  workspaceId             String                  @map("workspace_id") @db.Uuid
+  name                    String
+  sku                     String?
+  unit                    String
+  category                String?
   /// ISO currency for costs/prices (no FX; must match cashbook/invoice when linked).
-  currency               String                  @default("UGX")
-  commercialMode         InventoryCommercialMode @default(SELL_ONLY) @map("commercial_mode")
+  currency                String                  @default("UGX")
+  commercialMode          InventoryCommercialMode @default(SELL_ONLY) @map("commercial_mode")
   /// Default list / sell price per unit (money-in prefill, not COGS).
-  defaultSellingPrice    Decimal?                @map("default_selling_price") @db.Decimal(20, 4)
-  defaultRentalRate      Decimal?                @map("default_rental_rate") @db.Decimal(20, 4)
-  defaultRentalPeriodUnit RentalPeriodUnit?      @map("default_rental_period_unit")
-  lowStockThreshold      Int?                    @map("low_stock_threshold")
-  costMethod             InventoryCostMethod     @default(WEIGHTED_AVERAGE) @map("cost_method")
-  allowNegativeStock     Boolean                 @default(false) @map("allow_negative_stock")
-  isActive               Boolean                 @default(true) @map("is_active")
-  createdAt              DateTime                @default(now()) @map("created_at")
-  updatedAt              DateTime                @updatedAt @map("updated_at")
+  defaultSellingPrice     Decimal?                @map("default_selling_price") @db.Decimal(20, 4)
+  defaultRentalRate       Decimal?                @map("default_rental_rate") @db.Decimal(20, 4)
+  defaultRentalPeriodUnit RentalPeriodUnit?       @map("default_rental_period_unit")
+  lowStockThreshold       Int?                    @map("low_stock_threshold")
+  costMethod              InventoryCostMethod     @default(WEIGHTED_AVERAGE) @map("cost_method")
+  allowNegativeStock      Boolean                 @default(false) @map("allow_negative_stock")
+  isActive                Boolean                 @default(true) @map("is_active")
+  createdAt               DateTime                @default(now()) @map("created_at")
+  updatedAt               DateTime                @updatedAt @map("updated_at")
 
   workspace        Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   stock            InventoryStock?
@@ -995,15 +1089,15 @@ model InventoryRental {
 }
 
 model InventoryRentalLine {
-  id             String           @id @default(uuid()) @db.Uuid
-  rentalId       String           @map("rental_id") @db.Uuid
-  inventoryItemId String          @map("inventory_item_id") @db.Uuid
-  quantity       Int
-  unitRate       Decimal          @map("unit_rate") @db.Decimal(20, 4)
-  periodUnit     RentalPeriodUnit @map("period_unit")
-  periodCount    Int              @default(1) @map("period_count")
-  lineTotal      Decimal          @map("line_total") @db.Decimal(20, 4)
-  quantityReturned Int            @default(0) @map("quantity_returned")
+  id               String           @id @default(uuid()) @db.Uuid
+  rentalId         String           @map("rental_id") @db.Uuid
+  inventoryItemId  String           @map("inventory_item_id") @db.Uuid
+  quantity         Int
+  unitRate         Decimal          @map("unit_rate") @db.Decimal(20, 4)
+  periodUnit       RentalPeriodUnit @map("period_unit")
+  periodCount      Int              @default(1) @map("period_count")
+  lineTotal        Decimal          @map("line_total") @db.Decimal(20, 4)
+  quantityReturned Int              @default(0) @map("quantity_returned")
 
   rental InventoryRental @relation(fields: [rentalId], references: [id], onDelete: Cascade)
   item   InventoryItem   @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
@@ -1014,12 +1108,12 @@ model InventoryRentalLine {
 }
 
 model InventoryStock {
-  id               String  @id @default(uuid()) @db.Uuid
-  itemId           String  @unique @map("item_id") @db.Uuid
-  quantityOnHand   Int     @default(0) @map("quantity_on_hand")
+  id                String  @id @default(uuid()) @db.Uuid
+  itemId            String  @unique @map("item_id") @db.Uuid
+  quantityOnHand    Int     @default(0) @map("quantity_on_hand")
   /// Units currently out on active rentals (not permanently sold).
-  quantityRentedOut Int    @default(0) @map("quantity_rented_out")
-  averageCost      Decimal @default(0) @map("average_cost") @db.Decimal(20, 4)
+  quantityRentedOut Int     @default(0) @map("quantity_rented_out")
+  averageCost       Decimal @default(0) @map("average_cost") @db.Decimal(20, 4)
 
   item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
 
@@ -1027,27 +1121,27 @@ model InventoryStock {
 }
 
 model InventoryTransaction {
-  id              String                   @id @default(uuid()) @db.Uuid
-  workspaceId     String                   @map("workspace_id") @db.Uuid
-  itemId          String                   @map("item_id") @db.Uuid
-  transactionType InventoryTransactionType @map("transaction_type")
-  quantity        Int
-  unitCost        Decimal                  @map("unit_cost") @db.Decimal(20, 4)
-  totalCost       Decimal                  @map("total_cost") @db.Decimal(20, 4)
-  costOfGoodsSold Decimal?                 @map("cost_of_goods_sold") @db.Decimal(20, 4)
-  sellingPrice    Decimal?                 @map("selling_price") @db.Decimal(20, 4)
-  referenceType   InventoryReferenceType?  @map("reference_type")
-  referenceId     String?                  @map("reference_id") @db.Uuid
+  id                    String                   @id @default(uuid()) @db.Uuid
+  workspaceId           String                   @map("workspace_id") @db.Uuid
+  itemId                String                   @map("item_id") @db.Uuid
+  transactionType       InventoryTransactionType @map("transaction_type")
+  quantity              Int
+  unitCost              Decimal                  @map("unit_cost") @db.Decimal(20, 4)
+  totalCost             Decimal                  @map("total_cost") @db.Decimal(20, 4)
+  costOfGoodsSold       Decimal?                 @map("cost_of_goods_sold") @db.Decimal(20, 4)
+  sellingPrice          Decimal?                 @map("selling_price") @db.Decimal(20, 4)
+  referenceType         InventoryReferenceType?  @map("reference_type")
+  referenceId           String?                  @map("reference_id") @db.Uuid
   /// True for compensating rows written by reverseInventoryForReference.
   /// Reversal rows carry the SAME referenceType/referenceId as the movement they
   /// undo, so without this flag a second reversal re-reads them and undoes the
   /// undo — silently corrupting stock and average cost.
-  isReversal      Boolean                  @default(false) @map("is_reversal")
+  isReversal            Boolean                  @default(false) @map("is_reversal")
   /// The movement this row reverses. Unique: a movement can be reversed once.
-  reversesTransactionId String?            @unique @map("reverses_transaction_id") @db.Uuid
-  notes           String?
-  createdById     String                   @map("created_by_id") @db.Uuid
-  createdAt       DateTime                 @default(now()) @map("created_at")
+  reversesTransactionId String?                  @unique @map("reverses_transaction_id") @db.Uuid
+  notes                 String?
+  createdById           String                   @map("created_by_id") @db.Uuid
+  createdAt             DateTime                 @default(now()) @map("created_at")
 
   item            InventoryItem         @relation(fields: [itemId], references: [id], onDelete: Cascade)
   lotConsumptions LotConsumption[]
@@ -1108,19 +1202,19 @@ enum ProductServiceType {
 }
 
 model Tax {
-  id             String   @id @default(uuid()) @db.Uuid
-  workspaceId    String   @map("workspace_id") @db.Uuid
-  name           String
-  rate           Decimal  @db.Decimal(10, 4) 
-  isCompound     Boolean  @default(false) @map("is_compound")
-  isRecoverable  Boolean  @default(true) @map("is_recoverable")
-  isActive       Boolean  @default(true) @map("is_active")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @map("workspace_id") @db.Uuid
+  name          String
+  rate          Decimal  @db.Decimal(10, 4)
+  isCompound    Boolean  @default(false) @map("is_compound")
+  isRecoverable Boolean  @default(true) @map("is_recoverable")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
-  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace        Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   productsServices ProductService[]
-  invoiceItems    InvoiceItem[]
+  invoiceItems     InvoiceItem[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -1167,29 +1261,29 @@ enum InvoiceStatus {
 }
 
 model Invoice {
-  id              String        @id @default(uuid()) @db.Uuid
-  workspaceId     String        @map("workspace_id") @db.Uuid
-  customerId      String        @map("customer_id") @db.Uuid
-  invoiceNumber   String        @map("invoice_number")
-  status          InvoiceStatus @default(DRAFT)
-  issueDate       DateTime      @map("issue_date")
-  dueDate         DateTime      @map("due_date")
-  currency        String        @default("UGX")
-  subtotal        Decimal       @default(0) @db.Decimal(20, 4)
-  discountAmount  Decimal       @default(0) @map("discount_amount") @db.Decimal(20, 4)
-  taxAmount       Decimal       @default(0) @map("tax_amount") @db.Decimal(20, 4)
-  totalAmount     Decimal       @default(0) @map("total_amount") @db.Decimal(20, 4)
-  amountPaid      Decimal       @default(0) @map("amount_paid") @db.Decimal(20, 4)
-  amountDue       Decimal       @default(0) @map("amount_due") @db.Decimal(20, 4)
-  notes           String?
-  footer          String?
-  cashbookId      String?       @map("cashbook_id") @db.Uuid
-  createdById     String        @map("created_by_id") @db.Uuid
-  createdAt       DateTime      @default(now()) @map("created_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
+  id             String        @id @default(uuid()) @db.Uuid
+  workspaceId    String        @map("workspace_id") @db.Uuid
+  customerId     String        @map("customer_id") @db.Uuid
+  invoiceNumber  String        @map("invoice_number")
+  status         InvoiceStatus @default(DRAFT)
+  issueDate      DateTime      @map("issue_date")
+  dueDate        DateTime      @map("due_date")
+  currency       String        @default("UGX")
+  subtotal       Decimal       @default(0) @db.Decimal(20, 4)
+  discountAmount Decimal       @default(0) @map("discount_amount") @db.Decimal(20, 4)
+  taxAmount      Decimal       @default(0) @map("tax_amount") @db.Decimal(20, 4)
+  totalAmount    Decimal       @default(0) @map("total_amount") @db.Decimal(20, 4)
+  amountPaid     Decimal       @default(0) @map("amount_paid") @db.Decimal(20, 4)
+  amountDue      Decimal       @default(0) @map("amount_due") @db.Decimal(20, 4)
+  notes          String?
+  footer         String?
+  cashbookId     String?       @map("cashbook_id") @db.Uuid
+  createdById    String        @map("created_by_id") @db.Uuid
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
 
-  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  customer  Contact       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  workspace Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customer  Contact           @relation(fields: [customerId], references: [id], onDelete: Restrict)
   cashbook  Cashbook?         @relation(fields: [cashbookId], references: [id], onDelete: SetNull)
   items     InvoiceItem[]
   rentals   InventoryRental[]
@@ -1205,23 +1299,23 @@ model Invoice {
 }
 
 model InvoiceItem {
-  id               String          @id @default(uuid()) @db.Uuid
-  invoiceId        String          @map("invoice_id") @db.Uuid
-  productServiceId String?         @map("product_service_id") @db.Uuid
-  inventoryItemId  String?         @map("inventory_item_id") @db.Uuid
-  lineType         InvoiceLineType @default(SALE) @map("line_type")
-  name             String
-  description      String?
-  quantity         Decimal         @db.Decimal(20, 4)
-  unitPrice        Decimal         @map("unit_price") @db.Decimal(20, 4)
-  taxId            String?         @map("tax_id") @db.Uuid
-  taxRate          Decimal         @default(0) @map("tax_rate") @db.Decimal(10, 4)
-  taxAmount        Decimal         @default(0) @map("tax_amount") @db.Decimal(20, 4)
-  total            Decimal         @default(0) @db.Decimal(20, 4)
-  rentalStart      DateTime?       @map("rental_start")
-  rentalEnd        DateTime?       @map("rental_end")
-  rentalPeriodUnit RentalPeriodUnit? @map("rental_period_unit")
-  rentalPeriodCount Int?           @map("rental_period_count")
+  id                String            @id @default(uuid()) @db.Uuid
+  invoiceId         String            @map("invoice_id") @db.Uuid
+  productServiceId  String?           @map("product_service_id") @db.Uuid
+  inventoryItemId   String?           @map("inventory_item_id") @db.Uuid
+  lineType          InvoiceLineType   @default(SALE) @map("line_type")
+  name              String
+  description       String?
+  quantity          Decimal           @db.Decimal(20, 4)
+  unitPrice         Decimal           @map("unit_price") @db.Decimal(20, 4)
+  taxId             String?           @map("tax_id") @db.Uuid
+  taxRate           Decimal           @default(0) @map("tax_rate") @db.Decimal(10, 4)
+  taxAmount         Decimal           @default(0) @map("tax_amount") @db.Decimal(20, 4)
+  total             Decimal           @default(0) @db.Decimal(20, 4)
+  rentalStart       DateTime?         @map("rental_start")
+  rentalEnd         DateTime?         @map("rental_end")
+  rentalPeriodUnit  RentalPeriodUnit? @map("rental_period_unit")
+  rentalPeriodCount Int?              @map("rental_period_count")
 
   invoice        Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   productService ProductService? @relation(fields: [productServiceId], references: [id], onDelete: SetNull)
@@ -1284,12 +1378,12 @@ model Project {
   createdAt    DateTime      @default(now()) @map("created_at")
   updatedAt    DateTime      @updatedAt @map("updated_at")
 
-  workspace   Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdBy   User            @relation("ProjectCreator", fields: [createdById], references: [id])
-  contact     Contact?        @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  members     ProjectMember[]
-  tasks       Task[]
-  timeEntries TimeEntry[]
+  workspace     Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy     User               @relation("ProjectCreator", fields: [createdById], references: [id])
+  contact       Contact?           @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  members       ProjectMember[]
+  tasks         Task[]
+  timeEntries   TimeEntry[]
   expenseClaims TaskExpenseClaim[]
 
   @@index([workspaceId])
@@ -1363,20 +1457,20 @@ model Task {
   createdAt            DateTime     @default(now()) @map("created_at")
   updatedAt            DateTime     @updatedAt @map("updated_at")
 
-  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project     Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  createdBy   User             @relation("TaskCreator", fields: [createdById], references: [id])
-  assignments   TaskAssignment[]
-  timeEntries   TimeEntry[]
-  notifications Notification[]
-  comments      TaskComment[]
-  checklist     TaskChecklistItem[]
+  workspace          Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project            Project?                @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  createdBy          User                    @relation("TaskCreator", fields: [createdById], references: [id])
+  assignments        TaskAssignment[]
+  timeEntries        TimeEntry[]
+  notifications      Notification[]
+  comments           TaskComment[]
+  checklist          TaskChecklistItem[]
   assignmentRequests TaskAssignmentRequest[]
   reports            TaskReport[]
   expenseClaims      TaskExpenseClaim[]
   attachments        Attachment[]
   attendanceSite     AttendanceSite?
-  clockInSessions    WorkSession[]       @relation("ClockInTask")
+  clockInSessions    WorkSession[]           @relation("ClockInTask")
 
   @@index([workspaceId])
   @@index([projectId])
@@ -1395,8 +1489,8 @@ model TaskAssignment {
   assignedBy String   @map("assigned_by") @db.Uuid
   assignedAt DateTime @default(now()) @map("assigned_at")
 
-  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  user User @relation("TaskAssignee", fields: [userId], references: [id], onDelete: Cascade)
+  task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user     User @relation("TaskAssignee", fields: [userId], references: [id], onDelete: Cascade)
   assigner User @relation("TaskAssigner", fields: [assignedBy], references: [id])
 
   @@unique([taskId, userId])
@@ -1493,10 +1587,10 @@ model TaskReport {
   createdAt    DateTime       @default(now()) @map("created_at")
   updatedAt    DateTime       @updatedAt @map("updated_at")
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  task      Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  author    User      @relation("TaskReportAuthor", fields: [authorId], references: [id], onDelete: Cascade)
-  reviewer  User?     @relation("TaskReportReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task        Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author      User         @relation("TaskReportAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  reviewer    User?        @relation("TaskReportReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
   attachments Attachment[]
 
   @@index([workspaceId, status])
@@ -1529,43 +1623,43 @@ enum ExpensePaymentSource {
 ///                 them, which is correct on this ledger's cash basis, and
 ///                 "what we owe staff" shows up in AP aging in the meantime.
 model TaskExpenseClaim {
-  id           String               @id @default(uuid()) @db.Uuid
-  workspaceId  String               @map("workspace_id") @db.Uuid
-  taskId       String?              @map("task_id") @db.Uuid
-  projectId    String?              @map("project_id") @db.Uuid
-  claimantId   String               @map("claimant_id") @db.Uuid
-  amount       Decimal              @db.Decimal(20, 4)
-  currency     String
-  description  String
-  incurredOn   DateTime             @map("incurred_on") @db.Date
+  id            String               @id @default(uuid()) @db.Uuid
+  workspaceId   String               @map("workspace_id") @db.Uuid
+  taskId        String?              @map("task_id") @db.Uuid
+  projectId     String?              @map("project_id") @db.Uuid
+  claimantId    String               @map("claimant_id") @db.Uuid
+  amount        Decimal              @db.Decimal(20, 4)
+  currency      String
+  description   String
+  incurredOn    DateTime             @map("incurred_on") @db.Date
   paymentSource ExpensePaymentSource @map("payment_source")
   /// The wallet the money left. Required when paymentSource is ORG_WALLET,
   /// enforced by a CHECK in the migration.
-  accountId    String?              @map("account_id") @db.Uuid
-  status       ApprovalStatus       @default(PENDING)
-  reviewerId   String?              @map("reviewer_id") @db.Uuid
-  reviewNote   String?              @map("review_note")
-  reviewedAt   DateTime?            @map("reviewed_at")
+  accountId     String?              @map("account_id") @db.Uuid
+  status        ApprovalStatus       @default(PENDING)
+  reviewerId    String?              @map("reviewer_id") @db.Uuid
+  reviewNote    String?              @map("review_note")
+  reviewedAt    DateTime?            @map("reviewed_at")
   /// Chosen by the approver at the moment of approval, not by the claimant.
-  cashbookId   String?              @map("cashbook_id") @db.Uuid
+  cashbookId    String?              @map("cashbook_id") @db.Uuid
   /// Exactly one of these is set on approval, and each is unique — the database
   /// backstop against a claim posting to the ledger twice.
-  entryId      String?              @unique @map("entry_id") @db.Uuid
-  obligationId String?              @unique @map("obligation_id") @db.Uuid
+  entryId       String?              @unique @map("entry_id") @db.Uuid
+  obligationId  String?              @unique @map("obligation_id") @db.Uuid
   /// Compare-and-swap guard so two approvers cannot both post one claim.
-  version      Int                  @default(1)
-  createdAt    DateTime             @default(now()) @map("created_at")
-  updatedAt    DateTime             @updatedAt @map("updated_at")
+  version       Int                  @default(1)
+  createdAt     DateTime             @default(now()) @map("created_at")
+  updatedAt     DateTime             @updatedAt @map("updated_at")
 
-  workspace  Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  task       Task?               @relation(fields: [taskId], references: [id], onDelete: SetNull)
-  project    Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  claimant   User                @relation("ExpenseClaimant", fields: [claimantId], references: [id], onDelete: Cascade)
-  reviewer   User?               @relation("ExpenseReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
-  account    Account?            @relation(fields: [accountId], references: [id], onDelete: Restrict)
-  cashbook   Cashbook?           @relation(fields: [cashbookId], references: [id], onDelete: Restrict)
-  entry      Entry?              @relation(fields: [entryId], references: [id], onDelete: Restrict)
-  obligation CashbookObligation? @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task        Task?               @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  project     Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  claimant    User                @relation("ExpenseClaimant", fields: [claimantId], references: [id], onDelete: Cascade)
+  reviewer    User?               @relation("ExpenseReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  account     Account?            @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  cashbook    Cashbook?           @relation(fields: [cashbookId], references: [id], onDelete: Restrict)
+  entry       Entry?              @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  obligation  CashbookObligation? @relation(fields: [obligationId], references: [id], onDelete: Restrict)
   attachments Attachment[]
 
   @@index([workspaceId, status])
@@ -1713,17 +1807,17 @@ enum WorkSessionStatus {
 /// every people-ops feature, and Workspace is already read on nearly every
 /// request.
 model AttendanceSettings {
-  id          String  @id @default(uuid()) @db.Uuid
-  workspaceId String  @unique @map("workspace_id") @db.Uuid
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @unique @map("workspace_id") @db.Uuid
 
   /// Minutes past local midnight at which a business day starts. 0 = midnight.
   /// A workspace running 22:00-06:00 shifts sets this to e.g. 240 so one shift
   /// is not split across two business dates.
   dayBoundaryMinutes Int @default(0) @map("day_boundary_minutes")
 
-  geofenceEnforcement GeofenceEnforcement @default(WARN) @map("geofence_enforcement")
+  geofenceEnforcement  GeofenceEnforcement @default(WARN) @map("geofence_enforcement")
   /// Whether an assignee may clock in at a site attached to their task.
-  allowTaskSiteClockIn Boolean @default(true) @map("allow_task_site_clock_in")
+  allowTaskSiteClockIn Boolean             @default(true) @map("allow_task_site_clock_in")
 
   /// Track hours past the scheduled end. When off, those minutes are still
   /// MEASURED — see WorkSession.rawOvertimeMinutes — but count as zero.
@@ -1732,7 +1826,7 @@ model AttendanceSettings {
   billableTrackingEnabled Boolean @default(true) @map("billable_tracking_enabled")
 
   /// Minutes before the scheduled end to nudge people to wrap up and report.
-  wrapUpReminderMinutes Int  @default(30) @map("wrap_up_reminder_minutes")
+  wrapUpReminderMinutes       Int     @default(30) @map("wrap_up_reminder_minutes")
   /// Leaving before the earliest clock-out has to say why.
   earlyClockOutRequiresReason Boolean @default(true) @map("early_clock_out_requires_reason")
   allowClockInWhileOnLeave    Boolean @default(false) @map("allow_clock_in_while_on_leave")
@@ -1757,21 +1851,21 @@ model AttendanceSettings {
 /// between them — and it also fixes an existing limitation, since a workspace
 /// could previously have only one location.
 model AttendanceSite {
-  id           String  @id @default(uuid()) @db.Uuid
-  workspaceId  String  @map("workspace_id") @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  workspaceId  String   @map("workspace_id") @db.Uuid
   /// Null for a workspace-level site; set for a site attached to one task.
-  taskId       String? @unique @map("task_id") @db.Uuid
+  taskId       String?  @unique @map("task_id") @db.Uuid
   name         String
   latitude     Float
   longitude    Float
-  radiusMeters Int     @map("radius_meters")
-  isPrimary    Boolean @default(false) @map("is_primary")
-  isActive     Boolean @default(true) @map("is_active")
+  radiusMeters Int      @map("radius_meters")
+  isPrimary    Boolean  @default(false) @map("is_primary")
+  isActive     Boolean  @default(true) @map("is_active")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  task      Task?     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workspace          Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task               Task?         @relation(fields: [taskId], references: [id], onDelete: Cascade)
   clockedInSessions  WorkSession[] @relation("ClockInSite")
   clockedOutSessions WorkSession[] @relation("ClockOutSite")
 
@@ -1792,20 +1886,20 @@ model WorkSchedule {
   name        String  @default("Standard hours")
 
   /// ISO weekdays, 1 = Monday .. 7 = Sunday.
-  workingDays Int[]   @map("working_days")
-  startTime   String  @map("start_time")
-  endTime     String  @map("end_time")
+  workingDays     Int[]   @map("working_days")
+  startTime       String  @map("start_time")
+  endTime         String  @map("end_time")
   /// endTime <= startTime, e.g. 22:00-06:00. Derived on write, stored so the
   /// resolver does not have to re-derive it on every read.
   crossesMidnight Boolean @default(false) @map("crosses_midnight")
 
   /// Minutes after startTime before an arrival counts as late.
-  graceMinutes         Int @default(10) @map("grace_minutes")
+  graceMinutes          Int     @default(10) @map("grace_minutes")
   /// Minutes before endTime that leaving is still not "early".
-  earlyOutGraceMinutes Int @default(10) @map("early_out_grace_minutes")
-  breakMinutes         Int @default(0)  @map("break_minutes")
-  breakPaid            Boolean @default(false) @map("break_paid")
-  expectedMinutesPerDay Int @map("expected_minutes_per_day")
+  earlyOutGraceMinutes  Int     @default(10) @map("early_out_grace_minutes")
+  breakMinutes          Int     @default(0) @map("break_minutes")
+  breakPaid             Boolean @default(false) @map("break_paid")
+  expectedMinutesPerDay Int     @map("expected_minutes_per_day")
 
   /// Advisory windows. There is deliberately no clock-out upper bound.
   clockInWindowStart  String? @map("clock_in_window_start")
@@ -1818,8 +1912,8 @@ model WorkSchedule {
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
   sessions  WorkSession[]
 
   @@index([workspaceId, userId, effectiveFrom])
@@ -1908,17 +2002,17 @@ model AttendanceDay {
 
 /// A kind of leave a workspace recognises.
 model LeaveType {
-  id             String  @id @default(uuid()) @db.Uuid
-  workspaceId    String  @map("workspace_id") @db.Uuid
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
   name           String
   code           String
   /// Whether the day still counts as paid time.
-  isPaid         Boolean @default(true) @map("is_paid")
-  allowHalfDay   Boolean @default(true) @map("allow_half_day")
-  maxDaysPerYear Int?    @map("max_days_per_year")
-  colorHex       String? @map("color_hex")
-  sortOrder      Int     @default(0) @map("sort_order")
-  isActive       Boolean @default(true) @map("is_active")
+  isPaid         Boolean  @default(true) @map("is_paid")
+  allowHalfDay   Boolean  @default(true) @map("allow_half_day")
+  maxDaysPerYear Int?     @map("max_days_per_year")
+  colorHex       String?  @map("color_hex")
+  sortOrder      Int      @default(0) @map("sort_order")
+  isActive       Boolean  @default(true) @map("is_active")
   createdAt      DateTime @default(now()) @map("created_at")
 
   workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1985,22 +2079,22 @@ model LeaveDay {
 
 /// Permission to work past the scheduled end, or a record of having done so.
 model OvertimeRequest {
-  id              String                @id @default(uuid()) @db.Uuid
-  workspaceId     String                @map("workspace_id") @db.Uuid
-  userId          String                @map("user_id") @db.Uuid
-  businessDate    DateTime              @map("business_date") @db.Date
-  type            OvertimeRequestType   @default(PLANNED)
-  requestedMinutes Int                  @map("requested_minutes")
-  reason          String
-  status          ApprovalStatus        @default(PENDING)
+  id               String              @id @default(uuid()) @db.Uuid
+  workspaceId      String              @map("workspace_id") @db.Uuid
+  userId           String              @map("user_id") @db.Uuid
+  businessDate     DateTime            @map("business_date") @db.Date
+  type             OvertimeRequestType @default(PLANNED)
+  requestedMinutes Int                 @map("requested_minutes")
+  reason           String
+  status           ApprovalStatus      @default(PENDING)
   /// May be less than requested — an approver can grant part of it.
-  approvedMinutes Int?                  @map("approved_minutes")
-  reviewerId      String?               @map("reviewer_id") @db.Uuid
-  reviewNote      String?               @map("review_note")
-  reviewedAt      DateTime?             @map("reviewed_at")
-  version         Int                   @default(1)
-  createdAt       DateTime              @default(now()) @map("created_at")
-  updatedAt       DateTime              @updatedAt @map("updated_at")
+  approvedMinutes  Int?                @map("approved_minutes")
+  reviewerId       String?             @map("reviewer_id") @db.Uuid
+  reviewNote       String?             @map("review_note")
+  reviewedAt       DateTime?           @map("reviewed_at")
+  version          Int                 @default(1)
+  createdAt        DateTime            @default(now()) @map("created_at")
+  updatedAt        DateTime            @updatedAt @map("updated_at")
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation("OvertimeRequester", fields: [userId], references: [id], onDelete: Cascade)
@@ -2080,69 +2174,69 @@ model WorkReport {
 }
 
 model WorkSession {
-  id                    String            @id @default(uuid()) @db.Uuid
-  userId                String            @map("user_id") @db.Uuid
-  workspaceId           String            @map("workspace_id") @db.Uuid
-  clockIn               DateTime          @map("clock_in")
-  clockOut              DateTime?         @map("clock_out")
-  totalMinutes          Int?              @map("total_minutes")
-  description           String?
+  id                     String            @id @default(uuid()) @db.Uuid
+  userId                 String            @map("user_id") @db.Uuid
+  workspaceId            String            @map("workspace_id") @db.Uuid
+  clockIn                DateTime          @map("clock_in")
+  clockOut               DateTime?         @map("clock_out")
+  totalMinutes           Int?              @map("total_minutes")
+  description            String?
   /// The workspace-local day these minutes belong to, decided at clock-in and
   /// stored rather than derived. Every rollup groups on this: deriving it at
   /// read time would need (ts AT TIME ZONE 'UTC' AT TIME ZONE tz)::date on the
   /// hot path, and would silently re-bucket history if the zone ever changed.
-  businessDate          DateTime          @map("business_date") @db.Date
-  status                WorkSessionStatus @default(OPEN)
+  businessDate           DateTime          @map("business_date") @db.Date
+  status                 WorkSessionStatus @default(OPEN)
   /// Cache of the open presence interval. NULL exactly when the session is
   /// closed — a CHECK enforces it, so presence cannot outlive a session.
-  presenceStatus        PresenceStatus?   @map("presence_status")
-  presenceChangedAt     DateTime?         @map("presence_changed_at")
+  presenceStatus         PresenceStatus?   @map("presence_status")
+  presenceChangedAt      DateTime?         @map("presence_changed_at")
   /// The schedule as it stood on the day, captured at clock-in. Editing the
   /// schedule later must not retroactively make somebody late.
-  scheduleId            String?           @map("schedule_id") @db.Uuid
-  scheduledStartUtc     DateTime?         @map("scheduled_start_utc")
-  scheduledEndUtc       DateTime?         @map("scheduled_end_utc")
-  scheduledMinutes      Int?              @map("scheduled_minutes")
-  graceMinutesApplied   Int?              @map("grace_minutes_applied")
+  scheduleId             String?           @map("schedule_id") @db.Uuid
+  scheduledStartUtc      DateTime?         @map("scheduled_start_utc")
+  scheduledEndUtc        DateTime?         @map("scheduled_end_utc")
+  scheduledMinutes       Int?              @map("scheduled_minutes")
+  graceMinutesApplied    Int?              @map("grace_minutes_applied")
   /// Minutes in unpaid BREAK/LUNCH, subtracted from workedMinutes.
-  breakMinutes          Int               @default(0) @map("break_minutes")
-  workedMinutes         Int?              @map("worked_minutes")
-  rawOvertimeMinutes    Int               @default(0) @map("raw_overtime_minutes")
-  countedOvertimeMinutes Int              @default(0) @map("counted_overtime_minutes")
-  clockInSiteId         String?           @map("clock_in_site_id") @db.Uuid
-  clockOutSiteId        String?           @map("clock_out_site_id") @db.Uuid
+  breakMinutes           Int               @default(0) @map("break_minutes")
+  workedMinutes          Int?              @map("worked_minutes")
+  rawOvertimeMinutes     Int               @default(0) @map("raw_overtime_minutes")
+  countedOvertimeMinutes Int               @default(0) @map("counted_overtime_minutes")
+  clockInSiteId          String?           @map("clock_in_site_id") @db.Uuid
+  clockOutSiteId         String?           @map("clock_out_site_id") @db.Uuid
   /// The task whose site was used to clock in, when one was.
-  clockInTaskId         String?           @map("clock_in_task_id") @db.Uuid
-  clockInDistanceMeters Float?            @map("clock_in_distance_meters")
-  clockOutDistanceMeters Float?           @map("clock_out_distance_meters")
-  clockInLatitude       Float?            @map("clock_in_latitude")
-  clockInLongitude      Float?            @map("clock_in_longitude")
-  clockInLocationLabel  String?           @map("clock_in_location_label")
-  clockInWithinGeofence Boolean?          @map("clock_in_within_geofence")
-  clockOutLatitude      Float?            @map("clock_out_latitude")
-  clockOutLongitude     Float?            @map("clock_out_longitude")
-  clockOutLocationLabel String?           @map("clock_out_location_label")
-  clockOutWithinGeofence Boolean?         @map("clock_out_within_geofence")
+  clockInTaskId          String?           @map("clock_in_task_id") @db.Uuid
+  clockInDistanceMeters  Float?            @map("clock_in_distance_meters")
+  clockOutDistanceMeters Float?            @map("clock_out_distance_meters")
+  clockInLatitude        Float?            @map("clock_in_latitude")
+  clockInLongitude       Float?            @map("clock_in_longitude")
+  clockInLocationLabel   String?           @map("clock_in_location_label")
+  clockInWithinGeofence  Boolean?          @map("clock_in_within_geofence")
+  clockOutLatitude       Float?            @map("clock_out_latitude")
+  clockOutLongitude      Float?            @map("clock_out_longitude")
+  clockOutLocationLabel  String?           @map("clock_out_location_label")
+  clockOutWithinGeofence Boolean?          @map("clock_out_within_geofence")
   /// Set when the session did not end with the user tapping clock-out.
-  autoClosedAt          DateTime?         @map("auto_closed_at")
-  closedById            String?           @map("closed_by_id") @db.Uuid
-  closureReason         String?           @map("closure_reason")
+  autoClosedAt           DateTime?         @map("auto_closed_at")
+  closedById             String?           @map("closed_by_id") @db.Uuid
+  closureReason          String?           @map("closure_reason")
   /// Required by policy when clocking out before the configured earliest time.
-  earlyOutReason        String?           @map("early_out_reason")
-  adjustedById          String?           @map("adjusted_by_id") @db.Uuid
-  adjustedAt            DateTime?         @map("adjusted_at")
-  adjustmentReason      String?           @map("adjustment_reason")
-  createdAt             DateTime          @default(now()) @map("created_at")
-  updatedAt             DateTime          @updatedAt @map("updated_at")
+  earlyOutReason         String?           @map("early_out_reason")
+  adjustedById           String?           @map("adjusted_by_id") @db.Uuid
+  adjustedAt             DateTime?         @map("adjusted_at")
+  adjustmentReason       String?           @map("adjustment_reason")
+  createdAt              DateTime          @default(now()) @map("created_at")
+  updatedAt              DateTime          @updatedAt @map("updated_at")
 
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  adjustedBy User?    @relation("WorkSessionAdjuster", fields: [adjustedById], references: [id], onDelete: SetNull)
-  closedBy   User?    @relation("WorkSessionCloser", fields: [closedById], references: [id], onDelete: SetNull)
-  schedule     WorkSchedule?   @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
-  clockInSite  AttendanceSite? @relation("ClockInSite", fields: [clockInSiteId], references: [id], onDelete: SetNull)
-  clockOutSite AttendanceSite? @relation("ClockOutSite", fields: [clockOutSiteId], references: [id], onDelete: SetNull)
-  clockInTask  Task?           @relation("ClockInTask", fields: [clockInTaskId], references: [id], onDelete: SetNull)
+  user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace    Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  adjustedBy   User?                 @relation("WorkSessionAdjuster", fields: [adjustedById], references: [id], onDelete: SetNull)
+  closedBy     User?                 @relation("WorkSessionCloser", fields: [closedById], references: [id], onDelete: SetNull)
+  schedule     WorkSchedule?         @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  clockInSite  AttendanceSite?       @relation("ClockInSite", fields: [clockInSiteId], references: [id], onDelete: SetNull)
+  clockOutSite AttendanceSite?       @relation("ClockOutSite", fields: [clockOutSiteId], references: [id], onDelete: SetNull)
+  clockInTask  Task?                 @relation("ClockInTask", fields: [clockInTaskId], references: [id], onDelete: SetNull)
   presence     WorkSessionPresence[]
 
   @@index([userId])
@@ -2195,35 +2289,35 @@ enum NotificationEntityType {
 }
 
 model Notification {
-  id          String           @id @default(uuid()) @db.Uuid
-  userId      String           @map("user_id") @db.Uuid
-  workspaceId String           @map("workspace_id") @db.Uuid
+  id          String                  @id @default(uuid()) @db.Uuid
+  userId      String                  @map("user_id") @db.Uuid
+  workspaceId String                  @map("workspace_id") @db.Uuid
   type        NotificationType
   title       String
   body        String
-  taskId      String?          @map("task_id") @db.Uuid
+  taskId      String?                 @map("task_id") @db.Uuid
   /// Generic target, so a notification can point at a request or a report.
   /// taskId is kept for the rows that predate this and for task-scoped queries.
   entityType  NotificationEntityType? @map("entity_type")
-  entityId    String?          @map("entity_id") @db.Uuid
+  entityId    String?                 @map("entity_id") @db.Uuid
   /// Deterministic dedupe key. Retries, and any overlap between replicas,
   /// collapse onto one row instead of notifying somebody four times.
-  groupKey    String?          @map("group_key")
-  isRead      Boolean          @default(false) @map("is_read")
-  readAt      DateTime?        @map("read_at")
-  createdAt   DateTime         @default(now()) @map("created_at")
+  groupKey    String?                 @map("group_key")
+  isRead      Boolean                 @default(false) @map("is_read")
+  readAt      DateTime?               @map("read_at")
+  createdAt   DateTime                @default(now()) @map("created_at")
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   task      Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
 
+  /// Nullable groupKey means NULLs stay distinct in Postgres, so unkeyed
+  /// notifications are unconstrained — exactly the semantics wanted.
+  @@unique([userId, type, groupKey])
   @@index([userId])
   @@index([workspaceId])
   @@index([isRead])
   @@index([createdAt])
-  /// Nullable groupKey means NULLs stay distinct in Postgres, so unkeyed
-  /// notifications are unconstrained — exactly the semantics wanted.
-  @@unique([userId, type, groupKey])
   @@map("notifications")
 }
 
@@ -2348,30 +2442,30 @@ model LedgerAccount {
 }
 
 model JournalEntry {
-  id          String            @id @default(uuid()) @db.Uuid
+  id                     String            @id @default(uuid()) @db.Uuid
   /// Global monotonic ordering key. The stable tie-break for same-date rows in
   /// general-ledger running balances; without it those are non-deterministic.
-  seq         BigInt            @default(autoincrement())
-  workspaceId String            @map("workspace_id") @db.Uuid
+  seq                    BigInt            @default(autoincrement())
+  workspaceId            String            @map("workspace_id") @db.Uuid
   /// Null for org-level events (wallet transfers, direct wallet transactions).
-  cashbookId  String?           @map("cashbook_id") @db.Uuid
+  cashbookId             String?           @map("cashbook_id") @db.Uuid
   /// Business date. Every report filters on this, never on postedAt.
-  entryDate   DateTime          @map("entry_date") @db.Date
-  postedAt    DateTime          @default(now()) @map("posted_at")
-  status      JournalStatus     @default(POSTED)
-  currency    String
-  description String
-  sourceType  JournalSourceType @map("source_type")
-  sourceId    String?           @map("source_id") @db.Uuid
+  entryDate              DateTime          @map("entry_date") @db.Date
+  postedAt               DateTime          @default(now()) @map("posted_at")
+  status                 JournalStatus     @default(POSTED)
+  currency               String
+  description            String
+  sourceType             JournalSourceType @map("source_type")
+  sourceId               String?           @map("source_id") @db.Uuid
   /// Deterministic and unique per workspace: 'entry:<id>:v3', 'entry:<id>:v3:rev'.
   /// This is the database-level exactly-once guarantee — it holds even when the
   /// HTTP idempotency middleware is bypassed.
-  postingKey  String            @map("posting_key")
-  totalDebit  Decimal           @map("total_debit") @db.Decimal(20, 4)
-  totalCredit Decimal           @map("total_credit") @db.Decimal(20, 4)
-  reversesJournalEntryId String? @unique @map("reverses_journal_entry_id") @db.Uuid
-  createdById String            @map("created_by_id") @db.Uuid
-  createdAt   DateTime          @default(now()) @map("created_at")
+  postingKey             String            @map("posting_key")
+  totalDebit             Decimal           @map("total_debit") @db.Decimal(20, 4)
+  totalCredit            Decimal           @map("total_credit") @db.Decimal(20, 4)
+  reversesJournalEntryId String?           @unique @map("reverses_journal_entry_id") @db.Uuid
+  createdById            String            @map("created_by_id") @db.Uuid
+  createdAt              DateTime          @default(now()) @map("created_at")
 
   workspace  Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
   cashbook   Cashbook?     @relation(fields: [cashbookId], references: [id], onDelete: Restrict)
@@ -2389,15 +2483,15 @@ model JournalEntry {
 }
 
 model JournalLine {
-  id             String   @id @default(uuid()) @db.Uuid
-  journalEntryId String   @map("journal_entry_id") @db.Uuid
-  lineNumber     Int      @map("line_number")
+  id             String @id @default(uuid()) @db.Uuid
+  journalEntryId String @map("journal_entry_id") @db.Uuid
+  lineNumber     Int    @map("line_number")
 
   /// Denormalized from the header so every report query hits this table alone.
-  workspaceId    String   @map("workspace_id") @db.Uuid
-  cashbookId     String?  @map("cashbook_id") @db.Uuid
-  entryDate      DateTime @map("entry_date") @db.Date
-  currency       String
+  workspaceId String   @map("workspace_id") @db.Uuid
+  cashbookId  String?  @map("cashbook_id") @db.Uuid
+  entryDate   DateTime @map("entry_date") @db.Date
+  currency    String
 
   ledgerAccountId String  @map("ledger_account_id") @db.Uuid
   debit           Decimal @default(0) @db.Decimal(20, 4)
@@ -2443,4 +2537,479 @@ model FiscalPeriod {
   @@index([workspaceId, status])
   @@index([workspaceId, startDate, endDate])
   @@map("fiscal_periods")
+}
+
+// ─── Ticketing ─────────────────────────────────────────
+//
+// A gate desk sells physical admission tickets. The money side is deliberately
+// NOT re-invented here: every sale posts one ordinary cashbook Entry through
+// EntriesService, which posts the journal, moves the wallet and updates the
+// cached balances exactly as a hand-typed entry would. These tables record what
+// was sold, at what price, under which offer — the things an Entry cannot say.
+//
+// Two invariants the shape exists to protect:
+//   1. Prices are SNAPSHOT onto TicketSaleLine and Ticket at the moment of sale.
+//      Editing Friday's adult price must never rewrite last Friday's takings.
+//   2. A TicketDay is the unit of reconciliation. Closing it marks its entries
+//      isReconciled, which the ledger already treats as immutable.
+
+enum PatronClass {
+  ADULT
+  MINOR
+  OTHER
+}
+
+enum TicketDiscountType {
+  /// An adult accompanying N or more minors is admitted free.
+  GUARDIAN_COMP
+  /// A loyalty tier's standing offer.
+  MEMBERSHIP
+  /// Buy N of a type, get a discount on the group.
+  GROUP
+  /// Applied by hand at the desk by someone who may manage ticketing.
+  MANUAL
+}
+
+enum DiscountValueType {
+  /// 0-100, applied to the ticket's gross price.
+  PERCENT
+  /// Absolute amount off, in the cashbook's currency.
+  AMOUNT
+}
+
+enum TicketDayStatus {
+  OPEN
+  CLOSED
+}
+
+enum TicketShiftStatus {
+  OPEN
+  CLOSED
+}
+
+enum TicketSaleStatus {
+  COMPLETED
+  VOIDED
+}
+
+enum TicketStatus {
+  ISSUED
+  VOIDED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+  CANCELLED
+}
+
+/// One-time setup an org completes before the desk can open.
+///
+/// The superadmin's feature flag only unlocks the module; the org still chooses
+/// which book ticket money lands in and which category it counts as, because
+/// that is a chart-of-accounts decision nobody outside the org can make.
+model TicketSettings {
+  id                   String   @id @default(uuid()) @db.Uuid
+  workspaceId          String   @unique @map("workspace_id") @db.Uuid
+  /// The book every ticket entry posts to — normally a dedicated "Gate /
+  /// Tickets" book, so a busy night does not bury the operational books.
+  cashbookId           String?  @unique @map("cashbook_id") @db.Uuid
+  /// Revenue category for ticket entries. TicketType may override it per tier
+  /// when a venue wants adult and minor revenue reported separately.
+  revenueCategoryId    String?  @map("revenue_category_id") @db.Uuid
+  defaultPaymentModeId String?  @map("default_payment_mode_id") @db.Uuid
+  /// Minutes past local midnight at which a new ticketing day begins.
+  ///
+  /// A night venue rings a sale at 01:30 that belongs to the previous evening's
+  /// session and the previous evening's Z-report. 360 = 06:00. Zero means plain
+  /// calendar days. Evaluated in Workspace.timezone, never the server's.
+  dayStartMinutes      Int      @default(0) @map("day_start_minutes")
+  /// Whether an attendant may void their own sale on the current open day.
+  /// Off makes every void a supervisor action.
+  allowSelfVoid        Boolean  @default(true) @map("allow_self_void")
+  /// False until a book and a revenue category are chosen. Selling is refused
+  /// while false rather than guessing an account to post to.
+  isConfigured         Boolean  @default(false) @map("is_configured")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  workspace          Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  cashbook           Cashbook?    @relation(fields: [cashbookId], references: [id], onDelete: SetNull)
+  revenueCategory    Category?    @relation(fields: [revenueCategoryId], references: [id], onDelete: SetNull)
+  defaultPaymentMode PaymentMode? @relation(fields: [defaultPaymentModeId], references: [id], onDelete: SetNull)
+
+  @@map("ticket_settings")
+}
+
+/// A pricing category. In the client's language, "a day": Thursday is one
+/// session, Friday another, each with its own tiers and its own offers.
+///
+/// Either recurring (dayOfWeek) or a one-off override for a single date
+/// (specificDate) — never both, enforced by a CHECK in the migration. A
+/// specificDate session wins over the weekday one for that date, which is how a
+/// public holiday gets its own prices without disturbing the weekly pattern.
+model TicketSession {
+  id           String    @id @default(uuid()) @db.Uuid
+  workspaceId  String    @map("workspace_id") @db.Uuid
+  name         String
+  description  String?
+  /// 0 = Sunday … 6 = Saturday. Null when specificDate is set.
+  dayOfWeek    Int?      @map("day_of_week")
+  specificDate DateTime? @map("specific_date") @db.Date
+  /// Admissions allowed for this session. Null = uncapped.
+  capacity     Int?
+  isActive     Boolean   @default(true) @map("is_active")
+  sortOrder    Int       @default(0) @map("sort_order")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  workspace Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  types     TicketType[]
+  rules     TicketDiscountRule[]
+  days      TicketDay[]
+
+  @@index([workspaceId, dayOfWeek])
+  @@index([workspaceId, specificDate])
+  @@map("ticket_sessions")
+}
+
+/// A price tier inside a session: "Adult", "Minor", "VIP".
+model TicketType {
+  id          String      @id @default(uuid()) @db.Uuid
+  workspaceId String      @map("workspace_id") @db.Uuid
+  sessionId   String      @map("session_id") @db.Uuid
+  name        String
+  /// Drives the guardian-comp rule, which counts minors and comps an adult.
+  patronClass PatronClass @default(ADULT) @map("patron_class")
+  price       Decimal     @db.Decimal(20, 4)
+  /// Overrides TicketSettings.revenueCategoryId for this tier only.
+  categoryId  String?     @map("category_id") @db.Uuid
+  capacity    Int?
+  isActive    Boolean     @default(true) @map("is_active")
+  sortOrder   Int         @default(0) @map("sort_order")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  workspace Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  session   TicketSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  category  Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  saleLines TicketSaleLine[]
+  tickets   Ticket[]
+
+  @@unique([sessionId, name])
+  @@index([workspaceId])
+  @@map("ticket_types")
+}
+
+/// A conditional offer.
+///
+/// `config` holds the shape each type needs, so adding an offer kind does not
+/// mean a migration:
+///   GUARDIAN_COMP { minMinors, compPatronClass, maxCompPerSale }
+///   GROUP         { minQuantity, ticketTypeIds }
+///   MEMBERSHIP    { ticketTypeIds }  (tier comes from membershipTierId)
+model TicketDiscountRule {
+  id               String             @id @default(uuid()) @db.Uuid
+  workspaceId      String             @map("workspace_id") @db.Uuid
+  /// Null applies the rule to every session.
+  sessionId        String?            @map("session_id") @db.Uuid
+  name             String
+  type             TicketDiscountType
+  valueType        DiscountValueType  @map("value_type")
+  value            Decimal            @db.Decimal(20, 4)
+  config           Json               @default("{}")
+  membershipTierId String?            @map("membership_tier_id") @db.Uuid
+  /// Lower runs first. Ties broken by id for determinism.
+  priority         Int                @default(100)
+  /// Whether this may apply on top of a rule that already discounted the
+  /// ticket. Default false: two offers do not silently compound.
+  stackable        Boolean            @default(false)
+  isActive         Boolean            @default(true) @map("is_active")
+  createdAt        DateTime           @default(now()) @map("created_at")
+  updatedAt        DateTime           @updatedAt @map("updated_at")
+
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  session        TicketSession?  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  membershipTier MembershipTier? @relation(fields: [membershipTierId], references: [id], onDelete: Cascade)
+  tickets        Ticket[]
+
+  @@index([workspaceId, isActive])
+  @@index([sessionId])
+  @@map("ticket_discount_rules")
+}
+
+/// One business date × session. The unit a desk opens, sells against and closes.
+model TicketDay {
+  id           String          @id @default(uuid()) @db.Uuid
+  workspaceId  String          @map("workspace_id") @db.Uuid
+  sessionId    String          @map("session_id") @db.Uuid
+  /// The business date, already resolved through dayStartMinutes. Stored as a
+  /// bare date so a night that spans midnight is still one day.
+  businessDate DateTime        @map("business_date") @db.Date
+  status       TicketDayStatus @default(OPEN)
+  /// Snapshot of the session's capacity when the day opened, so raising the
+  /// template's cap tomorrow does not retroactively reopen a sold-out night.
+  capacity     Int?
+  /// Next ticket serial for this day, handed out under the day's row lock.
+  nextSerial   Int             @default(1) @map("next_serial")
+  openedAt     DateTime        @default(now()) @map("opened_at")
+  openedById   String          @map("opened_by_id") @db.Uuid
+  closedAt     DateTime?       @map("closed_at")
+  closedById   String?         @map("closed_by_id") @db.Uuid
+  /// Cash counted against expected at close, per payment mode.
+  closingNotes String?         @map("closing_notes")
+
+  workspace Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  session   TicketSession     @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  openedBy  User              @relation("TicketDayOpener", fields: [openedById], references: [id])
+  closedBy  User?             @relation("TicketDayCloser", fields: [closedById], references: [id])
+  sales     TicketSale[]
+  tickets   Ticket[]
+  shifts    TicketShift[]
+  usages    MembershipUsage[]
+
+  @@unique([workspaceId, businessDate, sessionId])
+  @@index([workspaceId, businessDate])
+  @@index([workspaceId, status])
+  @@map("ticket_days")
+}
+
+/// One attendant's cash drawer for one day.
+///
+/// This is what "reconcile" means at a gate: expected takings from the sales
+/// that were rung, against the notes actually in the tin. Without it, ticket
+/// cash is never proved against the wallet it was posted to.
+model TicketShift {
+  id             String            @id @default(uuid()) @db.Uuid
+  workspaceId    String            @map("workspace_id") @db.Uuid
+  ticketDayId    String            @map("ticket_day_id") @db.Uuid
+  attendantId    String            @map("attendant_id") @db.Uuid
+  openedAt       DateTime          @default(now()) @map("opened_at")
+  closedAt       DateTime?         @map("closed_at")
+  openingFloat   Decimal           @default(0) @map("opening_float") @db.Decimal(20, 4)
+  /// Per-wallet breakdown (ShiftWalletCount[]), computed at close from this
+  /// shift's non-voided sales. Kept as a snapshot so a later void cannot
+  /// quietly change what the attendant was held to.
+  ///
+  /// Defaults to an empty ARRAY, not an object — an open shift has no
+  /// breakdown yet (it is computed at close), and every reader treats this
+  /// column as a list. A `{}` default here previously crashed the client,
+  /// which iterates it with `for...of` / `.map()`; `{}` is not iterable.
+  expectedByMode Json              @default("[]") @map("expected_by_mode")
+  expectedCash   Decimal           @default(0) @map("expected_cash") @db.Decimal(20, 4)
+  countedCash    Decimal?          @map("counted_cash") @db.Decimal(20, 4)
+  /// countedCash − expectedCash. Negative is short.
+  variance       Decimal?          @db.Decimal(20, 4)
+  status         TicketShiftStatus @default(OPEN)
+  closedById     String?           @map("closed_by_id") @db.Uuid
+  notes          String?
+
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  ticketDay TicketDay    @relation(fields: [ticketDayId], references: [id], onDelete: Cascade)
+  attendant User         @relation("ShiftAttendant", fields: [attendantId], references: [id])
+  closedBy  User?        @relation("ShiftCloser", fields: [closedById], references: [id])
+  sales     TicketSale[]
+
+  @@index([workspaceId, status])
+  @@index([ticketDayId])
+  @@index([attendantId])
+  @@map("ticket_shifts")
+}
+
+/// One confirm tap at the desk.
+model TicketSale {
+  id             String           @id @default(uuid()) @db.Uuid
+  workspaceId    String           @map("workspace_id") @db.Uuid
+  ticketDayId    String           @map("ticket_day_id") @db.Uuid
+  shiftId        String?          @map("shift_id") @db.Uuid
+  /// The cashbook entry this sale posted. Null only when the whole sale was
+  /// comped to zero — there is no money to record, and a zero-amount entry
+  /// would fail validation. The tickets are still issued and still counted.
+  entryId        String?          @unique @map("entry_id") @db.Uuid
+  /// The wallet the money went into. Required even for a comped sale so the
+  /// desk's configuration is recorded consistently.
+  accountId      String           @map("account_id") @db.Uuid
+  paymentModeId  String?          @map("payment_mode_id") @db.Uuid
+  membershipId   String?          @map("membership_id") @db.Uuid
+  grossAmount    Decimal          @map("gross_amount") @db.Decimal(20, 4)
+  discountAmount Decimal          @default(0) @map("discount_amount") @db.Decimal(20, 4)
+  /// What was actually collected, and what the Entry is for.
+  netAmount      Decimal          @map("net_amount") @db.Decimal(20, 4)
+  ticketCount    Int              @map("ticket_count")
+  status         TicketSaleStatus @default(COMPLETED)
+  soldById       String           @map("sold_by_id") @db.Uuid
+  soldAt         DateTime         @default(now()) @map("sold_at")
+  voidedAt       DateTime?        @map("voided_at")
+  voidedById     String?          @map("voided_by_id") @db.Uuid
+  voidReason     String?          @map("void_reason")
+  /// Optimistic concurrency, matching the discipline on Entry.
+  version        Int              @default(1)
+
+  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  ticketDay   TicketDay         @relation(fields: [ticketDayId], references: [id], onDelete: Cascade)
+  shift       TicketShift?      @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  entry       Entry?            @relation(fields: [entryId], references: [id], onDelete: SetNull)
+  account     Account           @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  paymentMode PaymentMode?      @relation(fields: [paymentModeId], references: [id], onDelete: SetNull)
+  membership  Membership?       @relation(fields: [membershipId], references: [id], onDelete: SetNull)
+  soldBy      User              @relation("TicketSeller", fields: [soldById], references: [id])
+  voidedBy    User?             @relation("TicketVoider", fields: [voidedById], references: [id])
+  lines       TicketSaleLine[]
+  tickets     Ticket[]
+  usages      MembershipUsage[]
+
+  @@index([workspaceId, soldAt])
+  @@index([ticketDayId, status])
+  @@index([soldById])
+  @@index([shiftId])
+  @@map("ticket_sales")
+}
+
+/// A sale's request, per tier: "2 × Minor at 10,000".
+model TicketSaleLine {
+  id           String  @id @default(uuid()) @db.Uuid
+  saleId       String  @map("sale_id") @db.Uuid
+  ticketTypeId String  @map("ticket_type_id") @db.Uuid
+  quantity     Int
+  /// Snapshot. The tier's price may change tomorrow; this line may not.
+  unitPrice    Decimal @map("unit_price") @db.Decimal(20, 4)
+  lineGross    Decimal @map("line_gross") @db.Decimal(20, 4)
+  lineDiscount Decimal @default(0) @map("line_discount") @db.Decimal(20, 4)
+  lineNet      Decimal @map("line_net") @db.Decimal(20, 4)
+
+  sale       TicketSale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  ticketType TicketType @relation(fields: [ticketTypeId], references: [id], onDelete: Restrict)
+
+  @@index([saleId])
+  @@map("ticket_sale_lines")
+}
+
+/// One physical admission.
+///
+/// Issued per head rather than per line because the offers work per head: an
+/// adult with two minors yields three tickets, one of which is free. Rolling
+/// that into a line total would lose which head was comped and why.
+model Ticket {
+  id             String       @id @default(uuid()) @db.Uuid
+  workspaceId    String       @map("workspace_id") @db.Uuid
+  saleId         String       @map("sale_id") @db.Uuid
+  ticketDayId    String       @map("ticket_day_id") @db.Uuid
+  ticketTypeId   String       @map("ticket_type_id") @db.Uuid
+  /// TKT-YYYYMMDD-0001, allocated from TicketDay.nextSerial under its row lock.
+  serialNo       String       @map("serial_no")
+  patronClass    PatronClass  @map("patron_class")
+  grossPrice     Decimal      @map("gross_price") @db.Decimal(20, 4)
+  discountAmount Decimal      @default(0) @map("discount_amount") @db.Decimal(20, 4)
+  netPrice       Decimal      @map("net_price") @db.Decimal(20, 4)
+  /// Which offer produced the discount, for the analytics page and for anyone
+  /// asking six months later why this adult got in free.
+  appliedRuleId  String?      @map("applied_rule_id") @db.Uuid
+  status         TicketStatus @default(ISSUED)
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sale        TicketSale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  ticketDay   TicketDay           @relation(fields: [ticketDayId], references: [id], onDelete: Cascade)
+  ticketType  TicketType          @relation(fields: [ticketTypeId], references: [id], onDelete: Restrict)
+  appliedRule TicketDiscountRule? @relation(fields: [appliedRuleId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, serialNo])
+  @@index([ticketDayId, status])
+  @@index([saleId])
+  @@map("tickets")
+}
+
+// ─── Memberships (loyalty) ─────────────────────────────
+
+/// A loyalty tier and the standing offer that comes with it.
+model MembershipTier {
+  id                     String            @id @default(uuid()) @db.Uuid
+  workspaceId            String            @map("workspace_id") @db.Uuid
+  name                   String
+  description            String?
+  discountValueType      DiscountValueType @default(PERCENT) @map("discount_value_type")
+  discountValue          Decimal           @default(0) @map("discount_value") @db.Decimal(20, 4)
+  /// Tiers this offer applies to. Empty = every tier in the session.
+  appliesToTicketTypeIds String[]          @default([]) @map("applies_to_ticket_type_ids") @db.Uuid
+  /// How many tickets per business day the offer may cover. Null = unlimited.
+  /// Without this, one card discounts a coach party.
+  maxUsesPerDay          Int?              @map("max_uses_per_day")
+  /// How long a new or renewed membership runs. Null = no expiry.
+  validityMonths         Int?              @map("validity_months")
+  /// What the membership itself sells for. Set means issuing one posts its own
+  /// income entry — membership fees are revenue, not paperwork.
+  price                  Decimal?          @db.Decimal(20, 4)
+  isActive               Boolean           @default(true) @map("is_active")
+  createdAt              DateTime          @default(now()) @map("created_at")
+  updatedAt              DateTime          @updatedAt @map("updated_at")
+
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  memberships Membership[]
+  rules       TicketDiscountRule[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, isActive])
+  @@map("membership_tiers")
+}
+
+/// Somebody's loyalty card.
+///
+/// Layered on Contact rather than carrying its own name and phone, so a
+/// member's tickets, receipts and any invoices all hang off one customer record
+/// instead of three spellings of the same person.
+model Membership {
+  id          String           @id @default(uuid()) @db.Uuid
+  workspaceId String           @map("workspace_id") @db.Uuid
+  contactId   String           @map("contact_id") @db.Uuid
+  tierId      String           @map("tier_id") @db.Uuid
+  /// What the attendant types at the desk. Generated M-00001, or the number
+  /// already printed on a physical card.
+  memberNo    String           @map("member_no")
+  validFrom   DateTime         @default(now()) @map("valid_from")
+  validUntil  DateTime?        @map("valid_until")
+  status      MembershipStatus @default(ACTIVE)
+  issuedById  String           @map("issued_by_id") @db.Uuid
+  /// The income entry for the joining or renewal fee, when the tier charges one.
+  entryId     String?          @unique @map("entry_id") @db.Uuid
+  notes       String?
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  workspace Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact   Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tier      MembershipTier    @relation(fields: [tierId], references: [id], onDelete: Restrict)
+  issuedBy  User              @relation("MembershipIssuer", fields: [issuedById], references: [id])
+  entry     Entry?            @relation(fields: [entryId], references: [id], onDelete: SetNull)
+  sales     TicketSale[]
+  usages    MembershipUsage[]
+
+  @@unique([workspaceId, memberNo])
+  @@index([workspaceId, status])
+  @@index([contactId])
+  @@map("memberships")
+}
+
+/// Every time a card actually earned a discount.
+///
+/// Exists for two reasons: enforcing MembershipTier.maxUsesPerDay, and being
+/// able to answer "what has this card saved you this year" without replaying
+/// every sale.
+model MembershipUsage {
+  id             String   @id @default(uuid()) @db.Uuid
+  membershipId   String   @map("membership_id") @db.Uuid
+  saleId         String   @map("sale_id") @db.Uuid
+  ticketDayId    String   @map("ticket_day_id") @db.Uuid
+  /// Tickets this redemption covered, for the per-day cap.
+  ticketCount    Int      @default(1) @map("ticket_count")
+  discountAmount Decimal  @map("discount_amount") @db.Decimal(20, 4)
+  usedAt         DateTime @default(now()) @map("used_at")
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  sale       TicketSale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  ticketDay  TicketDay  @relation(fields: [ticketDayId], references: [id], onDelete: Cascade)
+
+  @@unique([saleId, membershipId])
+  @@index([membershipId, ticketDayId])
+  @@map("membership_usages")
 }
