@@ -510,6 +510,16 @@ export class InvoicingService {
         // Uses EntriesService so obligation + invoice status stay in sync with normal payment flow.
         let paymentEntry: unknown = null;
         if (payment?.paymentAmount && obligationId) {
+            // An account is required so the payment entry is linked to a wallet.
+            // Without it the cashbook entry has no account to post to — the same
+            // gap the entries DTO enforces on normal creation paths.
+            if (!payment.accountId) {
+                throw new AppError(
+                    'An account (wallet) is required to record the payment. Select the wallet the money was received into.',
+                    400,
+                    'MISSING_ACCOUNT',
+                );
+            }
             try {
                 const { container } = await import('tsyringe');
                 const { EntriesService } = await import('../entries/entries.service');

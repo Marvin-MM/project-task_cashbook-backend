@@ -79,7 +79,14 @@ export const invoiceQuerySchema = z.object({
 /** Optional body when sending: apply a full or partial payment in the same flow. */
 export const sendInvoiceSchema = z.object({
     paymentAmount: decimalString.optional(),
-    accountId: z.string().uuid().optional(),
+    /**
+     * The wallet account the payment landed in.
+     *
+     * Required whenever paymentAmount is supplied. Without it the payment
+     * entry has no account to post to, breaking the wallet audit trail that
+     * requires every entry to name the pot it moved through.
+     */
+    accountId: z.string().uuid('Choose the wallet this payment was received into').optional(),
     paymentDescription: z.string().max(500).optional(),
     entryDate: z.string().datetime().optional(),
 }).refine(
@@ -88,6 +95,14 @@ export const sendInvoiceSchema = z.object({
         return parseFloat(data.paymentAmount) > 0;
     },
     { message: 'paymentAmount must be greater than zero', path: ['paymentAmount'] },
+).refine(
+    (data) => {
+        // A payment without an account would create an unlinked entry —
+        // the same gap entries.dto.ts guards against at the cashbook level.
+        if (!data.paymentAmount) return true;
+        return Boolean(data.accountId);
+    },
+    { message: 'accountId is required when recording a payment', path: ['accountId'] },
 );
 
 export type SendInvoiceDto = z.infer<typeof sendInvoiceSchema>;
