@@ -304,6 +304,8 @@ export class EntriesService {
                 obligationId: dto.obligationId || null,
                 entryDate,
                 createdById: userId,
+                integrationApiKeyId: dto.integrationApiKeyId ?? null,
+                externalRef: dto.externalRef ?? null,
             },
             include: {
                 category: true,

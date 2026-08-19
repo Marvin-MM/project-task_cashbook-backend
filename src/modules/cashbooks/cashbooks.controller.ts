@@ -72,6 +72,25 @@ export class CashbooksController {
         }
     }
 
+    async activateIntegration(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const result = await this.cashbooksService.activateIntegration(
+                req.params.cashbookId as string,
+                req.params.workspaceId as string,
+                req.user.userId,
+            );
+            res.status(StatusCodes.OK).json({
+                success: true,
+                message: result.activated
+                    ? 'Integration activated for this cashbook'
+                    : 'Integration is already active for this cashbook',
+                data: result,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
     async delete(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
         try {
             await this.cashbooksService.deleteCashbook(req.params.cashbookId as string, req.user.userId);

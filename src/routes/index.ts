@@ -31,6 +31,8 @@ import expenseClaimsRoutes from '../modules/expense-claims/expense-claims.routes
 import attendanceRoutes from '../modules/attendance/attendance.routes';
 import meAttendanceRoutes from '../modules/time-tracking/me-attendance.routes';
 import notificationsRoutes from '../modules/notifications/notifications.routes';
+import apiKeysRoutes from '../modules/api-keys/api-keys.routes';
+import integrationRoutes from '../modules/integration/integration.routes';
 
 const router = Router();
 
@@ -71,5 +73,13 @@ router.use('/audit', auditRoutes);
 // this without audit logging.
 router.use('/platform', platformRoutes);
 router.use('/invites', invitesRoutes);
+
+// ─── Developer API Keys ───────────────────────────────
+// Scoped to a workspace; requires MANAGE_API_KEYS permission (see api-keys.routes.ts).
+router.use('/workspaces/:workspaceId/api-keys', apiKeysRoutes);
+
+// ─── External Integration (API Key auth, not cookie JWT) ──
+// Callers present X-API-Key header. No session required.
+router.use('/integrate', integrationRoutes);
 
 export default router;

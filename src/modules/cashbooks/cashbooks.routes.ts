@@ -4,7 +4,7 @@ import { CashbooksController } from './cashbooks.controller';
 import { authenticate } from '../../middlewares/authenticate';
 import { validate } from '../../middlewares/validate';
 import { WorkspacePermission } from '../../core/types/workspace-permissions';
-import { requireWorkspaceMember, requireCashbookMember } from '../../middlewares/authorize';
+import { requireWorkspaceMember, requireCashbookMember, requireBusinessWorkspace } from '../../middlewares/authorize';
 import { CashbookPermission } from '../../core/types/permissions';
 import {
     createCashbookSchema,
@@ -32,6 +32,17 @@ router.post(
     requireWorkspaceMember(WorkspacePermission.CREATE_CASHBOOK) as any,
     validate(createCashbookSchema),
     cashbooksController.create.bind(cashbooksController) as any
+);
+
+// Opt-in integration activation. The workspace grant allows only owner, admin
+// and developer roles; the cashbook check additionally requires developers to
+// have been explicitly assigned to this particular book.
+router.post(
+    '/workspace/:workspaceId/:cashbookId/integration/activate',
+    requireWorkspaceMember(WorkspacePermission.MANAGE_API_KEYS) as any,
+    requireBusinessWorkspace() as any,
+    requireCashbookMember(CashbookPermission.VIEW_CASHBOOK) as any,
+    cashbooksController.activateIntegration.bind(cashbooksController) as any,
 );
 
 // ─── Cashbook-scoped routes ────────────────────────────

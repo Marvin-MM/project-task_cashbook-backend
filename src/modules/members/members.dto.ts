@@ -11,7 +11,7 @@ import { z } from 'zod';
  * decides who may actually use each.
  */
 const assignableRole = z.enum([
-    'ADMIN', 'GENERAL_MANAGER', 'ACCOUNTANT', 'SUB_ACCOUNTANT', 'PROJECT_MANAGER', 'HR', 'MEMBER',
+    'ADMIN', 'GENERAL_MANAGER', 'ACCOUNTANT', 'SUB_ACCOUNTANT', 'PROJECT_MANAGER', 'HR', 'MEMBER', 'DEVELOPER',
 ]);
 
 /**

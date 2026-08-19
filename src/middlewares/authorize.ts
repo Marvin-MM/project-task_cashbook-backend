@@ -195,6 +195,31 @@ export function requireWorkspaceMember(
     };
 }
 
+export function requireBusinessWorkspace() {
+    return async (req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const workspace = (req as any).workspace;
+            const workspaceId = req.params.workspaceId as string;
+            const resolvedWorkspace = workspace ?? await prisma.workspace.findUnique({
+                where: { id: workspaceId },
+                select: { id: true, type: true, isActive: true },
+            });
+
+            if (!resolvedWorkspace || !resolvedWorkspace.isActive) {
+                throw new NotFoundError('Workspace');
+            }
+
+            if (resolvedWorkspace.type !== WorkspaceType.BUSINESS) {
+                throw new AuthorizationError('Developer integrations are available for business workspaces only');
+            }
+
+            next();
+        } catch (error) {
+            next(error);
+        }
+    };
+}
+
 // ─── Ticket Desk Guard ─────────────────────────────────
 /**
  * Ticketing routes, which are gated on two things the other guards do not check.

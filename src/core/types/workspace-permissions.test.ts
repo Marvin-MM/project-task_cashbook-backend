@@ -14,7 +14,7 @@ import {
 } from './workspace-permissions';
 
 const {
-    OWNER, ADMIN, GENERAL_MANAGER, ACCOUNTANT, SUB_ACCOUNTANT, PROJECT_MANAGER, HR, MEMBER,
+    OWNER, ADMIN, GENERAL_MANAGER, ACCOUNTANT, SUB_ACCOUNTANT, PROJECT_MANAGER, HR, MEMBER, DEVELOPER,
 } = WorkspaceRole;
 
 /**
@@ -334,7 +334,51 @@ describe('WORKSPACE_PERMISSION_MATRIX', () => {
 
         it('staffs the operation', () => {
             expect(assignableRoles(GENERAL_MANAGER).sort())
-                .toEqual([MEMBER, PROJECT_MANAGER, HR].sort());
+                .toEqual([MEMBER, PROJECT_MANAGER, HR, DEVELOPER].sort());
+        });
+    });
+
+    /*
+     * DEVELOPER: can wire up integrations, cannot touch money or members.
+     */
+    describe('DEVELOPER', () => {
+        it('can manage API keys', () => {
+            expect(hasWorkspacePermission(DEVELOPER, P.MANAGE_API_KEYS)).toBe(true);
+        });
+
+        it('can view integration docs', () => {
+            expect(hasWorkspacePermission(DEVELOPER, P.VIEW_INTEGRATION_DOCS)).toBe(true);
+        });
+
+        it('can use basic collaboration features', () => {
+            expect(hasWorkspacePermission(DEVELOPER, P.VIEW_WORKSPACE)).toBe(true);
+            expect(hasWorkspacePermission(DEVELOPER, P.USE_PROJECTS)).toBe(true);
+            expect(hasWorkspacePermission(DEVELOPER, P.VIEW_WALLETS)).toBe(true);
+        });
+
+        it('cannot touch financial surfaces', () => {
+            for (const p of FINANCIAL) {
+                expect(hasWorkspacePermission(DEVELOPER, p)).toBe(false);
+            }
+        });
+
+        it('cannot manage members or see the whole org', () => {
+            expect(hasWorkspacePermission(DEVELOPER, P.MANAGE_MEMBERS)).toBe(false);
+            expect(hasWorkspacePermission(DEVELOPER, P.ACCESS_ALL_CASHBOOKS)).toBe(false);
+        });
+
+        it('cannot reach the audit log or close periods', () => {
+            expect(hasWorkspacePermission(DEVELOPER, P.VIEW_AUDIT_LOG)).toBe(false);
+            expect(hasWorkspacePermission(DEVELOPER, P.CLOSE_PERIOD)).toBe(false);
+        });
+
+        it('cannot sell tickets or manage ticketing', () => {
+            expect(hasWorkspacePermission(DEVELOPER, P.SELL_TICKETS)).toBe(false);
+            expect(hasWorkspacePermission(DEVELOPER, P.MANAGE_TICKETING)).toBe(false);
+        });
+
+        it('cannot assign anyone', () => {
+            expect(assignableRoles(DEVELOPER)).toEqual([]);
         });
     });
 
@@ -407,7 +451,7 @@ describe('assignableRoles', () => {
         // against this list. A role missing there is unassignable by anybody.
         const dtoRoles = [
             'ADMIN', 'GENERAL_MANAGER', 'ACCOUNTANT', 'SUB_ACCOUNTANT',
-            'PROJECT_MANAGER', 'HR', 'MEMBER',
+            'PROJECT_MANAGER', 'HR', 'MEMBER', 'DEVELOPER',
         ];
         for (const role of assignableRoles(OWNER)) {
             expect(dtoRoles).toContain(role);

@@ -1,5 +1,6 @@
 import { injectable, inject } from 'tsyringe';
 import { PrismaClient } from '@prisma/client';
+import crypto from 'crypto';
 import { CashbooksRepository } from './cashbooks.repository';
 import {
     NotFoundError,
@@ -135,6 +136,71 @@ export class CashbooksService {
         });
 
         return cashbook;
+    }
+
+    /**
+     * Opt a cashbook into the external integration surface.
+     *
+     * The conditional update is the concurrency boundary: two requests can
+     * safely race to activate the same book, but only one creates its immutable
+     * reference and the other returns that exact reference. A database unique
+     * index remains the authority if a generated reference collides.
+     */
+    async activateIntegration(cashbookId: string, workspaceId: string, userId: string) {
+        const cashbook = await this.prisma.cashbook.findFirst({
+            where: { id: cashbookId, workspaceId, isActive: true },
+            select: { id: true, bookRef: true },
+        });
+        if (!cashbook) throw new NotFoundError('Cashbook');
+        if (cashbook.bookRef) return { bookRef: cashbook.bookRef, activated: false };
+
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const bookRef = `CB-${crypto.randomBytes(12).toString('hex').toUpperCase()}`;
+            try {
+                const result = await this.prisma.$transaction(async (tx) => {
+                    const updated = await tx.cashbook.updateMany({
+                        where: { id: cashbookId, workspaceId, bookRef: null, isActive: true },
+                        data: { bookRef },
+                    });
+
+                    if (updated.count === 0) {
+                        return { activated: false as const };
+                    }
+
+                    await tx.auditLog.create({
+                        data: {
+                            userId,
+                            workspaceId,
+                            action: AuditAction.CASHBOOK_INTEGRATION_ACTIVATED,
+                            resource: 'cashbook',
+                            resourceId: cashbookId,
+                            details: { bookRef } as any,
+                        },
+                    });
+                    return { activated: true as const };
+                });
+
+                if (result.activated) return { bookRef, activated: true };
+
+                const activatedBook = await this.prisma.cashbook.findUniqueOrThrow({
+                    where: { id: cashbookId },
+                    select: { bookRef: true },
+                });
+                if (activatedBook.bookRef) {
+                    return { bookRef: activatedBook.bookRef, activated: false };
+                }
+            } catch (error: any) {
+                // The only expected failure is an exceptionally unlikely global
+                // reference collision. Retry with fresh cryptographic entropy.
+                if (error?.code !== 'P2002') throw error;
+            }
+        }
+
+        throw new AppError(
+            'Could not allocate a unique integration reference. Please retry.',
+            503,
+            'BOOK_REF_ALLOCATION_FAILED',
+        );
     }
 
     async updateCashbook(cashbookId: string, userId: string, dto: UpdateCashbookDto) {

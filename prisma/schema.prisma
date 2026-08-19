@@ -75,6 +75,8 @@ model User {
   ticketSales           TicketSale[]            @relation("TicketSeller")
   ticketSalesVoided     TicketSale[]            @relation("TicketVoider")
   membershipsIssued     Membership[]            @relation("MembershipIssuer")
+  apiKeysCreated        ApiKey[]                @relation("ApiKeyCreator")
+  apiKeysRevoked        ApiKey[]                @relation("ApiKeyRevoker")
 
   @@unique([provider, providerId])
   @@map("users")
@@ -212,6 +214,7 @@ model Workspace {
   tickets                Ticket[]
   membershipTiers        MembershipTier[]
   memberships            Membership[]
+  apiKeys                ApiKey[]
 
   @@index([ownerId])
   @@index([type])
@@ -280,6 +283,10 @@ model Cashbook {
   totalExpense        Decimal  @default(0) @map("total_expense") @db.Decimal(20, 4)
   allowBackdate       Boolean  @default(false) @map("allow_backdate")
   isActive            Boolean  @default(true) @map("is_active")
+  /// Short, human-readable reference code for external API integrations.
+  /// It is deliberately nullable: a book is not exposed to integrations until
+  /// an authorised user explicitly activates it.
+  bookRef             String?  @unique @map("book_ref")
   /// This book's private "unallocated book cash" ASSET account. Nullable only so
   /// the ledger can be introduced without a destructive migration; every
   /// cashbook created after Phase 1 has one.
@@ -334,6 +341,11 @@ model Entry {
   obligationId   String?     @map("obligation_id") @db.Uuid
   entryDate      DateTime    @map("entry_date")
   createdById    String      @map("created_by_id") @db.Uuid
+  /// The API key that created this entry, when it originated from an external
+  /// integration. Together with externalRef this provides durable idempotency
+  /// and provenance without overloading the human description.
+  integrationApiKeyId String? @map("integration_api_key_id") @db.Uuid
+  externalRef    String?     @map("external_ref")
   /// Mirrors (status == REVERSED). Retained so existing repository filters keep
   /// working through the cutover; dropped once every read path uses `status`.
   isDeleted      Boolean     @default(false) @map("is_deleted")
@@ -371,6 +383,8 @@ model Entry {
   @@index([createdById])
   @@index([isDeleted])
   @@index([cashbookId, status, entryDate])
+  @@index([integrationApiKeyId])
+  @@unique([cashbookId, integrationApiKeyId, externalRef])
   @@map("entries")
 }
 
@@ -769,6 +783,13 @@ enum WorkspaceRole {
   /// No org-financial access at all. Books they are an explicit member of,
   /// plus projects, tasks and time tracking.
   MEMBER
+  /// Developer / integration role.
+  ///
+  /// Can list, create, and revoke workspace API keys, see the Book IDs they
+  /// have been assigned to via CashbookMember, and access integration docs.
+  /// No financial write access, no entry creation via the standard UI path —
+  /// their principal is the workspace service account they authenticated with.
+  DEVELOPER
 }
 
 enum CashbookRole {
@@ -3028,4 +3049,67 @@ model MembershipUsage {
   @@unique([saleId, membershipId])
   @@index([membershipId, ticketDayId])
   @@map("membership_usages")
+}
+
+// ─── API Keys ──────────────────────────────────────────
+//
+// One workspace may have many named API keys. They are workspace-scoped:
+// the caller presents a key + a bookRef to target a specific cashbook.
+//
+// Security model:
+//   - Raw key = "ick_live_<32-random-bytes-as-base64url>"
+//   - Stored:   SHA-256(rawKey)  — never the raw key itself.
+//   - The raw key is returned ONCE at creation; we cannot show it again.
+//   - Rotation generates a new raw key, replaces the hash, and zeroes lastUsedAt.
+//
+// The keyPrefix field stores the first 12 chars of the raw key for display in
+// the UI so users can identify which key is which without us storing the secret.
+
+enum ApiKeyScope {
+  /// Can create entries in the specified cashbook(s).
+  WRITE_ENTRIES
+  /// Read entries / balance for the specified cashbook(s).
+  READ_ENTRIES
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+}
+
+model ApiKey {
+  id            String       @id @default(uuid()) @db.Uuid
+  workspaceId   String       @map("workspace_id") @db.Uuid
+  /// Human-readable label, e.g. "POS System", "E-commerce Store".
+  name          String
+  /// SHA-256 hash of the raw API key (hex-encoded). Never store the raw key.
+  keyHash       String       @unique @map("key_hash")
+  /// First 12 characters of the raw key for display purposes only.
+  keyPrefix     String       @map("key_prefix")
+  /// What this key is allowed to do. At least one scope is required.
+  scopes        ApiKeyScope[]
+  status        ApiKeyStatus @default(ACTIVE)
+  /// The user who created this key.
+  createdById   String       @map("created_by_id") @db.Uuid
+  /// Cashbooks this key can access (by internal id). Empty array means no
+  /// book access; key creation requires at least one active book.
+  allowedBookIds String[]    @default([]) @map("allowed_book_ids") @db.Uuid
+  /// Exact IPv4/IPv6 addresses this key is allowed to call from.
+  /// Empty array = no IP restriction.
+  allowedIps    String[]     @default([]) @map("allowed_ips")
+  lastUsedAt    DateTime?    @map("last_used_at")
+  expiresAt     DateTime?    @map("expires_at")
+  revokedAt     DateTime?    @map("revoked_at")
+  revokedById   String?      @map("revoked_by_id") @db.Uuid
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy  User      @relation("ApiKeyCreator", fields: [createdById], references: [id])
+  revokedBy  User?     @relation("ApiKeyRevoker", fields: [revokedById], references: [id])
+
+  @@index([workspaceId])
+  @@index([keyHash])
+  @@index([status])
+  @@map("api_keys")
 }

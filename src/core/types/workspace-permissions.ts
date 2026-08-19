@@ -138,6 +138,12 @@ export enum WorkspacePermission {
     MANAGE_MEMBERSHIPS = 'MANAGE_MEMBERSHIPS',
     /** Ticket volumes, revenue, discounts given, attendant performance. */
     VIEW_TICKET_ANALYTICS = 'VIEW_TICKET_ANALYTICS',
+
+    // ─── API Integration ───
+    /** Create, list, rotate and revoke workspace API keys. */
+    MANAGE_API_KEYS = 'MANAGE_API_KEYS',
+    /** View API integration docs, book IDs and code snippets. */
+    VIEW_INTEGRATION_DOCS = 'VIEW_INTEGRATION_DOCS',
 }
 
 const P = WorkspacePermission;
@@ -340,6 +346,26 @@ export const WORKSPACE_PERMISSION_MATRIX: Record<WorkspaceRole, Set<WorkspacePer
         ...COLLABORATION,
         // No org-financial access whatsoever. Books require an explicit grant.
     ]),
+
+    /**
+     * Developer / integration role.
+     *
+     * Has zero financial access (no dashboards, no wallets, no ledger). Can:
+     *   - List, create, rotate and revoke workspace API keys.
+     *   - View book IDs for cashbooks they have been explicitly granted.
+     *   - Access integration documentation and code snippets.
+     *
+     * The intent is that developers building integrations see exactly what they
+     * need to wire up the API and nothing more — they do not become accountants
+     * by virtue of being technical.
+     */
+    [WorkspaceRole.DEVELOPER]: new Set([
+        ...COLLABORATION,
+        P.MANAGE_API_KEYS,
+        P.VIEW_INTEGRATION_DOCS,
+        // No ACCESS_ALL_CASHBOOKS — they only see books with an explicit grant,
+        // and bookRef on those books for use in integration snippets.
+    ]),
 };
 
 export function hasWorkspacePermission(
@@ -365,6 +391,7 @@ export function assignableRoles(actor: WorkspaceRole): WorkspaceRole[] {
                 WorkspaceRole.PROJECT_MANAGER,
                 WorkspaceRole.HR,
                 WorkspaceRole.MEMBER,
+                WorkspaceRole.DEVELOPER,
             ];
         case WorkspaceRole.ADMIN:
             return [
@@ -374,6 +401,7 @@ export function assignableRoles(actor: WorkspaceRole): WorkspaceRole[] {
                 WorkspaceRole.PROJECT_MANAGER,
                 WorkspaceRole.HR,
                 WorkspaceRole.MEMBER,
+                WorkspaceRole.DEVELOPER,
             ];
         case WorkspaceRole.GENERAL_MANAGER:
             // Staffs the operation. Cannot mint a peer, an admin, or anyone who
@@ -383,6 +411,7 @@ export function assignableRoles(actor: WorkspaceRole): WorkspaceRole[] {
                 WorkspaceRole.PROJECT_MANAGER,
                 WorkspaceRole.HR,
                 WorkspaceRole.MEMBER,
+                WorkspaceRole.DEVELOPER,
             ];
         case WorkspaceRole.ACCOUNTANT:
             // Both directions between member and sub-accountant: an accountant
@@ -396,7 +425,7 @@ export function assignableRoles(actor: WorkspaceRole): WorkspaceRole[] {
             // has it.
             return [WorkspaceRole.MEMBER];
         default:
-            // PROJECT_MANAGER, SUB_ACCOUNTANT and MEMBER assign nobody.
+            // PROJECT_MANAGER, SUB_ACCOUNTANT, DEVELOPER and MEMBER assign nobody.
             return [];
     }
 }

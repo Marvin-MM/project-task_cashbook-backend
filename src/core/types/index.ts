@@ -76,6 +76,12 @@ export enum WorkspaceRole {
     HR = 'HR',
     /** No org-financial access. Assigned books, projects, tasks, time tracking. */
     MEMBER = 'MEMBER',
+    /**
+     * Developer / integration role.
+     * Can create, list, and revoke API keys; view book IDs for assigned books;
+     * access integration docs. No financial write access.
+     */
+    DEVELOPER = 'DEVELOPER',
 }
 
 /**
@@ -160,6 +166,7 @@ export enum AuditAction {
     CASHBOOK_MEMBER_ADDED = 'CASHBOOK_MEMBER_ADDED',
     CASHBOOK_MEMBER_REMOVED = 'CASHBOOK_MEMBER_REMOVED',
     CASHBOOK_MEMBER_ROLE_CHANGED = 'CASHBOOK_MEMBER_ROLE_CHANGED',
+    CASHBOOK_INTEGRATION_ACTIVATED = 'CASHBOOK_INTEGRATION_ACTIVATED',
 
     // Entry
     ENTRY_CREATED = 'ENTRY_CREATED',
@@ -352,4 +359,11 @@ export enum AuditAction {
     MEMBERSHIP_UPDATED = 'MEMBERSHIP_UPDATED',
     MEMBERSHIP_RENEWED = 'MEMBERSHIP_RENEWED',
     MEMBERSHIP_REDEEMED = 'MEMBERSHIP_REDEEMED',
+
+    // API Keys
+    API_KEY_CREATED = 'API_KEY_CREATED',
+    API_KEY_REVOKED = 'API_KEY_REVOKED',
+    API_KEY_ROTATED = 'API_KEY_ROTATED',
+    API_KEY_UPDATED = 'API_KEY_UPDATED',
+    API_KEY_USED = 'API_KEY_USED',
 }

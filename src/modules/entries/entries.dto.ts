@@ -94,7 +94,14 @@ export const entryQuerySchema = z.object({
     includeReversed: z.coerce.boolean().default(false),
 });
 
-export type CreateEntryDto = z.infer<typeof createEntrySchema>;
+// Integration-only provenance is intentionally not part of the public UI
+// schema. Manual create requests still pass createEntrySchema, while trusted
+// internal callers may omit accountId to post against the cashbook itself.
+export type CreateEntryDto = Omit<z.infer<typeof createEntrySchema>, 'accountId'> & {
+    accountId?: string;
+    integrationApiKeyId?: string;
+    externalRef?: string;
+};
 export type UpdateEntryDto = z.infer<typeof updateEntrySchema>;
 export type DeleteEntryDto = z.infer<typeof deleteEntrySchema>;
 export type ReviewDeleteRequestDto = z.infer<typeof reviewDeleteRequestSchema>;
